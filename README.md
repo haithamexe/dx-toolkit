@@ -463,7 +463,13 @@ For maintainers:
    npm publish ./release
    ```
 
-5. Tag `vX.Y.Z` and draft a GitHub release from the CHANGELOG.
+5. Once npm has processed it (a minute or two), install it from npm and check it the same way:
+
+   ```bash
+   node scripts/smoke-package.mjs --from-npm
+   ```
+
+6. Tag `vX.Y.Z` and draft a GitHub release from the CHANGELOG.
 
 CI runs steps 2 and 3 on every push.
 

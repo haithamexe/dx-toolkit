@@ -1,6 +1,7 @@
 // Installs the packed release the way a user would (npm install -g, into a temporary prefix) and
 // checks it works: the dx command, the dashboard in the background, and the MCP server. Run after
-// `npm run release`; CI runs it on every system.
+// `npm run release`; CI runs it on every system. With --from-npm it installs this version from the
+// npm registry instead, to check a release once it's published.
 import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,9 +12,17 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const release = path.join(root, "release");
-const tarball = fs.readdirSync(release).find((f) => /^dx-devkit-.*\.tgz$/.test(f));
-if (!tarball) fail("No release/dx-devkit-*.tgz. Run npm run release first.");
-const version = JSON.parse(fs.readFileSync(path.join(release, "package.json"), "utf8")).version;
+const fromNpm = process.argv.includes("--from-npm");
+let version, spec;
+if (fromNpm) {
+  version = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
+  spec = `dx-devkit@${version}`;
+} else {
+  const tarball = fs.existsSync(release) && fs.readdirSync(release).find((f) => /^dx-devkit-.*\.tgz$/.test(f));
+  if (!tarball) fail("No release/dx-devkit-*.tgz. Run npm run release first.");
+  version = JSON.parse(fs.readFileSync(path.join(release, "package.json"), "utf8")).version;
+  spec = path.join(release, tarball);
+}
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dx-devkit-smoke-"));
 const prefix = path.join(tmp, "prefix");
@@ -25,8 +34,8 @@ fs.writeFileSync(path.join(projects, "hello", "package.json"), JSON.stringify({ 
 // autoConnectAi: false so the smoke test never touches this computer's AI tools.
 fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ projectsRoots: [projects], autoConnectAi: false, localDomainsPort: 0 }));
 
-step(`npm install -g ${tarball}`);
-execSync(`npm install -g "${path.join(release, tarball)}" --prefix "${prefix}" --no-audit --no-fund`, { stdio: "inherit" });
+step(`npm install -g ${fromNpm ? spec : path.basename(spec)}`);
+execSync(`npm install -g "${spec}" --prefix "${prefix}" --no-audit --no-fund`, { stdio: "inherit" });
 
 const isWin = process.platform === "win32";
 const bin = (name) => path.join(prefix, isWin ? `${name}.cmd` : path.join("bin", name));

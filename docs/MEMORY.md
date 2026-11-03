@@ -5,6 +5,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 ## Where it stands (Nov 2026)
 
 - CI is green on Windows, macOS and Linux × Node 22 and 24.
+- **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
   - the core tools;
   - the `dx` command: `ui, go, up, down, new, projects, port, kill, log, summary, clean, deps, logs, errors, setup, config, runs, doctor`;
@@ -25,11 +26,10 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Private pull requests in the summary** need `GITHUB_TOKEN` or `gh auth login`; the dashboard could say so when neither is set.
 - **`dx deps --fix`**: it only reports today; fixing is left to `npm update` / `npm audit fix`.
 - **yarn and bun** projects are skipped by `dx deps`.
-- **Publish to npm** so it installs with one command instead of clone, build and link. It needs a free package name and the workspaces bundled into one package.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
   - **1.1.0** is the first on npm, as `dx-devkit`. npm refused `dxkit` as too close to existing names (degit, pdfkit). A free name (`npm view <name>` gives E404) can still be refused: the look-alike check only runs on a real publish, and short names fail it most.
-  - **To release**: add each change to `CHANGELOG.md` under *Unreleased*; at release time, bump every `package.json`, run `npm run release` and `node scripts/smoke-package.mjs`, tag `vX.Y.Z`, then `npm publish ./release` (needs the maintainer's npm login).
+  - **To release**: add each change to `CHANGELOG.md` under *Unreleased*; at release time, bump every `package.json`, run `npm run release` and `node scripts/smoke-package.mjs`, tag `vX.Y.Z`, then `npm publish ./release` (needs the maintainer's npm login) and, once npm has processed it, `node scripts/smoke-package.mjs --from-npm`.
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
