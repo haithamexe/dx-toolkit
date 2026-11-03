@@ -26,7 +26,10 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **`dx deps --fix`**: it only reports today; fixing is left to `npm update` / `npm audit fix`.
 - **yarn and bun** projects are skipped by `dx deps`.
 - **Publish to npm** so it installs with one command instead of clone, build and link. It needs a free package name and the workspaces bundled into one package.
-- **Releases**: 0.1.0 is tagged. Add each change to `CHANGELOG.md` under *Unreleased*; at release time, bump the versions and tag `vX.Y.Z`.
+- **Releases**:
+  - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
+  - **1.1.0** is the first on npm, as `dxkit`.
+  - **To release**: add each change to `CHANGELOG.md` under *Unreleased*; at release time, bump every `package.json`, run `npm run release` and `node scripts/smoke-package.mjs`, tag `vX.Y.Z`, then `npm publish ./release` (needs the maintainer's npm login).
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions

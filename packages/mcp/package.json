@@ -1,6 +1,6 @@
 {
   "name": "@dx/mcp",
-  "version": "0.2.0",
+  "version": "1.1.0",
   "license": "MIT",
   "private": true,
   "description": "MCP server that lets Claude (and Raycast AI) use your dx tools.",

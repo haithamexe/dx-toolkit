@@ -4,7 +4,7 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
-## 0.2.0 (2026-11-03)
+## 1.1.0 (2026-11-03)
 
 Your AI coding agent can now run your app and see what it does, whole stacks start with one command at readable `.localhost` addresses, and nothing needs setting up. Install it with `npm install -g dxkit`.
 
@@ -60,9 +60,9 @@ Your AI coding agent can now run your app and see what it does, whole stacks sta
 - `dx ui` opens the running dashboard instead of starting a second one.
 - On a new install, the default projects folder is the code folders dx finds, rather than `~/Desktop/projects`.
 
-## 0.1.0 (2026-11-03)
+## 1.0.0 (2026-11-03)
 
-The first public release.
+The first public release, on GitHub only (its git tag is `v0.1.0`).
 
 ### Added
 
