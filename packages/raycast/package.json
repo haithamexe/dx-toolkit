@@ -1,0 +1,70 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "dx",
+  "title": "DX Toolkit",
+  "description": "Your dx toolkit inside Raycast: open projects, start dev servers, kill ports, keep a work journal.",
+  "icon": "extension-icon.png",
+  "author": "dx-toolkit",
+  "license": "MIT",
+  "platforms": [
+    "Windows",
+    "macOS"
+  ],
+  "categories": [
+    "Developer Tools",
+    "Productivity"
+  ],
+  "commands": [
+    {
+      "name": "open-project",
+      "title": "Open Project",
+      "subtitle": "dx",
+      "description": "Search your projects, open one in the editor and start its dev server.",
+      "mode": "view"
+    },
+    {
+      "name": "kill-port",
+      "title": "Kill Port",
+      "subtitle": "dx",
+      "description": "See what's listening on each port and stop it.",
+      "mode": "view"
+    },
+    {
+      "name": "log-work",
+      "title": "Log Work",
+      "subtitle": "dx",
+      "description": "Add one line to your work journal.",
+      "mode": "no-view",
+      "arguments": [
+        {
+          "name": "text",
+          "placeholder": "What did you do?",
+          "type": "text",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "work-journal",
+      "title": "Work Journal",
+      "subtitle": "dx",
+      "description": "Read your work journal for the last few weeks.",
+      "mode": "view"
+    }
+  ],
+  "dependencies": {
+    "@dx/core": "file:../core",
+    "@raycast/api": "^2.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "typescript": "~5.9.3"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "typecheck": "tsc --noEmit"
+  }
+}

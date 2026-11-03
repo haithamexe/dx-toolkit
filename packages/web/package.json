@@ -1,0 +1,20 @@
+{
+  "name": "@dx/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The dx dashboard: a local web interface for every dx tool, opened with `dx ui`.",
+  "type": "module",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js",
+      "default": "./dist/server.js"
+    }
+  },
+  "files": ["dist", "public"],
+  "dependencies": {
+    "@dx/core": "*"
+  }
+}

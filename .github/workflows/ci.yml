@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      # Builds core, cli and mcp, then runs the core tests (they use git, which every runner has).
+      - run: npm test
+
+      - name: Smoke-test the dx command
+        shell: bash
+        env:
+          DX_HOME: ${{ runner.temp }}/dx-home
+        run: |
+          node packages/cli/dist/index.js help
+          node packages/cli/dist/index.js doctor || true
+          node packages/cli/dist/index.js summary --no-github --days 1
+          node packages/cli/dist/index.js clean --list

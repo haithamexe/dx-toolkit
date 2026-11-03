@@ -1,0 +1,14 @@
+{
+  "name": "@dx/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The dx command.",
+  "type": "module",
+  "bin": {
+    "dx": "dist/index.js"
+  },
+  "dependencies": {
+    "@dx/core": "*",
+    "@dx/web": "*"
+  }
+}

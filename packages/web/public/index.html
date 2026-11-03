@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="dx-token" content="__DX_TOKEN__" />
+    <meta name="color-scheme" content="light dark" />
+    <title>dx dashboard</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="app">
+      <header class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">dx</span>
+          <span class="brand-name">dx toolkit</span>
+        </div>
+        <nav class="nav" aria-label="Main" id="nav"></nav>
+        <div class="sidebar-foot">
+          <label class="theme-select">
+            <span class="visually-hidden">Theme</span>
+            <select id="theme">
+              <option value="auto">System theme</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+        </div>
+      </header>
+      <main class="main" id="main" tabindex="-1"></main>
+    </div>
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+    <dialog class="dialog" id="confirm">
+      <form method="dialog" class="dialog-body">
+        <h2 class="dialog-title" id="confirm-title"></h2>
+        <div class="dialog-text" id="confirm-text"></div>
+        <div class="dialog-actions">
+          <button class="btn" value="cancel" type="submit">Cancel</button>
+          <button class="btn btn-danger" value="ok" type="submit" id="confirm-ok">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

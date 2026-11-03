@@ -1,0 +1,17 @@
+{
+  "name": "@dx/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The tools themselves. No dependencies beyond Node, so every front end can bundle it.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"]
+}
