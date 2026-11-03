@@ -16,3 +16,4 @@ export * from "./tools/deps.js";
 export * from "./tools/scaffold.js";
 export * from "./tools/devErrors.js";
 export * from "./tools/aiSetup.js";
+export * from "./tools/stacks.js";

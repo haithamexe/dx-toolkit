@@ -49,7 +49,8 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - Every action takes a project `dir` and checks it against `scanProjects()`; cleanup deletes only folders `findCleanup()` returns on a fresh scan.
 - `~/.dx/dashboard.json` (mode 0600) holds the URL and token so the CLI and MCP server can call the API (`web/src/link.ts`). Never put the token anywhere else: not in a URL, a log line or `runs.jsonl`.
 - `POST /api/check` reaches loopback hosts only and doesn't follow redirects; `POST /api/open-file` opens files inside a known project only.
-- `server.test.ts` covers all of this. Run it after touching either file.
+- The local domains proxy (`proxy.ts`) listens on loopback only and forwards only to dev servers dx runs (`localRoutes()`) or the dashboard (`dx.localhost`). Never route to an arbitrary host or port from a request.
+- `server.test.ts` and `stack.test.ts` cover all of this. Run them after touching these files.
 
 ## No setup
 

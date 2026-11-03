@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { promisify } from "node:util";
-import { configPath, dxHome, ensureDxHome, loadConfig } from "../config.js";
+import { configPath, dxHome, dxPath, ensureDxHome, loadConfig } from "../config.js";
 import { listAiTools } from "./aiSetup.js";
 import { listListeningPorts } from "./ports.js";
 import { scanProjects } from "./projects.js";
+import { detectStack } from "./stacks.js";
 
 const run = promisify(execFile);
 
@@ -86,6 +87,47 @@ export async function runDoctor(): Promise<Check[]> {
     });
   }
 
+  // Docker matters only when a project's stack has a database in docker-compose.
+  const needDocker = projects.filter((p) => detectStack(p)?.services.some((s) => s.kind === "docker"));
+  if (needDocker.length) {
+    const docker = await commandExists("docker");
+    checks.push({
+      name: "Docker",
+      status: docker ? "ok" : "warn",
+      detail: docker ? docker : `not installed; ${needDocker.map((p) => p.name).slice(0, 3).join(", ")} start a database with it`,
+      fix: docker ? undefined : "Install Docker Desktop (https://docs.docker.com/get-docker/), or on Linux the docker package, then start it",
+    });
+  }
+
+  // Local domains (shop.localhost) run with the dashboard, on port 80 when they can get it.
+  const dashboard = readDashboardFile();
+  if (dashboard) {
+    const p = dashboard.localDomainsPort;
+    if (p === undefined) {
+      checks.push({ name: "Local domains", status: "warn", detail: "off: no port was free", fix: "dx ui --stop, then open the dashboard again" });
+    } else if (p === 80) {
+      checks.push({ name: "Local domains", status: "ok", detail: "apps are at name.localhost" });
+    } else {
+      let holder = "";
+      try {
+        holder = (await listListeningPorts(80)).map((e) => e.processName ?? `PID ${e.pid}`).join(", ");
+      } catch {
+        // can't tell who
+      }
+      checks.push({
+        name: "Local domains",
+        status: "warn",
+        detail: `on port ${p}, so addresses look like shop.localhost:${p}${holder ? ` (port 80 is used by ${holder})` : ""}`,
+        fix:
+          process.platform === "linux" && !holder
+            ? "sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80 && echo net.ipv4.ip_unprivileged_port_start=80 | sudo tee /etc/sysctl.d/50-dx-localhost.conf, then dx ui --stop"
+            : holder
+              ? `Stop ${holder} if you don't need it, then dx ui --stop`
+              : undefined,
+      });
+    }
+  }
+
   const ai = await listAiTools();
   const installed = ai.filter((t) => t.installed);
   const missing = installed.filter((t) => !t.connected || !t.current);
@@ -110,6 +152,17 @@ export async function runDoctor(): Promise<Check[]> {
     });
   }
   return checks;
+}
+
+/** The running dashboard's ~/.dx/dashboard.json, if there is one. */
+function readDashboardFile(): { localDomainsPort?: number; pid: number } | undefined {
+  try {
+    const info = JSON.parse(fs.readFileSync(dxPath("dashboard.json"), "utf8")) as { localDomainsPort?: number; pid: number };
+    process.kill(info.pid, 0); // throws when that process is gone
+    return info;
+  } catch {
+    return undefined;
+  }
 }
 
 function linuxInstall(pkg: string): string {

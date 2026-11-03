@@ -47,6 +47,9 @@ const MARKERS: Array<[file: string, kind: ProjectKind]> = [
   ["manage.py", "python"],
 ];
 
+/** Files that make a folder a project without telling its language (Rails, a stack of containers, …). */
+const OTHER_MARKERS = ["Gemfile", "Procfile", "Procfile.dev", "compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"];
+
 export function scanProjects(config: DxConfig = loadConfig()): Project[] {
   const found = new Map<string, Project>();
   const ignore = new Set(config.ignore.map((n) => n.toLowerCase()));
@@ -84,7 +87,7 @@ export function readProject(dir: string, root = path.dirname(dir)): Project | un
   const devrc = readJson<DevRc>(path.join(dir, ".devrc.json"));
   let kind: ProjectKind | undefined = MARKERS.find(([f]) => has(f))?.[1];
   if (!kind && hasDotnetProject(dir)) kind = "dotnet";
-  if (!kind && (hasGit || devrc)) kind = "other";
+  if (!kind && (hasGit || devrc || OTHER_MARKERS.some(has))) kind = "other";
   if (!kind) return undefined;
 
   const pkg = kind === "node" ? readJson<PackageJson>(path.join(dir, "package.json")) : undefined;

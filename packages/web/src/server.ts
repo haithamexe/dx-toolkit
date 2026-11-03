@@ -4,7 +4,9 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { handleApi, HttpError } from "./api.js";
-import { anyDevServerRunning, stopAllDevServers } from "./dev.js";
+import { loadConfig } from "@dx/core";
+import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
+import { DOMAIN_PORTS, startLocalDomains, type LocalDomains } from "./proxy.js";
 import { clearDashboardInfo, writeDashboardInfo } from "./link.js";
 
 /**
@@ -25,12 +27,16 @@ export interface DashboardOptions {
   /** Minutes with no dev servers and no requests before a background dashboard calls onIdle (default 30). */
   idleMinutes?: number;
   onIdle?: () => void;
+  /** Ports to try for local domains (shop.localhost); false for none. Default: the config, else 80 then 1355. */
+  localDomainPorts?: number[] | false;
 }
 
 export interface Dashboard {
   url: string;
   port: number;
   token: string;
+  /** The port shop.localhost is served on, when local domains are on. */
+  localDomainsPort?: number;
   close(): Promise<void>;
   /** Settles once the dashboard has stopped, whoever stopped it. */
   closed: Promise<void>;
@@ -118,7 +124,14 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
 
   port = await listen(server, options.port ?? DEFAULT_PORT);
   const url = `http://127.0.0.1:${port}/`;
-  writeDashboardInfo({ url, port, token, pid: process.pid, startedAt: new Date().toISOString(), background: !!options.background });
+
+  let domains: LocalDomains | undefined;
+  const config = loadConfig();
+  const domainPorts = options.localDomainPorts ?? (config.localDomains === false ? false : config.localDomainsPort !== undefined ? [config.localDomainsPort] : DOMAIN_PORTS);
+  if (domainPorts !== false) domains = await startLocalDomains({ dashboardPort: port, ports: domainPorts }).catch(() => undefined);
+  setLocalDomainsPort(domains?.port);
+
+  writeDashboardInfo({ url, port, token, pid: process.pid, startedAt: new Date().toISOString(), background: !!options.background, localDomainsPort: domains?.port });
 
   const idleMs = (options.idleMinutes ?? 30) * 60_000;
   const idleTimer = setInterval(() => {
@@ -131,6 +144,8 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       clearInterval(idleTimer);
       clearDashboardInfo();
       await stopAllDevServers();
+      setLocalDomainsPort(undefined);
+      await domains?.close();
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();
@@ -140,7 +155,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
     return closing;
   }
 
-  return { url, port, token, close, closed };
+  return { url, port, token, localDomainsPort: domains?.port, close, closed };
 }
 
 /** Listens on 127.0.0.1, moving to the next port when the wanted one is taken. */

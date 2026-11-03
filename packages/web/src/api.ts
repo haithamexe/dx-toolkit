@@ -9,6 +9,7 @@ import {
   connectAiTools,
   copyProject,
   deleteCleanup,
+  detectStack,
   disconnectAiTools,
   expandHome,
   findCleanup,
@@ -76,7 +77,9 @@ const routes: Record<string, Handler> = {
   // ------------------------------------------------------------ projects
   "GET /api/projects": () => {
     const running = new Map(listDevServers().map((d) => [d.dir.toLowerCase(), d]));
-    return scanProjects(loadConfig()).map((p) => ({
+    return scanProjects(loadConfig()).map((p) => {
+      const stack = detectStack(p);
+      return {
       name: p.name,
       dir: p.dir,
       kind: p.kind,
@@ -86,7 +89,9 @@ const routes: Record<string, Handler> = {
       hasGit: p.hasGit,
       lastActive: p.lastActive,
       dev: running.get(p.dir.toLowerCase()),
-    }));
+      stack: stack && { source: stack.source, services: stack.services.map((s) => ({ name: s.name, role: s.role, kind: s.kind, command: s.command })) },
+    };
+    });
   },
 
   "POST /api/projects/open": async (req) => {
@@ -160,9 +165,11 @@ const routes: Record<string, Handler> = {
     const project = knownProject(req.body.dir);
     const raw = String(req.body.file ?? "");
     const norm = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
-    const inside = (p: string) => norm(p).startsWith(norm(project.dir) + path.sep);
-    // Dev servers print paths absolute, relative to the project, or from its root ("/src/App.tsx").
-    const candidates = [path.resolve(project.dir, raw), path.resolve(project.dir, raw.replace(/^[\\/]+/, ""))];
+    // The project's folder, and for a stack the folders its services run in (another repository, say).
+    const roots = [project.dir, ...(detectStack(project)?.services.map((s) => s.dir) ?? [])];
+    const inside = (p: string) => roots.some((r) => norm(p).startsWith(norm(r) + path.sep));
+    // Dev servers print paths absolute, relative to their folder, or from its root ("/src/App.tsx").
+    const candidates = roots.flatMap((r) => [path.resolve(r, raw), path.resolve(r, raw.replace(/^[\\/]+/, ""))]);
     const file = candidates.find((p) => inside(p) && fs.existsSync(p));
     if (!file) {
       if (!candidates.some(inside)) throw new HttpError(400, "Only files inside the project can be opened.");
@@ -171,7 +178,7 @@ const routes: Record<string, Handler> = {
     const line = req.body.line ? clampInt(req.body.line, 1, 10_000_000, 1) : undefined;
     const column = req.body.column ? clampInt(req.body.column, 1, 100_000, 1) : undefined;
     await openFileInEditor(file, line, column, project.editor ?? loadConfig().editor);
-    return { message: `Opened ${path.relative(project.dir, file)}${line ? `:${line}` : ""}` };
+    return { message: `Opened ${path.basename(file)}${line ? `:${line}` : ""}` };
   },
   "POST /api/dev/stop": async (req) => (await stopDevServer(String(req.body.dir))) ?? null,
   "POST /api/dev/clear": (req) => {

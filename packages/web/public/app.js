@@ -221,6 +221,17 @@ function plural(n, one, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+const ROLE_LABELS = { data: "database", backend: "back end", frontend: "front end" };
+
+const STACK_SOURCES = {
+  devrc: ".devrc.json",
+  procfile: "the Procfile",
+  runner: "the monorepo's dev script",
+  scripts: "the dev:* scripts",
+  workspaces: "the workspaces",
+  compose: "docker-compose",
+};
+
 const KIND_LABELS = { typescript: "TypeScript", build: "Build", runtime: "Runtime", python: "Python", go: "Go", exit: "Crashed", error: "Error" };
 
 /** A file path as seen from its project: "C:/work/shop/src/App.tsx" → "src/App.tsx". */
@@ -383,12 +394,19 @@ function projectsPage(root) {
       h(
         "div",
         null,
-        h("div", { class: "project-name" }, p.name, h("span", { class: "badge" }, kind), running ? statusBadge(p.dev.status) : null),
+        h(
+          "div",
+          { class: "project-name" },
+          p.name,
+          h("span", { class: "badge" }, kind),
+          p.stack ? h("span", { class: "badge badge-accent", title: `Found from ${STACK_SOURCES[p.stack.source] ?? "the project"}` }, `Stack: ${p.stack.services.map((s) => s.name).join(", ")}`) : null,
+          running ? statusBadge(p.dev.status) : null,
+        ),
         h(
           "div",
           { class: "project-meta" },
           h("span", null, `Active ${relativeTime(p.lastActive)}`),
-          p.devCommand ? h("span", { class: "mono" }, p.devCommand) : h("span", null, "No dev command"),
+          p.stack ? h("span", null, `${plural(p.stack.services.length, "service")}, started in order`) : p.devCommand ? h("span", { class: "mono" }, p.devCommand) : h("span", null, "No dev command"),
           h("span", { class: "mono" }, tildify(p.dir)),
         ),
       ),
@@ -397,8 +415,14 @@ function projectsPage(root) {
         { class: "project-actions" },
         running
           ? btn("Stop", (e) => stopDev(e.currentTarget, p.dir), { iconName: "stop", small: true, name: `Stop ${p.name}` })
-          : p.devCommand
-            ? btn("Run", (e) => startDev(e.currentTarget, p.dir), { kind: "primary", iconName: "play", small: true, title: `Run ${p.devCommand} here`, name: `Run ${p.name}` })
+          : p.devCommand || p.stack
+            ? btn("Run", (e) => startDev(e.currentTarget, p.dir), {
+                kind: "primary",
+                iconName: "play",
+                small: true,
+                title: p.stack ? `Run its ${p.stack.services.length} services here` : `Run ${p.devCommand} here`,
+                name: `Run ${p.name}`,
+              })
             : null,
         btn("Open in editor", (e) => open(e.currentTarget, p, "editor"), { iconName: "code", small: true, name: `Open ${p.name} in editor` }),
         moreMenu(p),
@@ -417,7 +441,7 @@ function projectsPage(root) {
       h(
         "div",
         { class: "menu-list" },
-        item("Open in browser", "external", () => open(null, p, "browser", p.dev?.url ?? p.url), !(p.dev?.url ?? p.url)),
+        item("Open in browser", "external", () => open(null, p, "browser", p.dev?.localUrl ?? p.dev?.url ?? p.url), !(p.dev?.localUrl ?? p.dev?.url ?? p.url)),
         item("Run in a terminal window", "terminal", () => open(null, p, "terminal"), !p.devCommand),
         item("Show in folder", "folder", () => open(null, p, "folder")),
         item("Save as template…", "template", () => saveTemplate(p)),
@@ -509,12 +533,14 @@ function projectsPage(root) {
           statusBadge(s.status),
           s.startedBy === "ai" ? h("span", { class: "badge badge-accent", title: "Started by an AI agent through dx's MCP tools" }, "Started by AI") : null,
           s.errorCount ? h("span", { class: "badge badge-danger" }, plural(s.errorCount, "error")) : null,
-          s.url ? h("a", { href: s.url, target: "_blank", rel: "noreferrer", class: "mono" }, s.url) : h("span", { class: "dim mono" }, s.command),
+          addressLink(s) ?? h("span", { class: "dim mono" }, s.command),
         ),
         h(
           "div",
           { class: "toolbar" },
-          s.url && s.status === "ready" ? btn("Open in browser", (e) => open(e.currentTarget, { dir: s.dir }, "browser", s.url), { iconName: "external", small: true, kind: "primary" }) : null,
+          (s.localUrl ?? s.url) && s.status === "ready"
+            ? btn("Open in browser", (e) => open(e.currentTarget, { dir: s.dir }, "browser", s.localUrl ?? s.url), { iconName: "external", small: true, kind: "primary" })
+            : null,
           s.errorCount || showingErrors
             ? btn(showingErrors ? "Hide errors" : "Show errors", () => toggle(openErrors, "openErrors"), { iconName: "warn", small: true })
             : null,
@@ -531,13 +557,17 @@ function projectsPage(root) {
               ],
         ),
       ),
+      s.services ? h("ul", { class: "stack-services", "aria-label": `Services of ${s.project}` }, s.services.map(serviceRow)) : null,
+      s.note ? h("p", { class: "stack-note" }, icon("warn"), s.note) : null,
       showingErrors ? errorsEl : null,
+      showing && s.services ? outputFilter(key, s.services) : null,
       showing ? logEl : null,
     );
     if (showing) {
       const state = logState.get(key) ?? { after: 0, lines: [] };
       logState.set(key, state);
       state.el = logEl;
+      state.stack = !!s.services;
       renderLines(state, state.lines, true);
     }
     if (showingErrors) {
@@ -545,6 +575,40 @@ function projectsPage(root) {
       void refreshErrors(key);
     }
     return card;
+  }
+
+  /** The address to show: the local domain when there is one, the dev server's own otherwise. */
+  function addressLink(s) {
+    const href = s.localUrl ?? s.url;
+    if (!href) return null;
+    return h("a", { href, target: "_blank", rel: "noreferrer", class: "mono", title: s.localUrl && s.url ? `Also at ${s.url}` : undefined }, href.replace(/^http:\/\//, ""));
+  }
+
+  function serviceRow(svc) {
+    return h(
+      "li",
+      null,
+      statusBadge(svc.status),
+      h("strong", null, svc.service),
+      svc.role && svc.role !== "other" ? h("span", { class: "dim" }, ROLE_LABELS[svc.role] ?? svc.role) : null,
+      svc.errorCount ? h("span", { class: "badge badge-danger" }, plural(svc.errorCount, "error")) : null,
+      addressLink(svc) ?? h("span", { class: "dim mono stack-cmd" }, svc.command),
+    );
+  }
+
+  /** All | api | web: which service's output the log shows. */
+  function outputFilter(key, services) {
+    const state = logState.get(key) ?? { after: 0, lines: [] };
+    logState.set(key, state);
+    const options = [["", "All"], ...services.map((svc) => [svc.service, svc.service])];
+    return h(
+      "div",
+      { class: "log-filter" },
+      segmented("Show output from", options, state.filter ?? "", (v) => {
+        state.filter = v || undefined;
+        renderLines(state, state.lines, true);
+      }),
+    );
   }
 
   async function refreshErrors(key) {
@@ -577,6 +641,7 @@ function projectsPage(root) {
         "div",
         { class: "dev-error-head" },
         h("span", { class: "badge badge-danger" }, KIND_LABELS[e.kind] ?? "Error"),
+        e.service ? h("span", { class: "badge" }, e.service) : null,
         h("strong", { class: "dev-error-message" }, e.message),
         e.count > 1 ? h("span", { class: "dim" }, `×${e.count}`) : null,
       ),
@@ -595,7 +660,17 @@ function projectsPage(root) {
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     if (replace) el.replaceChildren();
-    for (const l of lines) el.append(h("span", { class: l.stream === "err" ? "err" : l.stream === "dx" ? "dx" : "" }, l.text + "\n"));
+    for (const l of lines) {
+      if (state.filter && l.service !== state.filter) continue;
+      el.append(
+        h(
+          "span",
+          { class: l.stream === "err" ? "err" : l.stream === "dx" ? "dx" : "" },
+          state.stack && l.service && !state.filter ? h("span", { class: "svc" }, `${l.service} │ `) : null,
+          l.text + "\n",
+        ),
+      );
+    }
     if (!el.childNodes.length) el.append(h("span", { class: "empty" }, "No output yet."));
     if (replace || nearBottom) el.scrollTop = el.scrollHeight;
   }

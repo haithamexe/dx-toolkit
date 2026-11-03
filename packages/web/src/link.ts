@@ -17,6 +17,8 @@ export interface DashboardInfo {
   startedAt: string;
   /** Started in the background (by an AI tool or `dx ui --background`) rather than by `dx ui`. */
   background: boolean;
+  /** The port *.localhost addresses are served on (80 means no port in the address). */
+  localDomainsPort?: number;
 }
 
 export function dashboardInfoPath(): string {

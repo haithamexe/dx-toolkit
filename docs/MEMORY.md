@@ -7,8 +7,9 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - CI is green on Windows, macOS and Linux × Node 22 and 24.
 - **Built**:
   - the core tools;
-  - the `dx` command: `ui, go, new, projects, port, kill, log, summary, clean, deps, logs, errors, setup, config, runs, doctor`;
-  - the MCP server with 18 tools, 9 of them for running apps;
+  - the `dx` command: `ui, go, up, down, new, projects, port, kill, log, summary, clean, deps, logs, errors, setup, config, runs, doctor`;
+  - the MCP server with 19 tools, 10 of them for running apps;
+  - stacks and local domains (`shop.localhost`);
   - the dashboard with 8 pages (Projects, New project, Ports, Journal, Summary, Cleanup, Dependencies, Health & settings);
   - error detection in dev-server output;
   - setting itself up with no configuration.
@@ -17,7 +18,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 ## Backlog
 
 - **Raycast**: the extension in `packages/raycast` has never been installed or checked. Add commands for summary and cleanup.
-- **Stacks and local domains** (`dx up`, `shop.localhost`): the next big feature, built with the same no-setup rule.
+- **Local HTTPS** for `*.localhost`: needs a trusted local CA (an admin prompt once), so an opt-in step an agent can run.
 - **More from the earlier idea list**: resume where you left off, an unsaved-work radar, `dx setup <git URL>`, a yearly work record, `.env` and secrets checks.
 - **Browser console errors for agents**: point to pairing with a browser MCP server, or add a headless check later.
 - **Tests for `cli`**: `core`, `web` and `mcp` have tests.
@@ -46,6 +47,37 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - The original file is backed up once as `*.dx-backup`.
   - **`aiToolsSeen` remembers tools already offered**, so a tool the user disconnected by hand isn't reconnected. `autoConnectAi: false` (set by `dx setup --undo`) turns it all off.
   - **Tests pass an `AiEnv`** (home, app-data folder, fake `claude`) and never touch the real machine. Test configs that start a background dashboard set `autoConnectAi: false` for the same reason.
+
+### Stacks (`core/src/tools/stacks.ts`, `web/src/dev.ts`)
+
+- **Found, not configured.** `detectStack()` tries, in order:
+  1. `.devrc.json` "stack";
+  2. a Procfile;
+  3. a monorepo runner in the root `dev` script;
+  4. `dev:*` scripts;
+  5. workspaces with `dev` scripts.
+
+  Infrastructure services from compose (image matches postgres/redis/…, no `build:`) are added in front of any of these. A project with only one thing to run has no stack and runs as before.
+- **Runners are kept, not replaced.** When the root `dev` runs turbo, nx, concurrently or similar, dx runs that one command as the project intends and splits its output by line prefix (`web:dev:`, `[api]`) into services, each with its own error tracker.
+- **Order comes from roles**, guessed from the name or command: data, then backend, then other, then frontend. Each tier waits for the one before to be *ready*:
+  - its port opens;
+  - or, for something that never prints a URL, it's still running and its output has gone quiet (5s up, 2.5s quiet).
+- **A URL another dx-run server owns isn't taken as this server's address.** A front end that prints "API at http://localhost:4000" would otherwise be mistaken for the API.
+- **`DX_<SERVICE>_URL` is the direct `localhost:port` address**, because server code on some Linux systems can't resolve `*.localhost`. `DX_<SERVICE>_PUBLIC_URL` is the `.localhost` one.
+- **Docker services** run `docker compose up -d <svc>`, are ready when their published port opens, and are stopped with `docker compose stop` when the stack stops.
+- **Line numbers are global across all processes**, so a stack's services' output merges in order.
+
+### Local domains (`web/src/proxy.ts`)
+
+- **A small reverse proxy runs inside the dashboard process**, on port 80, falling back to 1355 (`localDomainsPort` overrides; tests use 0). It listens on 127.0.0.1, and on ::1 too when it can.
+- **Routing**: by Host:
+  - `<project>.localhost` is a single app, or the stack's main (first front end) service;
+  - `<service>.<project>.localhost` is each stack service;
+  - `dx.localhost` is the dashboard, with Origin rewritten so its own page passes the Origin check.
+
+  Anything else gets a 404 page.
+- **Host is rewritten to `localhost:<port>`** going in (dev servers that check Host accept it) and `Location` back going out; WebSocket upgrades are piped.
+- **`check_url` maps `*.localhost` to the target directly** instead of going through the proxy, because Node can't always resolve those names.
 
 ### AI agents running apps (MCP + dashboard)
 

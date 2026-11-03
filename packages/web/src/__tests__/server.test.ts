@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "dx-web-home-"));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "dx-web-projects-"));
 process.env.DX_HOME = home;
-fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ projectsRoots: [root], editor: "code" }));
+fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ projectsRoots: [root], editor: "code", localDomainsPort: 0 }));
 
 // A tiny project whose dev server prints its URL like Vite does, then serves on it.
 const app = path.join(root, "tiny-app");

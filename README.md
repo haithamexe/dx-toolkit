@@ -83,11 +83,50 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 |---|---|
 | ![The Summary page: 11 commits in 3 projects, 4 journal entries, and the week's journal and commits.](docs/images/summary.png) | ![The Cleanup page: 168 MB of node_modules and build folders in three idle projects, selected for deletion.](docs/images/cleanup.png) |
 
-- **It runs on your computer only** (`http://127.0.0.1:4646`). Every action needs a secret the page gets when it loads, so other websites can't use it.
+- **It runs on your computer only**, at `http://dx.localhost` (or `http://127.0.0.1:4646`). Every action needs a secret the page gets when it loads, so other websites can't use it.
 - **It's started for you when needed.** When an AI tool asks dx to run a dev server, dx starts the dashboard in the background; `dx ui` then just opens it. A background dashboard stops itself after 30 minutes with no dev servers running and nobody using it. `dx ui --stop` stops it now.
 - **Dev servers you start from the dashboard stop when the dashboard stops**, like a dev server stops when you close its terminal. For one that keeps running, use **More → Run in a terminal window**.
 - Light and dark follow your system, or pick one at the bottom of the sidebar. It works on a phone-sized window too.
 - `dx ui --port 5000` uses another port; `dx ui --no-open` doesn't open the browser. From the project folder, `npm run ui` does the same as `dx ui`.
+
+---
+
+## Stacks and local domains
+
+**A stack is everything an app needs running**: its front end, API, worker and database. dx finds it by itself, starts every part in order, and serves each one at a readable address:
+
+```bash
+dx up shop
+```
+```
+  postgres  ready    http://localhost:5432
+  api       ready    http://api.shop.localhost
+  web       ready    http://web.shop.localhost
+✓ shop is up at http://shop.localhost
+```
+
+**How dx finds a stack**, with nothing to configure:
+
+| The project has | dx runs |
+|---|---|
+| `Procfile.dev` or `Procfile` | one service per line, with `PORT` set like foreman does |
+| a root `dev` script that runs turbo, nx, concurrently, npm-run-all or lerna | that one command, as the project intends; its output is split back into services by the prefixes those tools print |
+| root scripts `dev:web`, `dev:api`, … | each one as a service |
+| npm, yarn or pnpm workspaces whose packages have a `dev` script | each package, in its own folder |
+| databases in `docker-compose.yml` (postgres, mysql, mongo, redis, …) | `docker compose up -d` for them, first; services built from your own code are left to run natively |
+| a `stack` in `.devrc.json` | exactly that: see below |
+
+- **Start order**: databases first, then back ends (`api`, `server`, `worker`, …), then front ends, each group only once the one before is ready. A service whose dependency failed isn't started, and the dashboard says so.
+- **Addresses passed along**: each service gets the others' addresses as environment variables: `DX_API_URL` (direct, for server code) and `DX_API_PUBLIC_URL` (the `.localhost` one, for the browser).
+- **One place to watch**: in the dashboard a stack is one card, with a row per service (status, address, errors) and their output combined, labelled by service, with a filter. In the terminal, `dx go shop` follows it the same way, and Ctrl+C stops it all.
+- **Two repositories**, such as `shop-web` and `shop-api`, can't be guessed safely. Ask your AI tool to "run shop-web together with shop-api": it uses the `set_stack` tool to write the stack for you. Or write it yourself (below).
+
+**Local domains**: every running app is also at `http://<project>.localhost`, and each stack service at `http://<service>.<project>.localhost`, so you don't need to remember port numbers, and ports clashing stops mattering.
+- **No setup**: browsers send every `*.localhost` name to your own computer. There's no hosts file to edit.
+- **Live reload keeps working**: WebSocket connections pass through. Redirects to `localhost:<port>` are rewritten to the `.localhost` address.
+- **Port 80, or a fallback**: dx serves these on port 80 when it can. When something else has port 80 (or on Linux, where it needs one system setting), it uses port 1355, and the addresses become `shop.localhost:1355`. `dx doctor` says which one and how to get 80; your AI tool can apply that fix for you.
+- **Safety**: it listens on your computer only, and forwards only to dev servers dx is running. Any other name gets a "not a dx address" page.
+- **Off**: set `"localDomains": false` in `~/.dx/config.json` to turn it off.
 
 ---
 
@@ -97,10 +136,11 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 |---|---|
 | `dx ui` | The dashboard: everything below, with buttons, in your browser |
 | `dx ui --background` / `dx ui --stop` | Start it without a terminal / stop it and the dev servers it runs |
+| `dx up shop` / `dx down shop` | Start a project's whole stack in the background, and print its addresses / stop it |
 | `dx logs todo-app -f` | Follow the output of a dev server running in the dashboard, one your AI agent started included |
 | `dx errors` | Errors in every running dev server, with file and line (`dx errors todo-app` for one) |
 | `dx setup` | Connect dx to your AI tools (it does this by itself; `--list` shows them, `--undo` removes dx from them) |
-| `dx go todo-app` | Open the project in your editor, start its dev server here, open the browser when it's ready |
+| `dx go todo-app` | Open the project in your editor, start its dev server here (its whole stack, if it has one), open the browser when it's ready |
 | `dx go todo-app -w` | Same, but the dev server runs in a new terminal window |
 | `dx go` | Pick from your most recently active projects |
 | `dx go .` | The project in the current folder |
@@ -234,6 +274,20 @@ Optional, in a project's folder, when the detected values aren't right:
 
 A folder containing only a `.devrc.json` also counts as a project.
 
+**A stack of your own**, for when dx can't find it by itself (two repositories, say). Each service has a command (`dev`), another project's folder (`project`, whose own dev command is used), or a docker compose service (`docker`):
+
+```json
+{
+  "stack": {
+    "web": { "dev": "npm run dev", "dependsOn": ["api"] },
+    "api": { "project": "../shop-api", "dependsOn": ["db"] },
+    "db": { "docker": "postgres" }
+  }
+}
+```
+
+`dir` runs a command in another folder, `url` says where a service listens if it doesn't print it, and `role` (`data`, `backend`, `frontend`) sets the order when there's no `dependsOn`.
+
 ### Settings: `~/.dx/config.json`
 
 Created on first run, with the code folders and editor dx found:
@@ -249,6 +303,7 @@ Created on first run, with the code folders and editor dx found:
 }
 ```
 
+- **`localDomains`** / **`localDomainsPort`**: `false` turns `*.localhost` addresses off; a number picks their port instead of 80 (or 1355).
 - **`aiToolsSeen`**: the AI tools dx has connected itself to once. A tool you disconnect stays disconnected. Set `"autoConnectAi": false` to stop dx connecting itself to new ones (`dx setup --undo` does both).
 
 A folder counts as a project when it has a `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, a `.sln`/`.csproj`, a `.git` folder or a `.devrc.json`.
@@ -295,7 +350,10 @@ Ask your agent to work on a project and check its own work, for example *"Start 
 | `dev_errors` | Current errors across running servers: TypeScript, Vite, esbuild, webpack and Next.js, Node stack traces, Python tracebacks, Go panics, with file and line. An error disappears once the server rebuilds cleanly |
 | `dev_logs` | The server's output, only what's new since it last looked |
 | `dev_servers`, `stop_dev_server`, `restart_dev_server` | What's running, and stopping or restarting it |
+| `set_stack` | Defines a stack dx can't find by itself, such as two repositories, by writing it to `.devrc.json` |
 | `dx_setup_check` | dx's health checks, each problem with the command that fixes it, so the agent can fix your setup for you |
+
+These work on stacks too: `start_dev_server` starts every service in order and reports each with its address, errors are labelled with their service, and `check_url` accepts `.localhost` addresses such as `http://api.shop.localhost/health`.
 
 The servers run in the dx dashboard, not inside the AI tool, so they keep running after the chat ends, and you can watch them, with a **Started by AI** label and their errors, in the Projects page or with `dx logs <project> -f`.
 
@@ -350,7 +408,9 @@ Call `recordRun(tool, ok, detail)` from anything that changes something, so it s
 
 `npm test` builds everything and runs the tests in `packages/core`, `packages/web` and `packages/mcp`:
 - **core**: the tools, including error detection on real output from each tool it knows and connecting to AI tools on a pretend computer.
-- **web**: the dashboard's server, meaning its security checks, and a real dev server started, streamed, checked for errors and stopped through it.
+- **web**:
+  - the dashboard's server: its security checks, and a real dev server started, streamed, checked for errors and stopped through it;
+  - a real two-service stack: started in order, reached through `shop.localhost` (WebSockets and redirects included), then stopped.
 - **mcp**: a real MCP client that starts an app, finds an error through a request and sees it cleared, as an agent would. On GitHub, [.github/workflows/ci.yml](.github/workflows/ci.yml) runs them on every push to `main` and every pull request, on Windows, macOS and Linux with Node 22 and 24, and tries the `dx` command itself.
 
 ## Working on dx with Claude Code
@@ -360,7 +420,7 @@ Call `recordRun(tool, ok, detail)` from anything that changes something, so it s
 ## Next on the list
 
 - **Raycast**: install and check the extension, and add commands for the summary and cleanup.
-- **Stacks and local domains**: start a front end, API and worker together with `dx up`, at addresses like `shop.localhost` instead of port numbers.
+- **Local HTTPS** (`https://shop.localhost`): it needs a certificate your system trusts, which means an admin prompt once, so it'll be an opt-in step your AI tool can do for you.
 - **Browser console errors** for agents: dx sees the server's output; pairing it with a browser MCP server covers what happens in the page.
 - **Tests for the CLI**: `core`, the dashboard and the MCP server are tested today.
 - **`dx deps --fix`**, and yarn and bun projects in `dx deps`.

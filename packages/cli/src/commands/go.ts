@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { ensureDashboard } from "@dx/web/link";
 import {
+  detectStack,
   findProjects,
   getProjectPort,
   killPort,
@@ -18,6 +20,7 @@ import {
 } from "@dx/core";
 import type { Command } from "../command.js";
 import { projectLabel } from "./projects.js";
+import { follow } from "./stack.js";
 import { c, confirm, info, ok, pick, tildify, UsageError, warn } from "../ui.js";
 
 export const goCommand: Command = {
@@ -75,6 +78,19 @@ export const goCommand: Command = {
     if (!values.dev) {
       recordRun("go", true, project.name, "cli", { project: project.name });
       return;
+    }
+
+    const stack = detectStack(project);
+    if (stack) {
+      if (values.window) {
+        await openTerminal(project.dir, "dx go . --no-editor", project.name);
+        ok(`Started the stack in a new terminal window`);
+        return;
+      }
+      info(`Starting ${stack.services.map((s) => c.cyan(s.name)).join(", ")} in order  ${c.dim("(Ctrl+C stops them all)")}\n`);
+      const client = await ensureDashboard();
+      await client.post("/api/dev/start", { dir: project.dir, by: "terminal" });
+      return follow(client, project, values.browser);
     }
     if (!project.devCommand) {
       info(`No dev command found. Add one in ${tildify(path.join(project.dir, ".devrc.json"))}: { "dev": "..." }`);

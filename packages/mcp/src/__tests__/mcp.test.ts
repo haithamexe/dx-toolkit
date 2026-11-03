@@ -13,7 +13,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "dx-mcp-home-"));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "dx-mcp-projects-"));
 process.env.DX_HOME = home;
-fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ projectsRoots: [root], editor: "code", autoConnectAi: false }));
+fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ projectsRoots: [root], editor: "code", autoConnectAi: false, localDomainsPort: 0 }));
 
 const app = path.join(root, "tiny-shop");
 fs.mkdirSync(app);
@@ -99,6 +99,40 @@ test("an agent runs the app, finds an error through a request, and sees it clear
 
   const stopped = await call("stop_dev_server", { project: "tiny-shop" });
   assert.match(stopped.text, /Stopping tiny-shop/);
+});
+
+test("an agent joins two repositories into a stack with set_stack, then runs it", async () => {
+  for (const [name, code] of [
+    ["pair-api", `require("http").createServer((q, r) => r.end("api")).listen(0, "127.0.0.1", function () { console.log("API on http://localhost:" + this.address().port); });`],
+    ["pair-web", `require("http").createServer((q, r) => r.end("web")).listen(0, "127.0.0.1", function () { console.log("  Local: http://localhost:" + this.address().port + "/"); });`],
+  ]) {
+    fs.mkdirSync(path.join(root, name));
+    fs.writeFileSync(path.join(root, name, "package.json"), JSON.stringify({ name, scripts: { dev: "node server.cjs" } }));
+    fs.writeFileSync(path.join(root, name, "server.cjs"), code);
+  }
+  const set = await call("set_stack", {
+    project: "pair-web",
+    services: [
+      { name: "web", command: "npm run dev", depends_on: ["api"] },
+      { name: "api", project: "../pair-api" },
+    ],
+  });
+  assert.equal(set.isError, false, set.text);
+  assert.match(set.text, /now starts as: api → web/);
+
+  const started = await call("start_dev_server", { project: "pair-web", timeout_seconds: 60 });
+  assert.equal(started.isError, false, started.text);
+  assert.match(started.text, /pair-web: ready .*a stack of 2 services, found from \.devrc\.json/);
+  assert.match(started.text, /- api \(backend\): ready at http:\/\/localhost:\d+ \(also http:\/\/api\.pair-web\.localhost:\d+\)/);
+  assert.match(started.text, /- web \(frontend\): ready/);
+
+  const page = await call("check_url", { url: "http://api.pair-web.localhost/" });
+  assert.equal(page.isError, false, page.text);
+  assert.match(page.text, /Body starts:\napi/);
+
+  await call("stop_dev_server", { project: "pair-web" });
+  const removed = await call("set_stack", { project: "pair-web", services: [] });
+  assert.match(removed.text, /Removed the stack/);
 });
 
 test("clear answers for unknown projects and outside addresses", async () => {

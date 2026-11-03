@@ -1,26 +1,48 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { ErrorTracker, getProjectPort, isPortOpen, killProcess, recordRun, type DevError, type Project } from "@dx/core";
+import {
+  detectStack,
+  ErrorTracker,
+  getProjectPort,
+  isPortOpen,
+  killProcess,
+  mainService,
+  recordRun,
+  serviceName,
+  splitRunnerLine,
+  startOrder,
+  type DevError,
+  type Project,
+  type Stack,
+  type StackService,
+} from "@dx/core";
 
 /**
- * Dev servers started from the dashboard. Each runs as a child of the dashboard's server, its
- * output is kept (the last lines) so the page can show it live, and it can be stopped from the page.
- * They stop when the dashboard stops, like a dev server stops when you close its terminal.
+ * Dev servers run by the dashboard. A project runs as one process, or, when it has a stack, as
+ * several services started in order (databases, then back ends, then front ends). Output is kept
+ * (the last lines) so the page and AI agents can read it, errors are picked out of it, and
+ * everything stops when the dashboard stops, like a dev server stops when you close its terminal.
  */
 export interface DevLine {
+  /** Numbered across every server, so lines from a stack's services merge in order. */
   n: number;
   stream: "out" | "err" | "dx";
   text: string;
+  /** The stack service the line came from. */
+  service?: string;
 }
 
 export type StartedBy = "dashboard" | "ai" | "terminal";
+export type DevStatus = "starting" | "ready" | "stopped" | "failed";
 
 export interface DevServerInfo {
   project: string;
   dir: string;
   command: string;
   url?: string;
+  /** Its address through dx's local domains, e.g. http://shop.localhost. */
+  localUrl?: string;
   pid?: number;
-  status: "starting" | "ready" | "stopped" | "failed";
+  status: DevStatus;
   /** Who started it: the dashboard's Run button, an AI agent through MCP, or the terminal. */
   startedBy: StartedBy;
   /** Errors in its output that haven't been resolved by a clean rebuild. */
@@ -30,131 +52,509 @@ export interface DevServerInfo {
   exitCode?: number | null;
   /** Number of the last line, so the page can ask only for what's new. */
   lastLine: number;
+  /** For a stack's service: its name and role. */
+  service?: string;
+  role?: string;
+  /** For a stack: its services, how it was found, and anything worth knowing (a service that wasn't started). */
+  services?: DevServerInfo[];
+  stackSource?: string;
+  note?: string;
 }
 
-interface DevServer extends DevServerInfo {
+interface Proc {
+  key: string;
+  project: string;
+  dir: string;
+  command: string;
+  url?: string;
+  port?: number;
+  status: DevStatus;
+  startedBy: StartedBy;
+  startedAt: string;
+  stoppedAt?: string;
+  exitCode?: number | null;
+  pid?: number;
+  lastLine: number;
   child?: ChildProcess;
   lines: DevLine[];
-  port?: number;
   stopping?: boolean;
-  errors: ErrorTracker;
+  /** Errors per service ("" for the process itself). */
+  trackers: Map<string, ErrorTracker>;
   flushTimer?: NodeJS.Timeout;
   lastOutputAt: number;
+  service?: string;
+  role?: string;
+  /** The stack this process belongs to. */
+  stackKey?: string;
+  /** A runner (turbo, concurrently…) whose output names the service on each line. */
+  split?: StackService[];
+  /** URLs the runner's services printed. */
+  subUrls: Map<string, string>;
+  /** docker compose up -d: done when it exits, ready when the published port opens. */
+  docker?: { compose: string; hostPort?: number };
+}
+
+interface StackRun {
+  key: string;
+  dir: string;
+  name: string;
+  stack: Stack;
+  startedBy: StartedBy;
+  phase: "starting" | "running" | "stopping" | "stopped";
+  startedAt: string;
+  stoppedAt?: string;
+  note?: string;
 }
 
 const MAX_LINES = 2000;
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
-const servers = new Map<string, DevServer>();
+const URL_IN_TEXT = /(https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):(\d{2,5}))/;
+const procs = new Map<string, Proc>();
+const stacks = new Map<string, StackRun>();
+let lineCounter = 0;
+let localPort: number | undefined;
+
+// ------------------------------------------------------------ local domains
+
+/** Tells the dev servers the local domains proxy's port, or undefined when it isn't running. */
+export function setLocalDomainsPort(port: number | undefined): void {
+  localPort = port;
+}
+
+function localUrlOf(host: string): string | undefined {
+  if (localPort === undefined) return undefined;
+  return `http://${host}${localPort === 80 ? "" : `:${localPort}`}`;
+}
+
+/** Every *.localhost name dx serves, and the address it points at. */
+export function localRoutes(): Map<string, { url: string; dir: string; service?: string }> {
+  const routes = new Map<string, { url: string; dir: string; service?: string }>();
+  for (const p of procs.values()) {
+    if (p.stackKey || !p.child || !p.url) continue;
+    routes.set(`${serviceName(p.project)}.localhost`, { url: p.url, dir: p.dir });
+  }
+  for (const run of stacks.values()) {
+    if (run.phase === "stopped") continue;
+    const base = serviceName(run.name);
+    const main = mainService(run.stack)?.name;
+    for (const svc of serviceInfos(run)) {
+      if (!svc.url || svc.status === "stopped" || svc.status === "failed") continue;
+      routes.set(`${svc.service}.${base}.localhost`, { url: svc.url, dir: run.dir, service: svc.service });
+      if (svc.service === main) routes.set(`${base}.localhost`, { url: svc.url, dir: run.dir, service: svc.service });
+    }
+  }
+  return routes;
+}
+
+// ------------------------------------------------------------ reading
 
 export function listDevServers(): DevServerInfo[] {
-  return [...servers.values()].map(info).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  const singles = [...procs.values()].filter((p) => !p.stackKey).map(info);
+  const stackInfos = [...stacks.values()].map(stackInfo);
+  return [...singles, ...stackInfos].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 }
 
 export function devServer(dir: string): DevServerInfo | undefined {
-  const s = servers.get(key(dir));
-  return s && info(s);
+  const run = stacks.get(key(dir));
+  if (run) return stackInfo(run);
+  const p = procs.get(key(dir));
+  return p && info(p);
 }
 
-export function devLogs(dir: string, after = 0): { lines: DevLine[]; server?: DevServerInfo } {
-  const s = servers.get(key(dir));
-  if (!s) return { lines: [] };
-  return { lines: s.lines.filter((l) => l.n > after), server: info(s) };
+/** The process (or stack service) listening on a port, for matching a request to its server. */
+export function serverForPort(port: number): { dir: string; service?: string; project: string } | undefined {
+  for (const p of procs.values()) {
+    if (!p.child && !p.docker) continue;
+    const urls = p.split ? [...p.subUrls.entries()] : p.url ? [[p.service ?? "", p.url] as [string, string]] : [];
+    for (const [service, url] of urls) {
+      if (portOf(url) !== port) continue;
+      const run = p.stackKey ? stacks.get(p.stackKey) : undefined;
+      return { dir: run?.dir ?? p.dir, service: service || undefined, project: run?.name ?? p.project };
+    }
+  }
+  return undefined;
 }
 
+export function devLogs(dir: string, after = 0, service?: string): { lines: DevLine[]; server?: DevServerInfo } {
+  const list = procsFor(dir);
+  if (!list.length) return { lines: [] };
+  const lines = list
+    .flatMap((p) => p.lines.filter((l) => l.n > after && (!service || (l.service ?? p.service) === service)).map((l) => (p.service && !l.service ? { ...l, service: p.service } : l)))
+    .sort((a, b) => a.n - b.n);
+  return { lines, server: devServer(dir) };
+}
+
+/** Errors found in one server's output (a stack's services included), or in every server's when `dir` is empty. */
+export function devErrors(dir?: string, options: { all?: boolean; after?: number; service?: string } = {}): { project: string; dir: string; errors: DevError[] }[] {
+  const tops = dir ? [devServer(dir)].filter((x): x is DevServerInfo => !!x) : listDevServers();
+  return tops.map((top) => ({
+    project: top.project,
+    dir: top.dir,
+    errors: errorsOf(procsFor(top.dir), options),
+  }));
+}
+
+function errorsOf(list: Proc[], options: { all?: boolean; after?: number; service?: string }): DevError[] {
+  const out: DevError[] = [];
+  for (const p of list) {
+    for (const [svc, tracker] of p.trackers) {
+      tracker.flush();
+      const service = svc || p.service;
+      if (options.service && service !== options.service) continue;
+      for (const e of tracker.errors(options)) out.push(service ? { ...e, service } : e);
+    }
+  }
+  return out.sort((a, b) => b.lastLine - a.lastLine);
+}
+
+// ------------------------------------------------------------ starting
+
+/** Starts a project: its stack when it has one, else its dev command. */
 export function startDevServer(project: Project, startedBy: StartedBy = "dashboard"): DevServerInfo {
+  const stack = detectStack(project);
+  if (stack) return startStack(project, stack, startedBy);
   if (!project.devCommand) throw new Error(`${project.name} has no dev command. Add one in .devrc.json: { "dev": "..." }`);
-  const existing = servers.get(key(project.dir));
+  const existing = procs.get(key(project.dir));
   if (existing && (existing.status === "starting" || existing.status === "ready")) return info(existing);
-
-  const s: DevServer = {
+  const p = spawnProc({
+    key: key(project.dir),
     project: project.name,
     dir: project.dir,
     command: project.devCommand,
     url: project.url,
     port: getProjectPort(project),
-    status: "starting",
     startedBy,
-    errorCount: 0,
+  });
+  return info(p);
+}
+
+function startStack(project: Project, stack: Stack, startedBy: StartedBy): DevServerInfo {
+  const k = key(project.dir);
+  const existing = stacks.get(k);
+  if (existing && (existing.phase === "starting" || existing.phase === "running")) return stackInfo(existing);
+  for (const p of [...procs.values()]) if (p.stackKey === k && !p.child) procs.delete(p.key);
+  const run: StackRun = { key: k, dir: project.dir, name: project.name, stack, startedBy, phase: "starting", startedAt: new Date().toISOString() };
+  stacks.set(k, run);
+  void runStack(run).catch((err: Error) => {
+    run.note = `Couldn't start the stack: ${err.message}`;
+    run.phase = "running";
+  });
+  return stackInfo(run);
+}
+
+async function runStack(run: StackRun): Promise<void> {
+  const { stack } = run;
+  const crashed = new Set<string>();
+  const skipped: string[] = [];
+  const docker = stack.services.filter((s) => s.kind === "docker");
+  const waves: (StackService[] | "runner")[] = stack.runner ? [...(docker.length ? [docker] : []), "runner"] : startOrder(stack);
+  const unavailable = (d: string) => crashed.has(d) || skipped.some((s) => s.startsWith(`${d} `));
+
+  for (const wave of waves) {
+    if (run.phase !== "starting") return;
+    const started: Proc[] = [];
+    for (const svc of wave === "runner" ? [] : wave) {
+      const blockedBy = svc.dependsOn.filter(unavailable);
+      if (blockedBy.length) {
+        skipped.push(`${svc.name} (needs ${blockedBy.join(", ")})`);
+        continue;
+      }
+      started.push(startService(run, svc));
+    }
+    if (wave === "runner" && stack.runner) {
+      // Every app service through the project's own runner, after the databases.
+      started.push(
+        spawnProc({
+          key: `${run.key}#*`,
+          project: run.name,
+          dir: stack.dir,
+          command: stack.runner.command,
+          startedBy: run.startedBy,
+          stackKey: run.key,
+          split: stack.services.filter((s) => s.kind === "process"),
+          env: urlEnv(run),
+        }),
+      );
+    }
+    await Promise.all(started.map((p) => waitSettled(p, 120_000)));
+    for (const p of started) if (p.status === "failed" && p.service) crashed.add(p.service);
+  }
+  if (run.phase !== "starting") return;
+  run.phase = "running";
+  const notes: string[] = [];
+  if (crashed.size) notes.push(`Failed to start: ${[...crashed].join(", ")}.`);
+  if (skipped.length) notes.push(`Not started: ${skipped.join("; ")}.`);
+  run.note = notes.length ? notes.join(" ") : undefined;
+  recordRun("go", crashed.size === 0, `${run.name} stack started (${stack.services.length} services)`, "web", { project: run.name });
+}
+
+function startService(run: StackRun, svc: StackService): Proc {
+  const env = { ...(svc.env ?? {}), ...urlEnv(run) };
+  delete env.DX_LABEL;
+  return spawnProc({
+    key: `${run.key}#${svc.name}`,
+    project: run.name,
+    dir: svc.dir,
+    command: svc.command,
+    url: svc.kind === "docker" ? undefined : svc.url,
+    port: svc.kind === "docker" ? undefined : portOf(svc.url),
+    startedBy: run.startedBy,
+    stackKey: run.key,
+    service: svc.name,
+    role: svc.role,
+    env,
+    docker: svc.kind === "docker" ? { compose: svc.composeService ?? svc.name, hostPort: svc.hostPort } : undefined,
+  });
+}
+
+/**
+ * Where the stack's other services are: DX_API_URL is the direct address (for server code, since
+ * not every system resolves *.localhost), DX_API_PUBLIC_URL the local domain (for the browser).
+ */
+function urlEnv(run: StackRun): Record<string, string> {
+  const env: Record<string, string> = {};
+  const base = serviceName(run.name);
+  for (const svc of serviceInfos(run)) {
+    if (!svc.url || svc.status !== "ready" || !svc.service) continue;
+    const name = svc.service.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+    env[`DX_${name}_URL`] = svc.url;
+    const local = svc.kind === "process" ? localUrlOf(`${svc.service}.${base}.localhost`) : undefined;
+    if (local) env[`DX_${name}_PUBLIC_URL`] = local;
+  }
+  return env;
+}
+
+interface Spec {
+  key: string;
+  project: string;
+  dir: string;
+  command: string;
+  url?: string;
+  port?: number;
+  startedBy: StartedBy;
+  stackKey?: string;
+  service?: string;
+  role?: string;
+  env?: Record<string, string>;
+  split?: StackService[];
+  docker?: Proc["docker"];
+}
+
+function spawnProc(spec: Spec): Proc {
+  const p: Proc = {
+    ...spec,
+    status: "starting",
     startedAt: new Date().toISOString(),
     lastLine: 0,
     lines: [],
-    errors: new ErrorTracker(),
+    trackers: new Map([["", new ErrorTracker()]]),
     lastOutputAt: Date.now(),
+    subUrls: new Map(),
   };
-  servers.set(key(project.dir), s);
-  push(s, "dx", `$ ${project.devCommand}`);
+  procs.set(spec.key, p);
+  push(p, "dx", `$ ${spec.command}`);
 
-  const child = spawn(project.devCommand, {
-    cwd: project.dir,
+  const child = spawn(spec.command, {
+    cwd: spec.dir,
     shell: true,
     windowsHide: true,
     // Its own process group on macOS/Linux, so Stop can end the whole tree (npm → node → vite).
     detached: process.platform !== "win32",
-    env: { ...process.env, FORCE_COLOR: "0", BROWSER: "none" },
+    env: { ...process.env, FORCE_COLOR: "0", BROWSER: "none", ...spec.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  s.child = child;
-  s.pid = child.pid;
-  child.stdout?.on("data", (d: Buffer) => pushChunk(s, "out", d));
-  child.stderr?.on("data", (d: Buffer) => pushChunk(s, "err", d));
+  p.child = child;
+  p.pid = child.pid;
+  child.stdout?.on("data", (d: Buffer) => pushChunk(p, "out", d));
+  child.stderr?.on("data", (d: Buffer) => pushChunk(p, "err", d));
   child.once("error", (err) => {
-    s.status = "failed";
-    push(s, "dx", `Couldn't start: ${err.message}`);
+    p.status = "failed";
+    push(p, "dx", `Couldn't start: ${err.message}`);
   });
   child.once("exit", (code, signal) => {
-    s.exitCode = code;
-    s.stoppedAt = new Date().toISOString();
-    const ms = Date.parse(s.stoppedAt) - Date.parse(s.startedAt);
-    if (s.stopping) {
-      s.status = "stopped";
-      push(s, "dx", "Stopped.");
-      recordRun("go", true, `${s.project} dev stopped from the dashboard`, "web", { project: s.project, ms });
-    } else {
-      s.status = code === 0 ? "stopped" : "failed";
-      push(s, "dx", `Exited with ${code ?? signal}.`);
-      recordRun("go", code === 0, `${s.project} dev exited with ${code ?? signal}`, "web", { project: s.project, ms });
-    }
-    s.child = undefined;
-  });
-  void (async () => {
-    // If something else already holds the usual port, the dev server will pick another one and say so.
-    if (s.port !== undefined && (await isPortOpen(s.port))) {
-      push(s, "dx", `Port ${s.port} is already in use by another program; waiting for the dev server to say where it runs.`);
-      s.port = undefined;
-      s.url = undefined;
+    p.exitCode = code;
+    p.child = undefined;
+    const ms = Date.now() - Date.parse(p.startedAt);
+    if (p.docker && !p.stopping) {
+      // `docker compose up -d` finishes once the container runs; the service is ready when its port opens.
+      if (code !== 0) {
+        p.status = "failed";
+        push(p, "dx", `docker compose exited with ${code ?? signal}. Is Docker running?`);
+        return;
+      }
+      void (async () => {
+        if (p.docker?.hostPort) {
+          const deadline = Date.now() + 60_000;
+          while (Date.now() < deadline && !(await isPortOpen(p.docker.hostPort))) await new Promise((r) => setTimeout(r, 500));
+        }
+        if (p.status === "starting") {
+          p.status = "ready";
+          p.url = p.docker?.hostPort ? `http://localhost:${p.docker.hostPort}` : undefined;
+          push(p, "dx", p.docker?.hostPort ? `Container ready on port ${p.docker.hostPort}.` : "Container started.");
+        }
+      })();
       return;
     }
-    await watchReady(s);
-  })();
-  return info(s);
+    p.stoppedAt = new Date().toISOString();
+    const label = p.service ? `${p.project}/${p.service}` : p.project;
+    if (p.stopping) {
+      p.status = "stopped";
+      push(p, "dx", "Stopped.");
+      if (!p.stackKey) recordRun("go", true, `${label} dev stopped from the dashboard`, "web", { project: p.project, ms });
+    } else {
+      p.status = code === 0 ? "stopped" : "failed";
+      push(p, "dx", `Exited with ${code ?? signal}.`);
+      recordRun("go", code === 0, `${label} dev exited with ${code ?? signal}`, "web", { project: p.project, ms });
+    }
+  });
+  if (!p.docker) {
+    void (async () => {
+      // If something else already holds the usual port, the dev server will pick another one and say so.
+      if (p.port !== undefined && (await isPortOpen(p.port))) {
+        push(p, "dx", `Port ${p.port} is already in use by another program; waiting for the dev server to say where it runs.`);
+        p.port = undefined;
+        p.url = undefined;
+      }
+      await watchReady(p);
+    })();
+  }
+  return p;
 }
+
+/**
+ * Marks a process ready once its port opens. One that never says where it listens (a worker, a
+ * watcher) counts as ready when it's still running and its output has gone quiet.
+ */
+async function watchReady(p: Proc): Promise<void> {
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline && p.status === "starting" && p.child) {
+    if (p.port !== undefined && (await isPortOpen(p.port))) {
+      if (p.status === "starting") {
+        p.status = "ready";
+        push(p, "dx", `Ready at ${p.url}`);
+        if (!p.stackKey) recordRun("go", true, `${p.project} started from the dashboard`, "web", { project: p.project });
+      }
+      return;
+    }
+    const age = Date.now() - Date.parse(p.startedAt);
+    const quiet = Date.now() - p.lastOutputAt;
+    if (p.port === undefined && age > 5000 && quiet > 2500) {
+      p.status = "ready";
+      push(p, "dx", p.split ? "Running." : "Running (it didn't say where it listens).");
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+/** Waits until a process is ready, failed or gone. */
+async function waitSettled(p: Proc, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (p.status === "starting" && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+}
+
+// ------------------------------------------------------------ stopping
 
 export async function stopDevServer(dir: string): Promise<DevServerInfo | undefined> {
-  const s = servers.get(key(dir));
-  if (!s?.child?.pid) return s && info(s);
-  s.stopping = true;
-  push(s, "dx", "Stopping…");
-  if (process.platform === "win32") {
-    await killProcess(s.child.pid);
-  } else {
-    try {
-      process.kill(-s.child.pid, "SIGTERM");
-    } catch {
-      s.child.kill("SIGTERM");
-    }
+  const run = stacks.get(key(dir));
+  if (run) {
+    await stopStack(run);
+    return stackInfo(run);
   }
-  return info(s);
+  const p = procs.get(key(dir));
+  if (p) await stopProc(p);
+  return p && info(p);
 }
 
-/** Errors found in one server's output, or in every server's when `dir` is empty. */
-export function devErrors(dir?: string, options: { all?: boolean; after?: number } = {}): { project: string; dir: string; errors: DevError[] }[] {
-  const list = dir ? [servers.get(key(dir))].filter((s): s is DevServer => !!s) : [...servers.values()];
-  return list.map((s) => {
-    s.errors.flush();
-    return { project: s.project, dir: s.dir, errors: s.errors.errors(options) };
-  });
+async function stopProc(p: Proc): Promise<void> {
+  if (!p.child?.pid) return;
+  p.stopping = true;
+  push(p, "dx", "Stopping…");
+  if (process.platform === "win32") {
+    await killProcess(p.child.pid);
+  } else {
+    try {
+      process.kill(-p.child.pid, "SIGTERM");
+    } catch {
+      p.child.kill("SIGTERM");
+    }
+  }
 }
+
+async function stopStack(run: StackRun): Promise<void> {
+  if (run.phase === "stopped") return;
+  run.phase = "stopping";
+  const list = procsFor(run.dir);
+  await Promise.all(list.filter((p) => !p.docker).map(stopProc));
+  // Containers keep running until asked: stop the ones this stack started.
+  const docker = list.filter((p) => p.docker && p.status !== "failed");
+  if (docker.length) {
+    for (const p of docker) push(p, "dx", "Stopping the container…");
+    const code = await new Promise<number>((resolve) => {
+      const child = spawn(`docker compose stop ${docker.map((p) => p.docker!.compose).join(" ")}`, { cwd: run.stack.composeFile ? dirOf(run.stack.composeFile) : run.dir, shell: true, windowsHide: true, stdio: "ignore" });
+      child.once("error", () => resolve(1));
+      child.once("exit", (c) => resolve(c ?? 1));
+    });
+    for (const p of docker) {
+      p.status = "stopped";
+      p.stoppedAt = new Date().toISOString();
+      push(p, "dx", code === 0 ? "Container stopped." : "docker compose stop failed; the container may still be running.");
+    }
+  }
+  const exited = list.filter((p) => p.child).map((p) => new Promise<void>((resolve) => p.child?.once("exit", () => resolve())));
+  await Promise.race([Promise.all(exited), new Promise((r) => setTimeout(r, 10_000))]);
+  run.phase = "stopped";
+  run.stoppedAt = new Date().toISOString();
+  recordRun("go", true, `${run.name} stack stopped`, "web", { project: run.name, ms: Date.now() - Date.parse(run.startedAt) });
+}
+
+/** Stops every dev server; called when the dashboard shuts down. */
+export async function stopAllDevServers(): Promise<void> {
+  await Promise.all([...stacks.values()].map(stopStack));
+  await Promise.all([...procs.values()].filter((p) => p.child && !p.stackKey).map(stopProc));
+}
+
+/** Stops the server (or stack), waits for it to exit, and starts it again. */
+export async function restartDevServer(project: Project, startedBy: StartedBy = "dashboard"): Promise<DevServerInfo> {
+  const k = key(project.dir);
+  const run = stacks.get(k);
+  const by = run?.startedBy ?? procs.get(k)?.startedBy ?? startedBy;
+  if (run) {
+    await stopStack(run);
+    clearDevServer(project.dir);
+  } else {
+    const p = procs.get(k);
+    if (p?.child) {
+      const exited = new Promise<void>((resolve) => p.child?.once("exit", () => resolve()));
+      await stopProc(p);
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
+    }
+    procs.delete(k);
+  }
+  return startDevServer(project, by);
+}
+
+/** Forgets a stopped server or stack, so its card and output go away. */
+export function clearDevServer(dir: string): void {
+  const k = key(dir);
+  const run = stacks.get(k);
+  if (run) {
+    if (run.phase !== "stopped") return;
+    for (const p of [...procs.values()]) if (p.stackKey === k) procs.delete(p.key);
+    stacks.delete(k);
+    return;
+  }
+  const p = procs.get(k);
+  if (p && !p.child) procs.delete(k);
+}
+
+/** True while any dev server or stack is running. */
+export function anyDevServerRunning(): boolean {
+  return [...procs.values()].some((p) => p.child) || [...stacks.values()].some((r) => r.phase !== "stopped");
+}
+
+// ------------------------------------------------------------ waiting
 
 export interface WaitResult {
   server?: DevServerInfo;
@@ -170,125 +570,199 @@ export interface WaitResult {
 }
 
 /**
- * Waits for a dev server to settle, then says what it printed. `until: "ready"` waits for it to
- * finish starting; `until: "quiet"` waits for output to begin (a rebuild after a file change),
- * then for it to stop for `quietMs`.
+ * Waits for a dev server (or a stack's services) to settle, then says what they printed.
+ * `until: "ready"` waits for starting to finish; `until: "quiet"` waits for output to begin (a
+ * rebuild after a file change), then for it to stop for `quietMs`.
  */
 export async function waitForDevServer(
   dir: string,
   options: { after?: number; until?: "ready" | "quiet"; quietMs?: number; settleMs?: number; timeoutMs?: number } = {},
 ): Promise<WaitResult> {
-  const s = servers.get(key(dir));
-  const after = options.after ?? s?.lastLine ?? 0;
   const quietMs = options.quietMs ?? 1000;
   const settleMs = options.settleMs ?? 4000;
   const deadline = Date.now() + (options.timeoutMs ?? 60_000);
   const sleep = () => new Promise((r) => setTimeout(r, 100));
+  const last = () => Math.max(0, ...procsFor(dir).map((p) => p.lastLine));
+  const after = options.after ?? last();
+  const lastOutput = () => Math.max(0, ...procsFor(dir).map((p) => p.lastOutputAt));
+  const alive = () => procsFor(dir).some((p) => p.child);
+  const run = stacks.get(key(dir));
   let timedOut = false;
-  if (s) {
+  if (procsFor(dir).length || run) {
     const begun = Date.now();
     if (options.until === "ready") {
-      while (s.status === "starting" && Date.now() < deadline) await sleep();
+      while ((run?.phase === "starting" || procsFor(dir).some((p) => p.status === "starting")) && Date.now() < deadline) await sleep();
     } else {
-      while (s.lastLine <= after && s.child && Date.now() - begun < settleMs && Date.now() < deadline) await sleep();
+      while (last() <= after && alive() && Date.now() - begun < settleMs && Date.now() < deadline) await sleep();
     }
-    while (s.child && s.lastLine > after && Date.now() - s.lastOutputAt < quietMs && Date.now() < deadline) await sleep();
+    while (alive() && last() > after && Date.now() - lastOutput() < quietMs && Date.now() < deadline) await sleep();
     timedOut = Date.now() >= deadline;
-    clearTimeout(s.flushTimer);
-    s.errors.flush();
   }
-  const lines = s ? s.lines.filter((l) => l.n > after).slice(-200) : [];
+  const list = procsFor(dir);
+  for (const p of list) clearTimeout(p.flushTimer);
+  const lines = devLogs(dir, after).lines.slice(-200);
   return {
-    server: s && info(s),
+    server: devServer(dir),
     lines,
-    newErrors: s ? s.errors.errors({ after }) : [],
-    errors: s ? s.errors.errors() : [],
+    newErrors: errorsOf(list, { after }),
+    errors: errorsOf(list, {}),
     sawOutput: lines.length > 0,
     timedOut,
   };
 }
 
-/** Stops the server, waits for it to exit, and starts it again. */
-export async function restartDevServer(project: Project, startedBy: StartedBy = "dashboard"): Promise<DevServerInfo> {
-  const s = servers.get(key(project.dir));
-  if (s?.child) {
-    const exited = new Promise<void>((resolve) => s.child?.once("exit", () => resolve()));
-    await stopDevServer(project.dir);
-    await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
-  }
-  servers.delete(key(project.dir));
-  return startDevServer(project, s?.startedBy ?? startedBy);
-}
+// ------------------------------------------------------------ output
 
-/** True while any dev server is running. */
-export function anyDevServerRunning(): boolean {
-  return [...servers.values()].some((s) => s.child);
-}
+const partial = new WeakMap<Proc, Record<string, string>>();
 
-/** Stops every dev server; called when the dashboard shuts down. */
-export async function stopAllDevServers(): Promise<void> {
-  await Promise.all([...servers.values()].filter((s) => s.child).map((s) => stopDevServer(s.dir)));
-}
-
-/** Forgets a stopped server, so its card and output go away. */
-export function clearDevServer(dir: string): void {
-  const s = servers.get(key(dir));
-  if (s && !s.child) servers.delete(key(dir));
-}
-
-async function watchReady(s: DevServer): Promise<void> {
-  if (s.port === undefined) return;
-  const deadline = Date.now() + 180_000;
-  while (Date.now() < deadline && s.status === "starting") {
-    if (await isPortOpen(s.port)) {
-      if (s.status === "starting") {
-        s.status = "ready";
-        push(s, "dx", `Ready at ${s.url}`);
-        recordRun("go", true, `${s.project} started from the dashboard`, "web", { project: s.project });
-      }
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 750));
-  }
-}
-
-const partial = new WeakMap<DevServer, Record<string, string>>();
-
-function pushChunk(s: DevServer, stream: "out" | "err", chunk: Buffer): void {
-  const carry = partial.get(s) ?? {};
+function pushChunk(p: Proc, stream: "out" | "err", chunk: Buffer): void {
+  const carry = partial.get(p) ?? {};
   const text = (carry[stream] ?? "") + chunk.toString("utf8");
   const parts = text.split(/\r?\n/);
   carry[stream] = parts.pop() ?? "";
-  partial.set(s, carry);
-  for (const line of parts) push(s, stream, line);
-  // The URL the dev server prints wins over the guess: it may have moved to another port.
-  if (s.status === "starting") {
-    const m = /(https?:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5}))/.exec(text.replace(ANSI, ""));
-    if (m && Number(m[2]) !== s.port) {
-      s.url = m[1];
-      s.port = Number(m[2]);
-      void watchReady(s);
-    }
+  partial.set(p, carry);
+  for (const line of parts) push(p, stream, line);
+}
+
+function push(p: Proc, stream: DevLine["stream"], raw: string): void {
+  let text = raw.replace(ANSI, "").replace(/\r/g, "");
+  let service: string | undefined;
+  if (p.split && stream !== "dx") {
+    const split = splitRunnerLine(text, p.split);
+    service = split.service;
+    text = split.text;
+  }
+  p.lastLine = ++lineCounter;
+  const line: DevLine = service ? { n: p.lastLine, stream, text, service } : { n: p.lastLine, stream, text };
+  p.lines.push(line);
+  if (p.lines.length > MAX_LINES) p.lines.splice(0, p.lines.length - MAX_LINES);
+  p.lastOutputAt = Date.now();
+
+  let tracker = p.trackers.get(service ?? "");
+  if (!tracker) p.trackers.set(service ?? "", (tracker = new ErrorTracker()));
+  tracker.push(line);
+  // An error's last line is only known once the output pauses.
+  clearTimeout(p.flushTimer);
+  p.flushTimer = setTimeout(() => {
+    for (const t of p.trackers.values()) t.flush();
+  }, 300);
+  p.flushTimer.unref?.();
+
+  // The URL a dev server prints wins over the guess: it may have moved to another port.
+  if (stream === "dx") return;
+  const m = URL_IN_TEXT.exec(text);
+  if (!m) return;
+  // "Connecting to the API at http://localhost:4000" names another server, not this one's address.
+  if (portInUseByOther(p, Number(m[2]))) return;
+  const url = m[1].replace("[::1]", "localhost").replace("127.0.0.1", "localhost");
+  if (p.split) {
+    if (service && !p.subUrls.has(service)) p.subUrls.set(service, url);
+    return;
+  }
+  if ((p.status === "starting" && Number(m[2]) !== p.port) || (!p.url && p.child)) {
+    p.url = url;
+    p.port = Number(m[2]);
+    void watchReady(p);
   }
 }
 
-function push(s: DevServer, stream: DevLine["stream"], raw: string): void {
-  const text = raw.replace(ANSI, "").replace(/\r/g, "");
-  s.lastLine++;
-  const line = { n: s.lastLine, stream, text };
-  s.lines.push(line);
-  if (s.lines.length > MAX_LINES) s.lines.splice(0, s.lines.length - MAX_LINES);
-  s.lastOutputAt = Date.now();
-  s.errors.push(line);
-  // An error's last line is only known once the output pauses.
-  clearTimeout(s.flushTimer);
-  s.flushTimer = setTimeout(() => s.errors.flush(), 300);
-  s.flushTimer.unref?.();
+// ------------------------------------------------------------ info
+
+function info(p: Proc): DevServerInfo {
+  const { project, dir, command, url, pid, status, startedBy, startedAt, stoppedAt, exitCode, lastLine, service, role } = p;
+  const errorCount = errorsOf([p], {}).length;
+  const out: DevServerInfo = { project, dir, command, url, pid, status, startedBy, errorCount, startedAt, stoppedAt, exitCode, lastLine, service, role };
+  if (!p.stackKey && url && p.child) out.localUrl = localUrlOf(`${serviceName(project)}.localhost`);
+  return out;
 }
 
-function info(s: DevServer): DevServerInfo {
-  const { project, dir, command, url, pid, status, startedBy, startedAt, stoppedAt, exitCode, lastLine } = s;
-  return { project, dir, command, url, pid, status, startedBy, errorCount: s.errors.errors().length, startedAt, stoppedAt, exitCode, lastLine };
+interface ServiceInfo extends DevServerInfo {
+  kind: "process" | "docker";
+}
+
+/** A stack's services as the page and agents see them, runner services included. */
+function serviceInfos(run: StackRun): ServiceInfo[] {
+  const base = serviceName(run.name);
+  const list = procsFor(run.dir);
+  const runner = list.find((p) => p.split);
+  return run.stack.services.map((svc) => {
+    const p = list.find((x) => x.service === svc.name);
+    let i: DevServerInfo;
+    if (p) {
+      i = info(p);
+    } else if (runner && svc.kind === "process") {
+      const r = info(runner);
+      i = { ...r, command: svc.command, url: runner.subUrls.get(svc.name), errorCount: errorsOf([runner], { service: svc.name }).length, lastLine: r.lastLine };
+    } else {
+      i = { project: run.name, dir: svc.dir, command: svc.command, status: run.phase === "starting" ? "starting" : "stopped", startedBy: run.startedBy, errorCount: 0, startedAt: run.startedAt, lastLine: 0 };
+    }
+    const alive = i.status === "starting" || i.status === "ready";
+    return {
+      ...i,
+      project: run.name,
+      service: svc.name,
+      role: svc.role,
+      kind: svc.kind,
+      localUrl: svc.kind === "process" && i.url && alive ? localUrlOf(`${svc.name}.${base}.localhost`) : undefined,
+    };
+  });
+}
+
+function stackInfo(run: StackRun): DevServerInfo {
+  const services = serviceInfos(run);
+  const main = mainService(run.stack);
+  const mainInfo = services.find((s) => s.service === main?.name);
+  let status: DevStatus;
+  if (run.phase === "starting") status = "starting";
+  else if (run.phase === "stopped" || run.phase === "stopping") status = "stopped";
+  else if (services.some((s) => s.status === "failed")) status = "failed";
+  else if (services.some((s) => s.status === "starting")) status = "starting";
+  // A watcher that finished (exit 0) doesn't make the stack stopped while the others run.
+  else status = services.some((s) => s.status === "ready") ? "ready" : "stopped";
+  const base = serviceName(run.name);
+  return {
+    project: run.name,
+    dir: run.dir,
+    command: run.stack.runner?.command ?? `${services.length} services`,
+    url: mainInfo?.url,
+    localUrl: mainInfo?.url && status !== "stopped" ? localUrlOf(`${base}.localhost`) : undefined,
+    status,
+    startedBy: run.startedBy,
+    errorCount: services.reduce((n, s) => n + s.errorCount, 0),
+    startedAt: run.startedAt,
+    stoppedAt: run.stoppedAt,
+    lastLine: Math.max(0, ...procsFor(run.dir).map((p) => p.lastLine)),
+    services: services.map(({ kind: _kind, ...s }) => s),
+    stackSource: run.stack.source,
+    note: run.note,
+  };
+}
+
+function portInUseByOther(p: Proc, port: number): boolean {
+  for (const other of procs.values()) {
+    if (other === p || (!other.child && !other.docker)) continue;
+    if (other.port === port || portOf(other.url) === port || [...other.subUrls.values()].some((u) => portOf(u) === port)) return true;
+  }
+  return false;
+}
+
+function procsFor(dir: string): Proc[] {
+  const k = key(dir);
+  return [...procs.values()].filter((p) => p.key === k || p.stackKey === k);
+}
+
+function portOf(url: string | undefined): number | undefined {
+  if (!url) return undefined;
+  try {
+    const u = new URL(url);
+    return Number(u.port || (u.protocol === "https:" ? 443 : 80));
+  } catch {
+    return undefined;
+  }
+}
+
+function dirOf(file: string): string {
+  return file.replace(/[\\/][^\\/]+$/, "");
 }
 
 function key(dir: string): string {

@@ -6,6 +6,27 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ### Added
 
+- **Stacks**: a project's front end, API, workers and databases start together, in order, with one command or button (`dx up`, `dx go`, Run, or an AI agent's `start_dev_server`).
+  - **Found with no configuration** from:
+    - Procfiles;
+    - turbo, nx, concurrently, npm-run-all or lerna dev scripts, with their output split back into services;
+    - `dev:*` scripts;
+    - npm, yarn and pnpm workspaces;
+    - databases in docker-compose.
+  - **Order**: databases first, then back ends, then front ends. A service whose dependency failed isn't started.
+  - **Addresses passed along** as `DX_<SERVICE>_URL` and `DX_<SERVICE>_PUBLIC_URL`.
+  - **Two repositories**: `set_stack` (MCP) or `"stack"` in `.devrc.json` define a stack dx can't guess.
+- **Local domains**: running apps at `http://<project>.localhost`, stack services at `http://<service>.<project>.localhost`, and the dashboard at `http://dx.localhost`.
+  - **Nothing to set up**: browsers resolve `*.localhost` by themselves.
+  - **Live reload works**: WebSockets pass through, and redirects are rewritten.
+  - **Port**: 80, or 1355 when 80 isn't available.
+- **Dashboard**:
+  - A stack shows as one card, with a row per service (status, address, errors) and their combined output labelled by service, with a filter.
+  - Errors show which service they came from.
+- **`dx up` and `dx down`** start and stop a stack in the background.
+- **`dx doctor`** checks Docker (when a stack needs it) and whether local domains got port 80, with fixes.
+- **Project detection**: projects with only a Gemfile, a Procfile or a compose file are found too.
+
 - **AI agents can run your app and see what it does.** Nine new MCP tools:
   - `start_dev_server` waits until the app is ready and reports its URL, errors and output.
   - `wait_for_rebuild` says whether an edit added or fixed errors.

@@ -29,6 +29,8 @@ export interface DevError {
   lastSeen: string;
   /** True once the server rebuilt or reloaded cleanly after the error was last seen. */
   resolved: boolean;
+  /** The stack service whose output it came from. */
+  service?: string;
 }
 
 interface Start {

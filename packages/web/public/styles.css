@@ -740,6 +740,44 @@ select {
   font-size: var(--t-xs);
 }
 
+/* A stack's services */
+.stack-services {
+  margin: 0;
+  padding: 0 var(--s4) var(--s3);
+  list-style: none;
+}
+.stack-services li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+  padding: var(--s2) 0;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+.stack-services li > .badge:first-child {
+  min-width: 84px;
+}
+.stack-cmd {
+  overflow-wrap: anywhere;
+}
+.stack-note {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+  padding: var(--s2) var(--s4) var(--s3);
+  color: var(--warn);
+}
+.log-filter {
+  padding: var(--s2) var(--s4);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+.log .svc {
+  color: var(--log-dx);
+}
+
 /* Errors found in a dev server's output */
 .dev-errors {
   border-top: 1px solid var(--border);

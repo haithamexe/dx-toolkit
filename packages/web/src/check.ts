@@ -1,4 +1,4 @@
-import { devErrors, devLogs, listDevServers, type DevLine } from "./dev.js";
+import { devErrors, devLogs, localRoutes, serverForPort, type DevLine } from "./dev.js";
 import type { DevError } from "@dx/core";
 
 /**
@@ -51,13 +51,17 @@ export function isLoopbackUrl(raw: string): boolean {
 
 export async function checkUrl(options: CheckOptions): Promise<CheckResult> {
   if (!isLoopbackUrl(options.url)) throw new Error("Only http://localhost and http://127.0.0.1 addresses can be checked.");
-  const url = new URL(options.url);
+  let url = new URL(options.url);
+  // shop.localhost goes straight to the dev server behind it: not every system resolves *.localhost.
+  const route = url.hostname.endsWith(".localhost") ? localRoutes().get(url.hostname.toLowerCase()) : undefined;
+  if (url.hostname.endsWith(".localhost") && !route) throw new Error(`Nothing runs at ${url.hostname}. dev_servers lists what does.`);
+  if (route) url = new URL(url.pathname + url.search, route.url);
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-  const server = listDevServers().find((s) => s.url && Number(new URL(s.url).port) === port && s.status !== "stopped" && s.status !== "failed");
-  const before = server?.lastLine ?? 0;
+  const server = serverForPort(port);
+  const before = server ? Math.max(0, ...devLogs(server.dir).lines.map((l) => l.n)) : 0;
 
   const started = Date.now();
-  const result: CheckResult = { url: url.href, ok: false, ms: 0, project: server?.project, serverOutput: [], serverErrors: [] };
+  const result: CheckResult = { url: options.url, ok: false, ms: 0, project: server ? (server.service ? `${server.project}/${server.service}` : server.project) : undefined, serverOutput: [], serverErrors: [] };
   try {
     const res = await fetch(url, {
       method: (options.method ?? "GET").toUpperCase(),
@@ -95,8 +99,8 @@ export async function checkUrl(options: CheckOptions): Promise<CheckResult> {
   if (server) {
     // Give the server a moment to finish logging what it did for this request.
     await new Promise((r) => setTimeout(r, 400));
-    result.serverOutput = devLogs(server.dir, before).lines.slice(-60);
-    result.serverErrors = devErrors(server.dir, { after: before })[0]?.errors ?? [];
+    result.serverOutput = devLogs(server.dir, before, server.service).lines.slice(-60);
+    result.serverErrors = devErrors(server.dir, { after: before, service: server.service })[0]?.errors ?? [];
   }
   return result;
 }

@@ -24,7 +24,11 @@ import {
   readJournal,
   recordRun,
   runDoctor,
+  readProject,
+  saveStackSpec,
   scanProjects,
+  startOrder,
+  detectStack,
   type DevError,
   type Project,
 } from "@dx/core";
@@ -285,15 +289,22 @@ interface DevInfo {
   dir: string;
   command: string;
   url?: string;
+  localUrl?: string;
   status: string;
   startedBy: string;
   errorCount: number;
   lastLine: number;
+  service?: string;
+  role?: string;
+  services?: DevInfo[];
+  stackSource?: string;
+  note?: string;
 }
 interface Line {
   n: number;
   stream: string;
   text: string;
+  service?: string;
 }
 interface WaitResult {
   server?: DevInfo;
@@ -316,7 +327,8 @@ function pickProject(name: string): Project | string {
 function formatLines(lines: Line[], max = 80): string {
   const shown = lines.slice(-max);
   const cut = lines.length > shown.length ? `(${lines.length - shown.length} earlier lines left out)\n` : "";
-  return cut + shown.map((l) => (l.stream === "dx" ? `[dx] ${l.text}` : l.stream === "err" ? `[stderr] ${l.text}` : l.text)).join("\n");
+  const label = (l: Line) => `${l.service ? `[${l.service}] ` : ""}${l.stream === "dx" ? "[dx] " : l.stream === "err" ? "[stderr] " : ""}`;
+  return cut + shown.map((l) => `${label(l)}${l.text}`).join("\n");
 }
 
 function formatError(e: DevError, detail = 8): string {
@@ -326,7 +338,8 @@ function formatError(e: DevError, detail = 8): string {
     .slice(1, detail)
     .map((l) => `    ${l}`)
     .join("\n");
-  return `- [${e.kind}] ${e.message}${where}${times}${e.resolved ? " (resolved)" : ""}${body ? `\n${body}` : ""}`;
+  const service = e.service ? `${e.service}: ` : "";
+  return `- [${e.kind}] ${service}${e.message}${where}${times}${e.resolved ? " (resolved)" : ""}${body ? `\n${body}` : ""}`;
 }
 
 function formatErrors(errors: DevError[], none = "No errors."): string {
@@ -336,7 +349,25 @@ function formatErrors(errors: DevError[], none = "No errors."): string {
 function describe(server: DevInfo | undefined): string {
   if (!server) return "Not running.";
   const by = server.startedBy === "ai" ? "started by an AI agent" : `started from the ${server.startedBy}`;
-  return `${server.project}: ${server.status}${server.url ? ` at ${server.url}` : ""} (${server.command}, ${by})`;
+  const at = (s: DevInfo) => (s.url ? ` at ${s.url}${s.localUrl ? ` (also ${s.localUrl})` : ""}` : "");
+  const head = `${server.project}: ${server.status}${at(server)} (${server.services ? `a stack of ${server.services.length} services, found from ${stackFrom(server.stackSource)}` : server.command}, ${by})`;
+  if (!server.services) return head;
+  const rows = server.services.map(
+    (s) => `  - ${s.service}${s.role ? ` (${s.role})` : ""}: ${s.status}${at(s)}${s.errorCount ? `, ${s.errorCount} error(s)` : ""} — ${s.command}`,
+  );
+  return [head, ...rows, ...(server.note ? [`  ${server.note}`] : [])].join("\n");
+}
+
+function stackFrom(source: string | undefined): string {
+  const names: Record<string, string> = {
+    devrc: ".devrc.json",
+    procfile: "its Procfile",
+    runner: "its monorepo dev script",
+    scripts: "its dev:* scripts",
+    workspaces: "its workspaces",
+    compose: "docker-compose",
+  };
+  return names[source ?? ""] ?? "the project";
 }
 
 async function waitAndReport(client: DashboardClient, project: Project, until: "ready" | "quiet", after: number, timeoutMs: number): Promise<string> {
@@ -368,6 +399,8 @@ server.registerTool(
     description:
       "Start one of the user's projects' dev server (npm run dev and the like) inside the dx dashboard, wait until it's " +
       "ready or has failed, and return its URL, any errors and its output. If it's already running, report on it. " +
+      "When the project is a stack (front end, API, worker, databases in docker-compose…) every service starts, in order, " +
+      "and each is reported. Apps are also served at name.localhost. " +
       "Use this to run the app you are working on; after editing files use wait_for_rebuild, and check_url to try pages.",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
@@ -556,7 +589,7 @@ server.registerTool(
       "plus what the dev server printed and any errors it logged while answering. Use it to confirm a change works. " +
       "Give either a full URL, or a project and a path.",
     inputSchema: {
-      url: z.string().optional().describe("e.g. http://localhost:5173/checkout"),
+      url: z.string().optional().describe("e.g. http://localhost:5173/checkout, or a stack service's local domain: http://api.shop.localhost/health"),
       project: z.string().optional().describe("Project name; its dev server's address is used"),
       path: z.string().optional().describe("Path on the project's server, e.g. /api/cart (default /)"),
       method: z.string().optional().describe("GET (default), POST, PUT, DELETE…"),
@@ -590,6 +623,58 @@ server.registerTool(
       }
       const result = text(parts.join("\n\n"));
       return r.error || (r.status ?? 0) >= 500 ? { ...result, isError: true } : result;
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "set_stack",
+  {
+    title: "Define a project's stack",
+    description:
+      "Say which processes a project needs running together, when dx can't find that by itself: a front end and an API in two " +
+      "repositories, a worker, a database from docker-compose. dx already finds stacks from Procfiles, workspaces, turbo/nx/" +
+      "concurrently dev scripts, dev:* scripts and docker-compose databases, so read the project first and only call this when " +
+      "start_dev_server doesn't start everything. Writes \"stack\" in the project's .devrc.json; an empty services list removes it.",
+    inputSchema: {
+      project: z.string().describe("The project the stack belongs to (usually the front end), name or part of it"),
+      services: z
+        .array(
+          z.object({
+            name: z.string().describe("Short name: web, api, worker, db"),
+            command: z.string().optional().describe("Command to run, e.g. npm run dev"),
+            dir: z.string().optional().describe("Folder to run it in, relative to the project, e.g. ../shop-api"),
+            project: z.string().optional().describe("Instead of command and dir: another project folder whose own dev command dx uses, e.g. ../shop-api"),
+            url: z.string().optional().describe("Where it listens, if it doesn't print it"),
+            depends_on: z.array(z.string()).optional().describe("Services that must be ready first"),
+            docker: z.string().optional().describe("A docker compose service of this project to start instead of a command"),
+          }),
+        )
+        .describe("The services; empty to remove the stack"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name, services }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    for (const s of services) {
+      if (!s.command && !s.project && !s.docker) return failure(`Service ${s.name} needs a command, a project or a docker service.`);
+    }
+    const spec = Object.fromEntries(
+      services.map((s) => [
+        s.name,
+        { dev: s.command, dir: s.dir, project: s.project, url: s.url, dependsOn: s.depends_on, docker: s.docker },
+      ]),
+    );
+    try {
+      const file = saveStackSpec(project.dir, services.length ? JSON.parse(JSON.stringify(spec)) : undefined);
+      const stack = detectStack(readProject(project.dir) ?? project);
+      if (!services.length) return text(`Removed the stack from ${file}.${stack ? ` dx now finds this one by itself: ${stack.services.map((s) => s.name).join(", ")}.` : ""}`);
+      if (!stack) return failure(`Wrote ${file}, but dx couldn't read a stack from it. Check the folders and commands.`);
+      const order = startOrder(stack).map((wave) => wave.map((s) => s.name).join(" + ")).join(" → ");
+      return text(`Saved in ${file}. ${project.name} now starts as: ${order}.\n${stack.services.map((s) => `- ${s.name}: ${s.command} (in ${s.dir})`).join("\n")}\nIf it's running, restart_dev_server applies it.`);
     } catch (err) {
       return failure((err as Error).message);
     }

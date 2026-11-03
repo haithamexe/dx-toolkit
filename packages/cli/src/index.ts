@@ -10,6 +10,7 @@ import { logCommand } from "./commands/log.js";
 import { newCommand } from "./commands/new.js";
 import { killCommand, portCommand } from "./commands/port.js";
 import { projectsCommand } from "./commands/projects.js";
+import { downCommand, upCommand } from "./commands/stack.js";
 import { summaryCommand } from "./commands/summary.js";
 import { configCommand, doctorCommand, runsCommand } from "./commands/system.js";
 import { uiCommand } from "./commands/ui.js";
@@ -19,6 +20,8 @@ import { c, UsageError } from "./ui.js";
 const commands: Command[] = [
   uiCommand,
   goCommand,
+  upCommand,
+  downCommand,
   newCommand,
   projectsCommand,
   portCommand,

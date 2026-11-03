@@ -31,6 +31,10 @@ export interface DxConfig {
   autoConnectAi?: boolean;
   /** AI tools dx has already offered itself to, so one you disconnected stays disconnected. */
   aiToolsSeen?: string[];
+  /** Serve running apps at name.localhost (default true). */
+  localDomains?: boolean;
+  /** Port for name.localhost; default 80, or 1355 when 80 is taken. */
+  localDomainsPort?: number;
 }
 
 /** Folders people usually keep their code in, checked on first run. */
