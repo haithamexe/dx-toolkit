@@ -323,3 +323,7 @@ The full backlog is in [docs/MEMORY.md](docs/MEMORY.md).
 - **`dx` not found after `npm run link`**: open a new terminal. If it still isn't found, check that the folder `npm prefix -g` prints is on your PATH.
 - **Editor doesn't open**: run `dx doctor`, then set the editor with `dx config editor "C:\Path\To\Editor.exe"`.
 - **Debug output**: set `DX_DEBUG=1` to print full error stacks.
+
+## License
+
+[MIT](LICENSE)

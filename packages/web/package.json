@@ -1,6 +1,7 @@
 {
   "name": "@dx/web",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "description": "The dx dashboard: a local web interface for every dx tool, opened with `dx ui`.",
   "type": "module",
@@ -13,7 +14,10 @@
       "default": "./dist/server.js"
     }
   },
-  "files": ["dist", "public"],
+  "files": [
+    "dist",
+    "public"
+  ],
   "dependencies": {
     "@dx/core": "*"
   }

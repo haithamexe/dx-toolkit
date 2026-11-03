@@ -1,6 +1,7 @@
 {
   "name": "@dx/core",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "description": "The tools themselves. No dependencies beyond Node, so every front end can bundle it.",
   "type": "module",
@@ -13,5 +14,7 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"]
+  "files": [
+    "dist"
+  ]
 }
