@@ -2,6 +2,7 @@
 // MCP server: lets Claude (Desktop, Code) and Raycast AI call your dx tools.
 // It talks over stdin/stdout, so nothing here may print to stdout except the protocol.
 
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -34,7 +35,8 @@ import {
 } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
 
-const server = new McpServer({ name: "dx", version: "0.1.0" });
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+const server = new McpServer({ name: "dx", version });
 
 const text = (value: unknown) => ({
   content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],

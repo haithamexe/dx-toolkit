@@ -35,6 +35,12 @@ jobs:
       # Builds every package, then runs the core, dashboard and MCP tests (they use git, which every runner has).
       - run: npm test
 
+      # The package published to npm: build it, install it globally into a temporary folder, run it.
+      - name: Pack and install the npm package
+        run: |
+          npm run release
+          node scripts/smoke-package.mjs
+
       - name: Smoke-test the dx command
         shell: bash
         env:

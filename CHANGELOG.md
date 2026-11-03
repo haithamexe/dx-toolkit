@@ -4,8 +4,13 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 0.2.0 (2026-11-03)
+
+Your AI coding agent can now run your app and see what it does, whole stacks start with one command at readable `.localhost` addresses, and nothing needs setting up. Install it with `npm install -g dxkit`.
+
 ### Added
 
+- **Published on npm as `dxkit`**: one global install gives the `dx` command, the dashboard and the MCP server.
 - **Stacks**: a project's front end, API, workers and databases start together, in order, with one command or button (`dx up`, `dx go`, Run, or an AI agent's `start_dev_server`).
   - **Found with no configuration** from:
     - Procfiles;
@@ -26,7 +31,6 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 - **`dx up` and `dx down`** start and stop a stack in the background.
 - **`dx doctor`** checks Docker (when a stack needs it) and whether local domains got port 80, with fixes.
 - **Project detection**: projects with only a Gemfile, a Procfile or a compose file are found too.
-
 - **AI agents can run your app and see what it does.** Nine new MCP tools:
   - `start_dev_server` waits until the app is ready and reports its URL, errors and output.
   - `wait_for_rebuild` says whether an edit added or fixed errors.

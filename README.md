@@ -6,7 +6,7 @@ Your projects, dev servers, ports, work journal and weekly summary in one place:
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/projects-light.png">
-  <img alt="The dx dashboard's Projects page: six projects with Run, Open in editor and More buttons, and a running dev server for shop-website at localhost:5173." src="docs/images/projects.png">
+  <img alt="The dx dashboard's Projects page: a running stack called shop, with its api and web services at api.shop.localhost and web.shop.localhost; a todo-app dev server marked Started by AI with 1 error; and the project list below." src="docs/images/projects.png">
 </picture>
 
 Each tool is written once in `packages/core` and can be used four ways:
@@ -37,12 +37,11 @@ Everything dx stores is in one folder: `~/.dx` (`C:\Users\<you>\.dx`).
 dx runs on **Windows, macOS and Linux**. You need **Node 22 or newer** (`node -v`) and git. Then, in a terminal (PowerShell on Windows):
 
 ```bash
-git clone <this repository's URL> dx-toolkit
-cd dx-toolkit
-npm install
-npm run build
-npm run link      # puts the `dx` command on your PATH
-dx ui             # opens the dashboard
+npm install -g dxkit
+```
+
+```bash
+dx ui
 ```
 
 That's all. The first time you use dx it sets itself up:
@@ -52,11 +51,15 @@ That's all. The first time you use dx it sets itself up:
 
 Projects somewhere else? `dx config add-root <folder>`, or add the folder on the dashboard's Health page. `dx doctor` checks everything and says how to fix what isn't right; your AI tool can run the fixes for you (ask it to "check dx's setup").
 
-- **macOS and Linux**: if `npm run link` fails with a permissions error, your global npm folder belongs to root. Use a Node version manager (nvm, fnm, Volta) rather than `sudo`.
+- **macOS and Linux**: if `npm install -g` fails with a permissions error, your global npm folder belongs to root. Use a Node version manager (nvm, fnm, Volta) rather than `sudo`.
 - **Linux**: `dx port` and `dx kill` need `lsof` (`sudo apt install lsof` or your distro's equivalent). Copying a summary needs `wl-copy` or `xclip`, and "open in a terminal window" uses `x-terminal-emulator`.
 - **macOS**: "open in a terminal window" uses Terminal.app; the first time, macOS asks whether your terminal may control it.
 
-> If you switch Node versions with nvm, run `npm run link` again on the new version.
+> If you switch Node versions with nvm, install dx again on the new version; dx repoints your AI tools at it the next time the dashboard starts.
+
+**Updating**: `npm install -g dxkit@latest`. **Removing**: `dx setup --undo` (takes dx out of your AI tools), then `npm uninstall -g dxkit`; your settings and journal stay in `~/.dx`.
+
+**From source**, to change dx itself: clone this repository, then run `npm install`, `npm run build` and `npm run link` in it. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest.
 
 ---
 
@@ -176,13 +179,13 @@ dx up shop
 - **Where the time went**: per project, the days you committed or opened it with `dx go`, and how long its dev server ran when `dx go` ran it in the same terminal.
 - **Not committed yet**: projects active in the period with changes you haven't committed. It's a reminder for you; delete the section before sending if you like.
 
-**Every Thursday, automatically:** these save the summary at 4 pm each Thursday. Run them from the `dx-toolkit` folder, after `npm run build`, so they pick up the right paths. The file lands in `~/.dx/summaries/<date>.md`, and `dx runs` shows whether it ran.
+**Every Thursday, automatically:** these save the summary at 4 pm each Thursday. Run them once, after installing dx; they find where npm put it. The file lands in `~/.dx/summaries/<date>.md`, and `dx runs` shows whether it ran.
 
 <details>
 <summary><b>Windows</b>: Task Scheduler. If the computer is off or asleep at 4 pm, it runs as soon as it's back on.</summary>
 
 ```powershell
-$script   = Join-Path $PWD "packages\cli\dist\index.js"
+$script   = Join-Path (npm root -g) "dxkit\dist\index.js"
 $action   = New-ScheduledTaskAction -Execute (Get-Command node).Source -Argument "`"$script`" summary --save"
 $trigger  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Thursday -At 4pm
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
@@ -203,7 +206,7 @@ cat > ~/Library/LaunchAgents/dev.dx.weekly-summary.plist <<EOF
   <key>Label</key><string>dev.dx.weekly-summary</string>
   <key>ProgramArguments</key><array>
     <string>$(command -v node)</string>
-    <string>$PWD/packages/cli/dist/index.js</string>
+    <string>$(npm root -g)/dxkit/dist/index.js</string>
     <string>summary</string><string>--save</string>
   </array>
   <key>StartCalendarInterval</key><dict>
@@ -227,7 +230,7 @@ mkdir -p ~/.config/systemd/user
 cat > ~/.config/systemd/user/dx-summary.service <<EOF
 [Service]
 Type=oneshot
-ExecStart="$(command -v node)" "$PWD/packages/cli/dist/index.js" summary --save
+ExecStart="$(command -v node)" "$(npm root -g)/dxkit/dist/index.js" summary --save
 EOF
 cat > ~/.config/systemd/user/dx-summary.timer <<EOF
 [Timer]
@@ -241,7 +244,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now dx-summary.timer
 ```
 
-`systemctl --user list-timers` shows when it runs next. To remove it: `systemctl --user disable --now dx-summary.timer`, then delete the two files. Without systemd, a crontab line does the same, but skips a week the computer was off: `0 16 * * 4 "$(command -v node)" "$PWD/packages/cli/dist/index.js" summary --save` (write the two paths out in full; cron doesn't run `$(…)` for you).
+`systemctl --user list-timers` shows when it runs next. To remove it: `systemctl --user disable --now dx-summary.timer`, then delete the two files. Without systemd, a crontab line does the same, but skips a week the computer was off: `0 16 * * 4 "$(command -v node)" "$(npm root -g)/dxkit/dist/index.js" summary --save` (write the two paths out in full; cron doesn't run `$(…)` for you).
 </details>
 
 **`dx clean` details:**
@@ -315,7 +318,7 @@ A folder counts as a project when it has a `package.json`, `go.mod`, `Cargo.toml
 
 ## Raycast
 
-Needs [Raycast for Windows](https://www.raycast.com) installed and running, and `npm run build` done first.
+Works from a source checkout (see Setup). Needs [Raycast for Windows](https://www.raycast.com) installed and running, and `npm run build` done first.
 
 ```powershell
 npm run raycast:install
@@ -370,23 +373,25 @@ Then you can say things like "free port 3000 and start todo-app" or "write my st
 
 ### Connecting by hand
 
-Only needed for a tool dx doesn't know, such as Raycast AI. The server is `node /path/to/dx-toolkit/packages/mcp/dist/index.js` (on Windows in JSON, for example `C:\\Users\\you\\dx-toolkit\\…`). For reference, this is what `dx setup` writes for Claude Desktop in `claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS):
+Only needed for a tool dx doesn't know, such as Raycast AI. The server is the `dx-mcp` command. For apps that don't see your PATH, run it with Node instead: `node <global folder>/dxkit/node_modules/@dx/mcp/dist/index.js`, where `npm root -g` prints the global folder. In JSON on Windows, double the backslashes. From a source checkout, it's `packages/mcp/dist/index.js`.
+
+For reference, this is what `dx setup` writes for Claude Desktop in `claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS):
 
 ```json
 {
   "mcpServers": {
     "dx": {
-      "command": "node",
-      "args": ["/path/to/dx-toolkit/packages/mcp/dist/index.js"]
+      "command": "/usr/local/bin/node",
+      "args": ["/usr/local/lib/node_modules/dxkit/node_modules/@dx/mcp/dist/index.js"]
     }
   }
 }
 ```
 
-And for Claude Code, run from the `dx-toolkit` folder:
+And for Claude Code:
 
 ```bash
-claude mcp add -s user dx -- node "$PWD/packages/mcp/dist/index.js"
+claude mcp add -s user dx -- node "$(npm root -g)/dxkit/node_modules/@dx/mcp/dist/index.js"
 ```
 
 **Raycast AI**: add an MCP server in Raycast with the same command (`node`) and path.
@@ -433,6 +438,34 @@ The full backlog is in [docs/MEMORY.md](docs/MEMORY.md).
 - **`dx` not found after `npm run link`**: open a new terminal. If it still isn't found, check that the folder `npm prefix -g` prints is on your PATH.
 - **Editor doesn't open**: run `dx doctor`, then set the editor with `dx config editor "C:\Path\To\Editor.exe"`.
 - **Debug output**: set `DX_DEBUG=1` to print full error stacks.
+
+## Releasing
+
+For maintainers:
+1. Move the CHANGELOG's *Unreleased* notes under a new version, and bump `version` in every `package.json`.
+2. Build and check the package:
+
+   ```bash
+   npm run release
+   ```
+
+   This puts it in `release/` and packs it.
+
+3. Install that package into a temporary folder and try it:
+
+   ```bash
+   node scripts/smoke-package.mjs
+   ```
+
+4. Publish, after `npm login`:
+
+   ```bash
+   npm publish ./release
+   ```
+
+5. Tag `vX.Y.Z` and draft a GitHub release from the CHANGELOG.
+
+CI runs steps 2 and 3 on every push.
 
 ## Contributing
 
