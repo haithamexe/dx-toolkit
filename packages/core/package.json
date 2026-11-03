@@ -1,6 +1,6 @@
 {
   "name": "@dx/core",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "license": "MIT",
   "private": true,
   "description": "The tools themselves. No dependencies beyond Node, so every front end can bundle it.",

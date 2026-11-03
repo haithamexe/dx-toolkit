@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.2.0 (2026-11-04)
+
+Your AI agent now sees what breaks in the browser, a repository goes from URL to running in one command, and dx remembers where you left off. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **AI agents see errors in the browser too.** `check_url` with `browser: true` loads the page in a headless Chrome, Edge, Chromium or Brave already on the computer and reports:
