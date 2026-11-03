@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in dx doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Before you paste logs or output, **remove anything personal**: your username in paths (`C:\Users\<you>`, `/Users/<you>`), project names you'd rather keep private, tokens and emails.
+        Found a security problem? Don't file it here: use **Security → Report a vulnerability** instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran or clicked, what you expected, and what happened instead.
+      placeholder: |
+        I ran `dx go todo-app`. I expected the browser to open on the dev server; instead it waited 90 seconds and said the port never opened.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a Vite project
+        2. Run `dx go .`
+        3. …
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - The dashboard (dx ui)
+        - The dx command
+        - The MCP server
+        - Raycast
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `dx doctor`
+      description: Remove personal paths first.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Error messages, a screenshot, or the output with `DX_DEBUG=1` set.

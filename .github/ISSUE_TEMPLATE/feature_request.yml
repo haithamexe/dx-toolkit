@@ -1,0 +1,24 @@
+name: Feature idea
+description: Something dx could do, or do better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The task or annoyance, in your own words. This matters more than the solution.
+      placeholder: Every morning I open five projects and start their dev servers one by one.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What dx could do
+      description: How it might look in the dashboard, as a `dx` command, or as an MCP tool.
+      placeholder: A "Start my usual projects" button, or `dx go todo-app shop-website`.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to build this myself.

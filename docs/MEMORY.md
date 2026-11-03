@@ -15,7 +15,9 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Private pull requests in the summary** need `GITHUB_TOKEN` or `gh auth login`; the dashboard could say so when neither is set.
 - **`dx deps --fix`**: it only reports today; fixing is left to `npm update` / `npm audit fix`.
 - **yarn and bun** projects are skipped by `dx deps`.
-- **Version bump**: everything is still 0.1.0.
+- **Publish to npm** so it installs with one command instead of clone, build and link. It needs a free package name and the workspaces bundled into one package.
+- **Releases**: 0.1.0 is tagged. Add each change to `CHANGELOG.md` under *Unreleased*; at release time, bump the versions and tag `vX.Y.Z`.
+- **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
 

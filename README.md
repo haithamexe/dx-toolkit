@@ -1,6 +1,13 @@
 # dx toolkit
 
-Your personal developer toolkit. Each tool is written once in `packages/core` and can be used four ways:
+Your projects, dev servers, ports, work journal and weekly summary in one place: a local dashboard, a `dx` command, and tools your AI assistant can call. Runs on Windows, macOS and Linux.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/projects-light.png">
+  <img alt="The dx dashboard's Projects page: six projects with Run, Open in editor and More buttons, and a running dev server for shop-website at localhost:5173." src="docs/images/projects.png">
+</picture>
+
+Each tool is written once in `packages/core` and can be used four ways:
 
 ```
 packages/core   the tools (projects, ports, journal, …), plain Node, no dependencies
@@ -64,6 +71,10 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 | **Cleanup** | See which `node_modules` and build folders can go, pick them, delete them (it asks first) |
 | **Dependencies** | Run the audit across all projects with a progress bar; open a row for its outdated packages |
 | **Health & settings** | `dx doctor`'s checks, your projects folders, editor and GitHub username, and recent activity |
+
+| Summary | Cleanup |
+|---|---|
+| ![The Summary page: 11 commits in 3 projects, 4 journal entries, and the week's journal and commits.](docs/images/summary.png) | ![The Cleanup page: 168 MB of node_modules and build folders in three idle projects, selected for deletion.](docs/images/cleanup.png) |
 
 - **It runs on your computer only** (`http://127.0.0.1:4646`), and only while `dx ui` runs; Ctrl+C stops it. Every action needs a secret the page gets when it loads, so other websites can't use it.
 - **Dev servers you start from the dashboard stop when the dashboard stops**, like a dev server stops when you close its terminal. For one that keeps running, use **More → Run in a terminal window**.
@@ -323,6 +334,10 @@ The full backlog is in [docs/MEMORY.md](docs/MEMORY.md).
 - **`dx` not found after `npm run link`**: open a new terminal. If it still isn't found, check that the folder `npm prefix -g` prints is on your PATH.
 - **Editor doesn't open**: run `dx doctor`, then set the editor with `dx config editor "C:\Path\To\Editor.exe"`.
 - **Debug output**: set `DX_DEBUG=1` to print full error stacks.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md) has the setup and the conventions, and [CHANGELOG.md](CHANGELOG.md) what changed in each version. Please follow the [code of conduct](CODE_OF_CONDUCT.md), and report security problems privately as [SECURITY.md](SECURITY.md) explains.
 
 ## License
 
