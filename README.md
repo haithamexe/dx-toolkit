@@ -37,7 +37,7 @@ Everything dx stores is in one folder: `~/.dx` (`C:\Users\<you>\.dx`).
 dx runs on **Windows, macOS and Linux**. You need **Node 22 or newer** (`node -v`) and git. Then, in a terminal (PowerShell on Windows):
 
 ```bash
-npm install -g dxkit
+npm install -g dx-devkit
 ```
 
 ```bash
@@ -57,7 +57,7 @@ Projects somewhere else? `dx config add-root <folder>`, or add the folder on the
 
 > If you switch Node versions with nvm, install dx again on the new version; dx repoints your AI tools at it the next time the dashboard starts.
 
-**Updating**: `npm install -g dxkit@latest`. **Removing**: `dx setup --undo` (takes dx out of your AI tools), then `npm uninstall -g dxkit`; your settings and journal stay in `~/.dx`.
+**Updating**: `npm install -g dx-devkit@latest`. **Removing**: `dx setup --undo` (takes dx out of your AI tools), then `npm uninstall -g dx-devkit`; your settings and journal stay in `~/.dx`.
 
 **From source**, to change dx itself: clone this repository, then run `npm install`, `npm run build` and `npm run link` in it. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest.
 
@@ -185,7 +185,7 @@ dx up shop
 <summary><b>Windows</b>: Task Scheduler. If the computer is off or asleep at 4 pm, it runs as soon as it's back on.</summary>
 
 ```powershell
-$script   = Join-Path (npm root -g) "dxkit\dist\index.js"
+$script   = Join-Path (npm root -g) "dx-devkit\dist\index.js"
 $action   = New-ScheduledTaskAction -Execute (Get-Command node).Source -Argument "`"$script`" summary --save"
 $trigger  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Thursday -At 4pm
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
@@ -206,7 +206,7 @@ cat > ~/Library/LaunchAgents/dev.dx.weekly-summary.plist <<EOF
   <key>Label</key><string>dev.dx.weekly-summary</string>
   <key>ProgramArguments</key><array>
     <string>$(command -v node)</string>
-    <string>$(npm root -g)/dxkit/dist/index.js</string>
+    <string>$(npm root -g)/dx-devkit/dist/index.js</string>
     <string>summary</string><string>--save</string>
   </array>
   <key>StartCalendarInterval</key><dict>
@@ -230,7 +230,7 @@ mkdir -p ~/.config/systemd/user
 cat > ~/.config/systemd/user/dx-summary.service <<EOF
 [Service]
 Type=oneshot
-ExecStart="$(command -v node)" "$(npm root -g)/dxkit/dist/index.js" summary --save
+ExecStart="$(command -v node)" "$(npm root -g)/dx-devkit/dist/index.js" summary --save
 EOF
 cat > ~/.config/systemd/user/dx-summary.timer <<EOF
 [Timer]
@@ -244,7 +244,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now dx-summary.timer
 ```
 
-`systemctl --user list-timers` shows when it runs next. To remove it: `systemctl --user disable --now dx-summary.timer`, then delete the two files. Without systemd, a crontab line does the same, but skips a week the computer was off: `0 16 * * 4 "$(command -v node)" "$(npm root -g)/dxkit/dist/index.js" summary --save` (write the two paths out in full; cron doesn't run `$(…)` for you).
+`systemctl --user list-timers` shows when it runs next. To remove it: `systemctl --user disable --now dx-summary.timer`, then delete the two files. Without systemd, a crontab line does the same, but skips a week the computer was off: `0 16 * * 4 "$(command -v node)" "$(npm root -g)/dx-devkit/dist/index.js" summary --save` (write the two paths out in full; cron doesn't run `$(…)` for you).
 </details>
 
 **`dx clean` details:**
@@ -373,7 +373,7 @@ Then you can say things like "free port 3000 and start todo-app" or "write my st
 
 ### Connecting by hand
 
-Only needed for a tool dx doesn't know, such as Raycast AI. The server is the `dx-mcp` command. For apps that don't see your PATH, run it with Node instead: `node <global folder>/dxkit/node_modules/@dx/mcp/dist/index.js`, where `npm root -g` prints the global folder. In JSON on Windows, double the backslashes. From a source checkout, it's `packages/mcp/dist/index.js`.
+Only needed for a tool dx doesn't know, such as Raycast AI. The server is the `dx-mcp` command. For apps that don't see your PATH, run it with Node instead: `node <global folder>/dx-devkit/node_modules/@dx/mcp/dist/index.js`, where `npm root -g` prints the global folder. In JSON on Windows, double the backslashes. From a source checkout, it's `packages/mcp/dist/index.js`.
 
 For reference, this is what `dx setup` writes for Claude Desktop in `claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS):
 
@@ -382,7 +382,7 @@ For reference, this is what `dx setup` writes for Claude Desktop in `claude_desk
   "mcpServers": {
     "dx": {
       "command": "/usr/local/bin/node",
-      "args": ["/usr/local/lib/node_modules/dxkit/node_modules/@dx/mcp/dist/index.js"]
+      "args": ["/usr/local/lib/node_modules/dx-devkit/node_modules/@dx/mcp/dist/index.js"]
     }
   }
 }
@@ -391,7 +391,7 @@ For reference, this is what `dx setup` writes for Claude Desktop in `claude_desk
 And for Claude Code:
 
 ```bash
-claude mcp add -s user dx -- node "$(npm root -g)/dxkit/node_modules/@dx/mcp/dist/index.js"
+claude mcp add -s user dx -- node "$(npm root -g)/dx-devkit/node_modules/@dx/mcp/dist/index.js"
 ```
 
 **Raycast AI**: add an MCP server in Raycast with the same command (`node`) and path.

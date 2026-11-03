@@ -1,15 +1,15 @@
-// Builds the one package published to npm as "dxkit", in ./release, and packs it.
+// Builds the one package published to npm as "dx-devkit", in ./release, and packs it.
 //
 // The repository is four workspace packages (core, web, cli, mcp) that aren't published on their
 // own. The release is the CLI, with the other three bundled inside it (bundleDependencies), so
-// `npm install -g dxkit` gives the `dx` command, the dashboard and the MCP server in one install.
+// `npm install -g dx-devkit` gives the `dx` command, the dashboard and the MCP server in one install.
 // Run `npm run build` first; `npm run release` does both.
 import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const NAME = "dxkit";
+const NAME = "dx-devkit";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const out = path.join(root, "release");
 const rootPkg = readJson(path.join(root, "package.json"));

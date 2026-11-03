@@ -6,11 +6,11 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## 1.1.0 (2026-11-03)
 
-Your AI coding agent can now run your app and see what it does, whole stacks start with one command at readable `.localhost` addresses, and nothing needs setting up. Install it with `npm install -g dxkit`.
+Your AI coding agent can now run your app and see what it does, whole stacks start with one command at readable `.localhost` addresses, and nothing needs setting up. Install it with `npm install -g dx-devkit`.
 
 ### Added
 
-- **Published on npm as `dxkit`**: one global install gives the `dx` command, the dashboard and the MCP server.
+- **Published on npm as `dx-devkit`**: one global install gives the `dx` command, the dashboard and the MCP server.
 - **Stacks**: a project's front end, API, workers and databases start together, in order, with one command or button (`dx up`, `dx go`, Run, or an AI agent's `start_dev_server`).
   - **Found with no configuration** from:
     - Procfiles;

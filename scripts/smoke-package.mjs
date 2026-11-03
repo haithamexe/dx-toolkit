@@ -11,11 +11,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const release = path.join(root, "release");
-const tarball = fs.readdirSync(release).find((f) => /^dxkit-.*\.tgz$/.test(f));
-if (!tarball) fail("No release/dxkit-*.tgz. Run npm run release first.");
+const tarball = fs.readdirSync(release).find((f) => /^dx-devkit-.*\.tgz$/.test(f));
+if (!tarball) fail("No release/dx-devkit-*.tgz. Run npm run release first.");
 const version = JSON.parse(fs.readFileSync(path.join(release, "package.json"), "utf8")).version;
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dxkit-smoke-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dx-devkit-smoke-"));
 const prefix = path.join(tmp, "prefix");
 const home = path.join(tmp, "dx-home");
 const projects = path.join(tmp, "projects");
@@ -51,7 +51,7 @@ if (!page.includes("dx-token")) fail("The dashboard didn't serve its page.");
 console.log(dx("ui", "--stop"));
 
 step("the MCP server, as an AI tool starts it");
-const installed = isWin ? path.join(prefix, "node_modules", "dxkit") : path.join(prefix, "lib", "node_modules", "dxkit");
+const installed = isWin ? path.join(prefix, "node_modules", "dx-devkit") : path.join(prefix, "lib", "node_modules", "dx-devkit");
 const { mcpServerScript } = await import(pathUrl(path.join(installed, "node_modules", "@dx", "core", "dist", "index.js")));
 const script = mcpServerScript();
 if (!fs.existsSync(script)) fail(`The path dx setup writes into AI tools doesn't exist: ${script}`);
@@ -63,7 +63,7 @@ for (const t of ["start_dev_server", "check_url", "set_stack", "work_summary"]) 
 console.log(`${tools.length} tools`);
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n✓ dxkit ${version} installs and runs`);
+console.log(`\n✓ dx-devkit ${version} installs and runs`);
 
 function step(name) {
   console.log(`\n── ${name}`);

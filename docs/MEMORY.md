@@ -28,7 +28,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Publish to npm** so it installs with one command instead of clone, build and link. It needs a free package name and the workspaces bundled into one package.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
-  - **1.1.0** is the first on npm, as `dxkit`.
+  - **1.1.0** is the first on npm, as `dx-devkit`. npm refused `dxkit` as too close to existing names (degit, pdfkit). A free name (`npm view <name>` gives E404) can still be refused: the look-alike check only runs on a real publish, and short names fail it most.
   - **To release**: add each change to `CHANGELOG.md` under *Unreleased*; at release time, bump every `package.json`, run `npm run release` and `node scripts/smoke-package.mjs`, tag `vX.Y.Z`, then `npm publish ./release` (needs the maintainer's npm login).
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
