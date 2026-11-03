@@ -221,6 +221,15 @@ function plural(n, one, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+const KIND_LABELS = { typescript: "TypeScript", build: "Build", runtime: "Runtime", python: "Python", go: "Go", exit: "Crashed", error: "Error" };
+
+/** A file path as seen from its project: "C:/work/shop/src/App.tsx" → "src/App.tsx". */
+function inProject(file, dir) {
+  const f = file.replace(/\\/g, "/").replace(/^\.\//, "");
+  const d = dir.replace(/\\/g, "/").replace(/\/$/, "");
+  return f.toLowerCase().startsWith(`${d.toLowerCase()}/`) ? f.slice(d.length + 1) : tildify(file);
+}
+
 function tildify(p) {
   return p.replace(/^[A-Za-z]:\\Users\\[^\\]+/, "~").replace(/^\/(Users|home)\/[^/]+/, "~");
 }
@@ -307,7 +316,9 @@ function projectsPage(root) {
   let projects = [];
   let query = "";
   const openLogs = new Set(JSON.parse(pref("openLogs", "[]")));
+  const openErrors = new Set(JSON.parse(pref("openErrors", "[]")));
   const logState = new Map(); // dir -> { after, el }
+  const errorPanels = new Map(); // dir -> { el, dir, sig }
   let stopped = false;
 
   const search = h("input", {
@@ -477,6 +488,14 @@ function projectsPage(root) {
     const live = s.status === "starting" || s.status === "ready";
     const logEl = h("pre", { class: "log", tabindex: "0", "aria-label": `Output of ${s.project}` });
     const showing = openLogs.has(key);
+    const showingErrors = openErrors.has(key);
+    const errorsEl = h("div", { class: "dev-errors", "aria-live": "polite", "aria-label": `Errors in ${s.project}` });
+    const toggle = (set, prefKey) => {
+      if (set.has(key)) set.delete(key);
+      else set.add(key);
+      setPref(prefKey, JSON.stringify([...set]));
+      renderDev();
+    };
     const card = h(
       "article",
       { class: "card dev" },
@@ -488,18 +507,18 @@ function projectsPage(root) {
           { class: "dev-title" },
           h("strong", null, s.project),
           statusBadge(s.status),
+          s.startedBy === "ai" ? h("span", { class: "badge badge-accent", title: "Started by an AI agent through dx's MCP tools" }, "Started by AI") : null,
+          s.errorCount ? h("span", { class: "badge badge-danger" }, plural(s.errorCount, "error")) : null,
           s.url ? h("a", { href: s.url, target: "_blank", rel: "noreferrer", class: "mono" }, s.url) : h("span", { class: "dim mono" }, s.command),
         ),
         h(
           "div",
           { class: "toolbar" },
           s.url && s.status === "ready" ? btn("Open in browser", (e) => open(e.currentTarget, { dir: s.dir }, "browser", s.url), { iconName: "external", small: true, kind: "primary" }) : null,
-          btn(showing ? "Hide output" : "Show output", () => {
-            if (openLogs.has(key)) openLogs.delete(key);
-            else openLogs.add(key);
-            setPref("openLogs", JSON.stringify([...openLogs]));
-            renderDev();
-          }, { iconName: "log", small: true }),
+          s.errorCount || showingErrors
+            ? btn(showingErrors ? "Hide errors" : "Show errors", () => toggle(openErrors, "openErrors"), { iconName: "warn", small: true })
+            : null,
+          btn(showing ? "Hide output" : "Show output", () => toggle(openLogs, "openLogs"), { iconName: "log", small: true }),
           live
             ? btn("Stop", (e) => stopDev(e.currentTarget, s.dir), { iconName: "stop", small: true })
             : [
@@ -512,6 +531,7 @@ function projectsPage(root) {
               ],
         ),
       ),
+      showingErrors ? errorsEl : null,
       showing ? logEl : null,
     );
     if (showing) {
@@ -520,7 +540,54 @@ function projectsPage(root) {
       state.el = logEl;
       renderLines(state, state.lines, true);
     }
+    if (showingErrors) {
+      errorPanels.set(key, { el: errorsEl, dir: s.dir });
+      void refreshErrors(key);
+    }
     return card;
+  }
+
+  async function refreshErrors(key) {
+    const panel = errorPanels.get(key);
+    if (!panel?.el.isConnected) return;
+    let result;
+    try {
+      [result] = await api(`/api/dev/errors?dir=${encodeURIComponent(panel.dir)}`);
+    } catch {
+      return;
+    }
+    const errors = result?.errors ?? [];
+    const sig = errors.map((e) => `${e.id}:${e.count}`).join(",");
+    if (panel.sig === sig) return;
+    panel.sig = sig;
+    panel.el.replaceChildren(
+      errors.length
+        ? h("ul", { class: "dev-error-list" }, errors.map((e) => errorItem(e, panel.dir)))
+        : h("p", { class: "dev-errors-empty" }, icon("info"), "No errors. They clear when the dev server rebuilds cleanly."),
+    );
+  }
+
+  function errorItem(e, dir) {
+    const where = e.file ? `${inProject(e.file, dir)}${e.line ? `:${e.line}` : ""}${e.column ? `:${e.column}` : ""}` : null;
+    const detail = e.lines.slice(1, 8).join("\n");
+    return h(
+      "li",
+      { class: "dev-error" },
+      h(
+        "div",
+        { class: "dev-error-head" },
+        h("span", { class: "badge badge-danger" }, KIND_LABELS[e.kind] ?? "Error"),
+        h("strong", { class: "dev-error-message" }, e.message),
+        e.count > 1 ? h("span", { class: "dim" }, `×${e.count}`) : null,
+      ),
+      where
+        ? btn(where, (ev) =>
+            busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file: e.file, line: e.line, column: e.column } })).message)),
+            { small: true, kind: "ghost", iconName: "code", title: "Open in your editor at this line", name: `Open ${where} in editor` },
+          )
+        : null,
+      detail ? h("pre", { class: "log log-snippet" }, detail) : null,
+    );
   }
 
   function renderLines(state, lines, replace) {
@@ -549,10 +616,14 @@ function projectsPage(root) {
           state.after = lines[lines.length - 1].n;
           renderLines(state, lines, false);
         }
-        if (server && server.status !== p.dev?.status) changed = true;
+        if (server && (server.status !== p.dev?.status || server.errorCount !== p.dev?.errorCount)) changed = true;
       } catch {
         // dashboard stopped; the next load shows the error
       }
+    }
+    for (const key of errorPanels.keys()) {
+      if (openErrors.has(key)) await refreshErrors(key);
+      else errorPanels.delete(key);
     }
     if (changed) await load();
     if (!stopped) timer = setTimeout(pollLogs, 1000);
@@ -567,11 +638,14 @@ function projectsPage(root) {
     if (e.key === "Escape") for (const m of root.querySelectorAll("details.menu[open]")) m.removeAttribute("open");
   }, { signal: abort.signal });
   let timer = setTimeout(pollLogs, 1000);
+  // Also picks up dev servers an AI agent starts while the page is open.
   const statusTimer = setInterval(async () => {
-    if (projects.some((p) => p.dev && (p.dev.status === "starting" || p.dev.status === "ready"))) {
-      const servers = await api("/api/dev").catch(() => null);
-      if (servers && servers.some((s) => projects.find((p) => p.dir === s.dir)?.dev?.status !== s.status)) load();
-    }
+    const servers = await api("/api/dev").catch(() => null);
+    const differs = (s) => {
+      const dev = projects.find((p) => p.dir === s.dir)?.dev;
+      return dev?.status !== s.status || dev?.errorCount !== s.errorCount;
+    };
+    if (servers && (servers.some(differs) || servers.length !== projects.filter((p) => p.dev).length)) load();
   }, 3000);
   load();
   return () => {
@@ -1243,8 +1317,19 @@ function healthPage(root) {
     const checks = h(
       "ul",
       { class: "checks card" },
-      data.checks.map((c) => h("li", null, h("span", { class: `status-${c.status}`, "aria-label": c.status }, symbol[c.status]), h("strong", null, c.name), h("span", { class: "dim", style: { overflowWrap: "anywhere" } }, c.detail))),
+      data.checks.map((c) =>
+        h(
+          "li",
+          null,
+          h("span", { class: `status-${c.status}`, "aria-label": c.status }, symbol[c.status]),
+          h("strong", null, c.name),
+          h("span", { class: "dim", style: { overflowWrap: "anywhere" } }, c.detail, c.fix ? h("span", { class: "check-fix" }, "Fix: ", h("span", { class: "mono" }, c.fix)) : null),
+        ),
+      ),
     );
+
+    const aiTools = h("div", null, loadingView("Looking for AI tools…"));
+    void loadAiTools(aiTools);
 
     const config = data.config;
     const newRoot = h("input", { class: "input input-wide", placeholder: "C:\\Users\\you\\code", "aria-label": "Folder to add" });
@@ -1308,8 +1393,60 @@ function healthPage(root) {
 
     holder.replaceChildren(
       h("section", { class: "section" }, h("h2", { class: "section-title" }, "Checks"), checks),
+      h(
+        "section",
+        { class: "section" },
+        h("h2", { class: "section-title" }, "AI tools"),
+        h("p", { class: "page-sub" }, "Connected tools can run your apps, read their output and errors, and check pages through dx. dx connects new ones by itself."),
+        aiTools,
+      ),
       settings,
       h("section", { class: "section" }, h("h2", { class: "section-title" }, "Recent activity"), runs),
+    );
+  }
+
+  async function loadAiTools(holderEl) {
+    let tools;
+    try {
+      tools = await api("/api/ai-tools");
+    } catch (err) {
+      holderEl.replaceChildren(errorView(err, () => loadAiTools(holderEl)));
+      return;
+    }
+    const act = (button, path, ids, label) =>
+      busy(button, label, async () => {
+        const results = await api(path, { method: "POST", body: { ids } });
+        for (const r of results) toast(`${r.name}: ${r.message}`, r.ok ? "ok" : "error");
+        await loadAiTools(holderEl);
+      });
+    const state = (t) =>
+      !t.installed && !t.connected
+        ? ["", "–", "Not installed"]
+        : t.connected && t.current
+          ? ["status-ok", "✓", "Connected"]
+          : t.connected
+            ? ["status-warn", "!", "Points at an old copy of dx"]
+            : ["status-warn", "!", "Not connected"];
+    holderEl.replaceChildren(
+      h(
+        "ul",
+        { class: "checks checks-actions card" },
+        tools.map((t) => {
+          const [cls, sym, text] = state(t);
+          return h(
+            "li",
+            null,
+            h("span", { class: cls, "aria-hidden": "true" }, sym),
+            h("strong", null, t.name),
+            h("span", { class: "dim" }, text, t.connected && t.current && t.note ? h("span", { class: "check-fix" }, t.note) : null),
+            t.connected && t.current
+              ? btn("Disconnect", (e) => act(e.currentTarget, "/api/ai-tools/disconnect", [t.id], "Disconnecting…"), { small: true, kind: "ghost", name: `Disconnect ${t.name}` })
+              : t.installed || t.connected
+                ? btn(t.connected ? "Update" : "Connect", (e) => act(e.currentTarget, "/api/ai-tools/connect", [t.id], "Connecting…"), { small: true, kind: "primary", name: `Connect ${t.name}` })
+                : h("span"),
+          );
+        }),
+      ),
     );
   }
 

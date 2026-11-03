@@ -4,7 +4,8 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { handleApi, HttpError } from "./api.js";
-import { stopAllDevServers } from "./dev.js";
+import { anyDevServerRunning, stopAllDevServers } from "./dev.js";
+import { clearDashboardInfo, writeDashboardInfo } from "./link.js";
 
 /**
  * The dx dashboard's server. It listens on 127.0.0.1 only, and because the dashboard can kill
@@ -19,6 +20,11 @@ export interface DashboardOptions {
   publicDir?: string;
   /** Token to require; generated when not given. */
   token?: string;
+  /** Running without a terminal; it then stops itself when idle. */
+  background?: boolean;
+  /** Minutes with no dev servers and no requests before a background dashboard calls onIdle (default 30). */
+  idleMinutes?: number;
+  onIdle?: () => void;
 }
 
 export interface Dashboard {
@@ -26,6 +32,8 @@ export interface Dashboard {
   port: number;
   token: string;
   close(): Promise<void>;
+  /** Settles once the dashboard has stopped, whoever stopped it. */
+  closed: Promise<void>;
 }
 
 const DEFAULT_PORT = 4646;
@@ -43,6 +51,10 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   const token = options.token ?? randomBytes(24).toString("hex");
   const publicDir = options.publicDir ?? fileURLToPath(new URL("../public/", import.meta.url));
   let port = 0;
+  let lastActivity = Date.now();
+  let closing: Promise<void> | undefined;
+  let markClosed: () => void = () => undefined;
+  const closed = new Promise<void>((resolve) => (markClosed = resolve));
 
   const server = http.createServer((req, res) => {
     void respond(req, res).catch((err: Error) => send(res, 500, { error: err.message }));
@@ -61,6 +73,12 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       }
       const origin = req.headers.origin;
       if (origin && !allowedHosts.some((h) => origin === `http://${h}`)) return send(res, 403, { error: "Wrong origin." });
+      lastActivity = Date.now();
+      if (url.pathname === "/api/shutdown" && req.method === "POST") {
+        send(res, 200, { ok: true });
+        setTimeout(() => void close(), 50);
+        return;
+      }
       let body: Record<string, unknown> = {};
       if (req.method === "POST") {
         try {
@@ -99,18 +117,30 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   }
 
   port = await listen(server, options.port ?? DEFAULT_PORT);
-  return {
-    url: `http://127.0.0.1:${port}/`,
-    port,
-    token,
-    async close() {
+  const url = `http://127.0.0.1:${port}/`;
+  writeDashboardInfo({ url, port, token, pid: process.pid, startedAt: new Date().toISOString(), background: !!options.background });
+
+  const idleMs = (options.idleMinutes ?? 30) * 60_000;
+  const idleTimer = setInterval(() => {
+    if (options.background && !anyDevServerRunning() && Date.now() - lastActivity > idleMs) options.onIdle?.();
+  }, Math.min(60_000, Math.max(1000, idleMs / 4)));
+  idleTimer.unref();
+
+  function close(): Promise<void> {
+    closing ??= (async () => {
+      clearInterval(idleTimer);
+      clearDashboardInfo();
       await stopAllDevServers();
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();
       });
-    },
-  };
+      markClosed();
+    })();
+    return closing;
+  }
+
+  return { url, port, token, close, closed };
 }
 
 /** Listens on 127.0.0.1, moving to the next port when the wanted one is taken. */

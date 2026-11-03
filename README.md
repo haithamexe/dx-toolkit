@@ -2,6 +2,8 @@
 
 Your projects, dev servers, ports, work journal and weekly summary in one place: a local dashboard, a `dx` command, and tools your AI assistant can call. Runs on Windows, macOS and Linux.
 
+**Your AI coding agent can run your app and see what it does.** Claude Code, Cursor and the others start the dev server through dx, read its output, see compile errors and stack traces with their file and line, request pages, and check that a fix worked, while you watch the same server in the dashboard. dx connects itself to the AI tools on your computer: there's nothing to configure.
+
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/projects-light.png">
   <img alt="The dx dashboard's Projects page: six projects with Run, Open in editor and More buttons, and a running dev server for shop-website at localhost:5173." src="docs/images/projects.png">
@@ -26,6 +28,7 @@ Everything dx stores is in one folder: `~/.dx` (`C:\Users\<you>\.dx`).
 | `runs.jsonl` | One line per tool run, so a failure is never silent (`dx runs`) |
 | `summaries/` | Saved work summaries, one markdown file per day you ran `dx summary --save` |
 | `templates/` | Your project templates for `dx new`, one folder each |
+| `dashboard.json` | While the dashboard runs: its address and access token, readable by you only, so the `dx` command and AI tools can reach it |
 
 ---
 
@@ -39,11 +42,15 @@ cd dx-toolkit
 npm install
 npm run build
 npm run link      # puts the `dx` command on your PATH
-dx doctor         # checks everything works on this machine
-dx config add-root ~/code   # if your projects aren't in ~/Desktop/projects
+dx ui             # opens the dashboard
 ```
 
-`dx doctor` should show green ticks. If the editor check warns, set it with `dx config editor cursor` (or whatever you use).
+That's all. The first time you use dx it sets itself up:
+- **Your projects**: it looks in the usual code folders (`~/projects`, `~/code`, `~/dev`, `~/src`, `~/repos`, `~/Documents/GitHub`, `~/Desktop/projects` and similar) and uses the ones you have.
+- **Your editor**: the first of VS Code, Cursor, Windsurf, Zed, Sublime Text or JetBrains it finds.
+- **Your AI tools**: it adds itself to Claude Code, Claude Desktop, Cursor, Windsurf and VS Code, whichever are installed, and says so. A tool you install later is connected the next time the dashboard starts. `dx setup --undo` takes it all back.
+
+Projects somewhere else? `dx config add-root <folder>`, or add the folder on the dashboard's Health page. `dx doctor` checks everything and says how to fix what isn't right; your AI tool can run the fixes for you (ask it to "check dx's setup").
 
 - **macOS and Linux**: if `npm run link` fails with a permissions error, your global npm folder belongs to root. Use a Node version manager (nvm, fnm, Volta) rather than `sudo`.
 - **Linux**: `dx port` and `dx kill` need `lsof` (`sudo apt install lsof` or your distro's equivalent). Copying a summary needs `wl-copy` or `xclip`, and "open in a terminal window" uses `x-terminal-emulator`.
@@ -63,20 +70,21 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 
 | Page | What you can do there |
 |---|---|
-| **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; open a project in your editor, in a terminal window or in File Explorer; save one as a template |
+| **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; see servers your AI agent started; open a project in your editor, in a terminal window or in File Explorer; save one as a template |
 | **New project** | Create a project from a template or a copy of another, with git and packages installed |
 | **Ports** | See what's listening and stop it (it asks first, naming the process) |
 | **Journal** | Add what you did, read back 7, 30 or 90 days |
 | **Summary** | Your week: commits, pull requests, journal, where the time went, uncommitted work; copy it as markdown or save it |
 | **Cleanup** | See which `node_modules` and build folders can go, pick them, delete them (it asks first) |
 | **Dependencies** | Run the audit across all projects with a progress bar; open a row for its outdated packages |
-| **Health & settings** | `dx doctor`'s checks, your projects folders, editor and GitHub username, and recent activity |
+| **Health & settings** | `dx doctor`'s checks with how to fix each problem, which AI tools are connected (with Connect and Disconnect buttons), your projects folders, editor and GitHub username, and recent activity |
 
 | Summary | Cleanup |
 |---|---|
 | ![The Summary page: 11 commits in 3 projects, 4 journal entries, and the week's journal and commits.](docs/images/summary.png) | ![The Cleanup page: 168 MB of node_modules and build folders in three idle projects, selected for deletion.](docs/images/cleanup.png) |
 
-- **It runs on your computer only** (`http://127.0.0.1:4646`), and only while `dx ui` runs; Ctrl+C stops it. Every action needs a secret the page gets when it loads, so other websites can't use it.
+- **It runs on your computer only** (`http://127.0.0.1:4646`). Every action needs a secret the page gets when it loads, so other websites can't use it.
+- **It's started for you when needed.** When an AI tool asks dx to run a dev server, dx starts the dashboard in the background; `dx ui` then just opens it. A background dashboard stops itself after 30 minutes with no dev servers running and nobody using it. `dx ui --stop` stops it now.
 - **Dev servers you start from the dashboard stop when the dashboard stops**, like a dev server stops when you close its terminal. For one that keeps running, use **More → Run in a terminal window**.
 - Light and dark follow your system, or pick one at the bottom of the sidebar. It works on a phone-sized window too.
 - `dx ui --port 5000` uses another port; `dx ui --no-open` doesn't open the browser. From the project folder, `npm run ui` does the same as `dx ui`.
@@ -88,6 +96,10 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 | Command | What it does |
 |---|---|
 | `dx ui` | The dashboard: everything below, with buttons, in your browser |
+| `dx ui --background` / `dx ui --stop` | Start it without a terminal / stop it and the dev servers it runs |
+| `dx logs todo-app -f` | Follow the output of a dev server running in the dashboard, one your AI agent started included |
+| `dx errors` | Errors in every running dev server, with file and line (`dx errors todo-app` for one) |
+| `dx setup` | Connect dx to your AI tools (it does this by itself; `--list` shows them, `--undo` removes dx from them) |
 | `dx go todo-app` | Open the project in your editor, start its dev server here, open the browser when it's ready |
 | `dx go todo-app -w` | Same, but the dev server runs in a new terminal window |
 | `dx go` | Pick from your most recently active projects |
@@ -224,17 +236,20 @@ A folder containing only a `.devrc.json` also counts as a project.
 
 ### Settings: `~/.dx/config.json`
 
-Created on first run:
+Created on first run, with the code folders and editor dx found:
 
 ```json
 {
-  "projectsRoots": ["~/Desktop/projects"],
-  "editor": "code",
+  "projectsRoots": ["~/code", "~/Documents/GitHub"],
+  "editor": "cursor",
   "scanDepth": 2,
   "ignore": ["node_modules", "dist", "build", "out", "vendor", "target", "bin", "obj"],
-  "devServerTimeout": 90
+  "devServerTimeout": 90,
+  "aiToolsSeen": ["claude-code", "cursor"]
 }
 ```
+
+- **`aiToolsSeen`**: the AI tools dx has connected itself to once. A tool you disconnect stays disconnected. Set `"autoConnectAi": false` to stop dx connecting itself to new ones (`dx setup --undo` does both).
 
 A folder counts as a project when it has a `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, a `.sln`/`.csproj`, a `.git` folder or a `.devrc.json`.
 
@@ -266,7 +281,26 @@ If the `dx` command is installed, "Start Dev Server" runs `dx go .` in the new t
 
 ## Claude and other AI tools (MCP)
 
-The MCP server gives AI tools nine tools:
+dx connects itself to **Claude Code, Claude Desktop, Cursor, Windsurf and VS Code** (Copilot's agent mode), whichever you have: see [Setup](#setup). Restart Claude Desktop once afterwards; the others pick it up in new chats.
+
+### Let your AI run your app
+
+Ask your agent to work on a project and check its own work, for example *"Start todo-app, then fix whatever error the checkout page shows."* It can:
+
+| Tool | What the agent gets |
+|---|---|
+| `start_dev_server` | Starts the project's dev server, waits until it's ready or has failed, and returns the URL, any errors and the output |
+| `wait_for_rebuild` | After it edits files: waits for the server to rebuild, then says whether the change added or fixed errors |
+| `check_url` | Requests a page or API route (localhost only) and returns the status, title and start of the body, plus anything the server logged and any error it hit while answering |
+| `dev_errors` | Current errors across running servers: TypeScript, Vite, esbuild, webpack and Next.js, Node stack traces, Python tracebacks, Go panics, with file and line. An error disappears once the server rebuilds cleanly |
+| `dev_logs` | The server's output, only what's new since it last looked |
+| `dev_servers`, `stop_dev_server`, `restart_dev_server` | What's running, and stopping or restarting it |
+| `dx_setup_check` | dx's health checks, each problem with the command that fixes it, so the agent can fix your setup for you |
+
+The servers run in the dx dashboard, not inside the AI tool, so they keep running after the chat ends, and you can watch them, with a **Started by AI** label and their errors, in the Projects page or with `dx logs <project> -f`.
+
+### Your projects, ports, journal and week
+
 - `list_projects`, `open_project`
 - `list_ports`, `kill_port`
 - `add_log_entry`, `read_log`
@@ -276,9 +310,9 @@ The MCP server gives AI tools nine tools:
 
 Then you can say things like "free port 3000 and start todo-app" or "write my standup from what I did this week".
 
-In the examples below, replace `/path/to/dx-toolkit` with where you cloned it (on Windows, for example `C:\\Users\\you\\dx-toolkit` in JSON).
+### Connecting by hand
 
-**Claude Desktop**: add this to `claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS), then restart Claude Desktop:
+Only needed for a tool dx doesn't know, such as Raycast AI. The server is `node /path/to/dx-toolkit/packages/mcp/dist/index.js` (on Windows in JSON, for example `C:\\Users\\you\\dx-toolkit\\…`). For reference, this is what `dx setup` writes for Claude Desktop in `claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS):
 
 ```json
 {
@@ -291,7 +325,7 @@ In the examples below, replace `/path/to/dx-toolkit` with where you cloned it (o
 }
 ```
 
-**Claude Code** (available in every project), run from the `dx-toolkit` folder:
+And for Claude Code, run from the `dx-toolkit` folder:
 
 ```bash
 claude mcp add -s user dx -- node "$PWD/packages/mcp/dist/index.js"
@@ -314,7 +348,10 @@ Call `recordRun(tool, ok, detail)` from anything that changes something, so it s
 
 ## Tests and CI
 
-`npm test` builds everything and runs the tests in `packages/core/src/__tests__` and `packages/web/src/__tests__` (the dashboard's server: its security checks, and a real dev server started, streamed and stopped through it). On GitHub, [.github/workflows/ci.yml](.github/workflows/ci.yml) runs them on every push to `main` and every pull request, on Windows, macOS and Linux with Node 22 and 24, and tries the `dx` command itself.
+`npm test` builds everything and runs the tests in `packages/core`, `packages/web` and `packages/mcp`:
+- **core**: the tools, including error detection on real output from each tool it knows and connecting to AI tools on a pretend computer.
+- **web**: the dashboard's server, meaning its security checks, and a real dev server started, streamed, checked for errors and stopped through it.
+- **mcp**: a real MCP client that starts an app, finds an error through a request and sees it cleared, as an agent would. On GitHub, [.github/workflows/ci.yml](.github/workflows/ci.yml) runs them on every push to `main` and every pull request, on Windows, macOS and Linux with Node 22 and 24, and tries the `dx` command itself.
 
 ## Working on dx with Claude Code
 
@@ -323,7 +360,9 @@ Call `recordRun(tool, ok, detail)` from anything that changes something, so it s
 ## Next on the list
 
 - **Raycast**: install and check the extension, and add commands for the summary and cleanup.
-- **Tests for the CLI and MCP server**: only `core` and the dashboard's server are tested today.
+- **Stacks and local domains**: start a front end, API and worker together with `dx up`, at addresses like `shop.localhost` instead of port numbers.
+- **Browser console errors** for agents: dx sees the server's output; pairing it with a browser MCP server covers what happens in the page.
+- **Tests for the CLI**: `core`, the dashboard and the MCP server are tested today.
 - **`dx deps --fix`**, and yarn and bun projects in `dx deps`.
 
 The full backlog is in [docs/MEMORY.md](docs/MEMORY.md).

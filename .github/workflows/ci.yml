@@ -32,7 +32,7 @@ jobs:
 
       - run: npm ci
 
-      # Builds core, cli and mcp, then runs the core tests (they use git, which every runner has).
+      # Builds every package, then runs the core, dashboard and MCP tests (they use git, which every runner has).
       - run: npm test
 
       - name: Smoke-test the dx command
@@ -44,3 +44,7 @@ jobs:
           node packages/cli/dist/index.js doctor || true
           node packages/cli/dist/index.js summary --no-github --days 1
           node packages/cli/dist/index.js clean --list
+          node packages/cli/dist/index.js setup --list
+          node packages/cli/dist/index.js ui --background --no-open
+          node packages/cli/dist/index.js errors
+          node packages/cli/dist/index.js ui --stop

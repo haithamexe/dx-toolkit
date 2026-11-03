@@ -65,7 +65,11 @@ export const doctorCommand: Command = {
   async run() {
     const checks = await runDoctor();
     const icon = { ok: c.green("✓"), warn: c.yellow("!"), fail: c.red("✗") } as const;
-    for (const check of checks) console.log(`${icon[check.status]} ${c.bold(check.name.padEnd(17))} ${check.detail}`);
+    for (const check of checks) {
+      console.log(`${icon[check.status]} ${c.bold(check.name.padEnd(17))} ${check.detail}`);
+      if (check.fix) console.log(`  ${" ".repeat(17)} ${c.dim("fix:")} ${c.cyan(check.fix)}`);
+    }
+    if (checks.some((x) => x.fix)) console.log(c.dim("\nYour AI tool can apply these fixes: ask it to check dx's setup."));
     return checks.some((x) => x.status === "fail") ? 1 : 0;
   },
 };

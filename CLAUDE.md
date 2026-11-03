@@ -21,7 +21,7 @@ Guidance for Claude Code when working in this repository. What the project is fo
 ```bash
 npm install
 npm run build      # tsc -b over core, web, cli, mcp (project references)
-npm test           # builds, then node --test over core and web dist tests
+npm test           # builds, then node --test over core, web and mcp dist tests
 npm run watch      # rebuild on change
 npm run link       # npm install -g ./packages/cli: puts `dx` on PATH (a link, so rebuilds go live)
 npm run ui         # the dashboard from this folder
@@ -47,7 +47,13 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - A random token per run is injected into `<meta name="dx-token">`; every `/api/*` call sends it as `X-DX-Token`, compared with `timingSafeEqual`. Cross-origin `Origin` headers are refused.
 - CSP: `default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; …`. No inline scripts or styles, no external hosts. The page builds DOM with the `h()` helper and text nodes, never `innerHTML` with data.
 - Every action takes a project `dir` and checks it against `scanProjects()`; cleanup deletes only folders `findCleanup()` returns on a fresh scan.
+- `~/.dx/dashboard.json` (mode 0600) holds the URL and token so the CLI and MCP server can call the API (`web/src/link.ts`). Never put the token anywhere else: not in a URL, a log line or `runs.jsonl`.
+- `POST /api/check` reaches loopback hosts only and doesn't follow redirects; `POST /api/open-file` opens files inside a known project only.
 - `server.test.ts` covers all of this. Run it after touching either file.
+
+## No setup
+
+Every feature must work without the user configuring anything. If something needs setting up, dx does it (first run, or when the dashboard starts); if it can't, `dx doctor` gives the exact fix command in its `fix` field, which AI agents receive through the `dx_setup_check` MCP tool. Tests never touch the real machine's AI tools: pass an `AiEnv`, and set `autoConnectAi: false` in test configs that start a background dashboard.
 
 ## The dashboard's front end
 

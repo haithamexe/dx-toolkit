@@ -35,6 +35,22 @@ export async function openInEditor(dir: string, editor = "code"): Promise<void> 
   await detached(editor, [dir], { shell: false });
 }
 
+/**
+ * Opens a file in the editor at a line. VS Code and its relatives (Cursor, Windsurf, VSCodium)
+ * jump to the line with `-g file:line:column`; other editors open the file.
+ */
+export async function openFileInEditor(file: string, line?: number, column?: number, editor = "code"): Promise<void> {
+  const name = editor.replace(/^"|"$/g, "").split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  const goto = /^(code|code-insiders|cursor|windsurf|codium|vscodium)(\.cmd|\.exe)?$/.test(name.split(/\s+/)[0]) && line;
+  const target = goto ? `${file}:${line}${column ? `:${column}` : ""}` : file;
+  const args = goto ? ["-g", target] : [target];
+  if (isWin) {
+    await detached(`${editor} ${args.map(winQuote).join(" ")}`, [], { shell: true, windowsHide: true });
+    return;
+  }
+  await detached(editor, args, { shell: false });
+}
+
 /** Opens a URL in the default browser. */
 export async function openUrl(url: string): Promise<void> {
   if (!/^https?:\/\//i.test(url)) throw new Error(`Only http(s) URLs can be opened: ${url}`);

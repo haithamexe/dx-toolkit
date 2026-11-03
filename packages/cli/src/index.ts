@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import { recordRun } from "@dx/core";
 import type { Command } from "./command.js";
+import { errorsCommand, firstRunSetup, logsCommand, setupCommand } from "./commands/ai.js";
 import { cleanCommand } from "./commands/clean.js";
 import { depsCommand } from "./commands/deps.js";
 import { goCommand } from "./commands/go.js";
@@ -26,6 +27,9 @@ const commands: Command[] = [
   summaryCommand,
   cleanCommand,
   depsCommand,
+  logsCommand,
+  errorsCommand,
+  setupCommand,
   configCommand,
   runsCommand,
   doctorCommand,
@@ -77,6 +81,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   try {
+    if (command !== setupCommand) await firstRunSetup();
     return (await command.run(rest)) ?? 0;
   } catch (err) {
     const e = err as Error & { code?: string };

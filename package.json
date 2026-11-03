@@ -15,7 +15,7 @@
     "build": "tsc -b packages/core packages/web packages/cli packages/mcp",
     "watch": "tsc -b -w packages/core packages/web packages/cli packages/mcp",
     "clean": "tsc -b --clean packages/core packages/web packages/cli packages/mcp",
-    "test": "npm run build && node --test \"packages/core/dist/__tests__/*.test.js\" \"packages/web/dist/__tests__/*.test.js\"",
+    "test": "npm run build && node --test \"packages/core/dist/__tests__/*.test.js\" \"packages/web/dist/__tests__/*.test.js\" \"packages/mcp/dist/__tests__/*.test.js\"",
     "link": "npm install -g ./packages/cli",
     "raycast:install": "npm install --prefix packages/raycast",
     "raycast:dev": "npm run dev --prefix packages/raycast",

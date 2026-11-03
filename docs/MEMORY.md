@@ -5,13 +5,22 @@ What was decided while building dx, and why, so the next session doesn't relearn
 ## Where it stands (Nov 2026)
 
 - CI is green on Windows, macOS and Linux × Node 22 and 24.
-- **Built**: core tools; the `dx` command with `ui, go, new, projects, port, kill, log, summary, clean, deps, config, runs, doctor`; the MCP server with 9 tools; the dashboard with 8 pages (Projects, New project, Ports, Journal, Summary, Cleanup, Dependencies, Health & settings).
+- **Built**:
+  - the core tools;
+  - the `dx` command: `ui, go, new, projects, port, kill, log, summary, clean, deps, logs, errors, setup, config, runs, doctor`;
+  - the MCP server with 18 tools, 9 of them for running apps;
+  - the dashboard with 8 pages (Projects, New project, Ports, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - error detection in dev-server output;
+  - setting itself up with no configuration.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
 
 - **Raycast**: the extension in `packages/raycast` has never been installed or checked. Add commands for summary and cleanup.
-- **Tests for `cli` and `mcp`**: only `core` and `web` have tests.
+- **Stacks and local domains** (`dx up`, `shop.localhost`): the next big feature, built with the same no-setup rule.
+- **More from the earlier idea list**: resume where you left off, an unsaved-work radar, `dx setup <git URL>`, a yearly work record, `.env` and secrets checks.
+- **Browser console errors for agents**: point to pairing with a browser MCP server, or add a headless check later.
+- **Tests for `cli`**: `core`, `web` and `mcp` have tests.
 - **Private pull requests in the summary** need `GITHUB_TOKEN` or `gh auth login`; the dashboard could say so when neither is set.
 - **`dx deps --fix`**: it only reports today; fixing is left to `npm update` / `npm audit fix`.
 - **yarn and bun** projects are skipped by `dx deps`.
@@ -20,6 +29,43 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### No setup, ever (the guiding rule)
+
+- **Every feature works without the user configuring anything.** If something needs setting up, dx does it itself; if it truly can't (a system package to install), `dx doctor` and the `dx_setup_check` MCP tool give the exact fix command so the user's AI agent can run it.
+- **First run**:
+  - `firstRunConfig()` picks the projects folders from the usual code folders that exist.
+  - It picks the editor from the first known one on PATH.
+  - `firstRunSetup()` in the CLI and `autoConnectAiTools()` in the dashboard add dx to installed AI tools.
+- **AI tool connections** (`core/src/tools/aiSetup.ts`):
+  - **Claude Code** goes through `claude mcp add -s user`. Its `~/.claude.json` is busy and large, so dx never edits it directly.
+  - **The other tools** get a JSON entry:
+    - Claude Desktop, Cursor and Windsurf: under `mcpServers`.
+    - VS Code: under `servers`, with `type: "stdio"`. Its file may have comments.
+  - The entry uses `process.execPath` as the command so GUI apps without Node on PATH still work.
+  - The original file is backed up once as `*.dx-backup`.
+  - **`aiToolsSeen` remembers tools already offered**, so a tool the user disconnected by hand isn't reconnected. `autoConnectAi: false` (set by `dx setup --undo`) turns it all off.
+  - **Tests pass an `AiEnv`** (home, app-data folder, fake `claude`) and never touch the real machine. Test configs that start a background dashboard set `autoConnectAi: false` for the same reason.
+
+### AI agents running apps (MCP + dashboard)
+
+- **The dashboard owns the dev servers; the MCP server is a client.**
+  - That way the user sees what the agent runs (a "Started by AI" label), there's no second copy on another port, and servers outlive the chat.
+  - The rejected alternative was the MCP process running its own servers: they'd be invisible, and the two would collide on ports.
+- **`~/.dx/dashboard.json`** holds the running dashboard's URL, token and pid, written with mode 0600.
+  - `link.ts`'s `ensureDashboard()` reads it, pings `/api/ping`, and if nothing answers starts `web/dist/background.js` detached.
+  - A `dashboard.lock` file keeps two callers from starting two dashboards.
+- **A background dashboard stops itself** after 30 minutes with no running dev servers and no API requests (the open page polls, so it counts). `POST /api/shutdown` stops any dashboard (`dx ui --stop`).
+- **Error detection** (`core/src/tools/devErrors.ts`):
+  - It reads output line by line.
+  - Start patterns per tool are anchored at the line start (after an optional timestamp), so echoed source code that mentions "error" isn't one.
+  - Indented or stack/code-frame lines join the error.
+  - The id is a hash of kind, message (digits blanked) and file:line, so repeats count up.
+  - A clean rebuild line resolves all current errors.
+  - Node prints a SyntaxError's `file:line` above the error, so the last 6 lines are kept to find it.
+- **`check_url` only reaches loopback hosts** and doesn't follow redirects, so an agent can't be steered at the network.
+- **`POST /api/open-file`** opens only files inside a project dx found.
+- **The MCP tools remember the last output line the agent saw per project** (in the MCP process), so `dev_logs` and `wait_for_rebuild` return only what's new.
 
 ### Dashboard (`packages/web`)
 

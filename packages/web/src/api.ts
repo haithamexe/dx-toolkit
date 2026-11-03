@@ -6,16 +6,20 @@ import {
   auditDependencies,
   buildSummary,
   commandExists,
+  connectAiTools,
   copyProject,
   deleteCleanup,
+  disconnectAiTools,
   expandHome,
   findCleanup,
   formatSummary,
   isValidProjectName,
   killPort,
+  listAiTools,
   listListeningPorts,
   listTemplates,
   loadConfig,
+  openFileInEditor,
   openInEditor,
   openTerminal,
   openUrl,
@@ -29,11 +33,23 @@ import {
   saveConfig,
   saveSummary,
   scanProjects,
+  type AiToolId,
   type DepsReport,
   type Project,
   type Source,
 } from "@dx/core";
-import { clearDevServer, devLogs, listDevServers, startDevServer, stopDevServer } from "./dev.js";
+import { checkUrl } from "./check.js";
+import {
+  clearDevServer,
+  devErrors,
+  devLogs,
+  listDevServers,
+  restartDevServer,
+  startDevServer,
+  stopDevServer,
+  waitForDevServer,
+  type StartedBy,
+} from "./dev.js";
 
 /** A request the page made, already parsed. */
 export interface ApiRequest {
@@ -55,6 +71,8 @@ export class HttpError extends Error {
 type Handler = (req: ApiRequest) => Promise<unknown> | unknown;
 
 const routes: Record<string, Handler> = {
+  "GET /api/ping": () => ({ ok: true, pid: process.pid }),
+
   // ------------------------------------------------------------ projects
   "GET /api/projects": () => {
     const running = new Map(listDevServers().map((d) => [d.dir.toLowerCase(), d]));
@@ -103,7 +121,58 @@ const routes: Record<string, Handler> = {
 
   // ------------------------------------------------------------ dev servers
   "GET /api/dev": () => listDevServers(),
-  "POST /api/dev/start": (req) => startDevServer(knownProject(req.body.dir)),
+  "POST /api/dev/start": (req) => startDevServer(knownProject(req.body.dir), startedBy(req.body.by)),
+  "POST /api/dev/restart": (req) => restartDevServer(knownProject(req.body.dir), startedBy(req.body.by)),
+  "GET /api/dev/errors": (req) =>
+    devErrors(req.query.get("dir") || undefined, {
+      all: req.query.get("all") === "1",
+      after: req.query.get("after") ? Number(req.query.get("after")) : undefined,
+    }),
+  "POST /api/dev/wait": (req) =>
+    waitForDevServer(String(req.body.dir ?? ""), {
+      after: req.body.after === undefined ? undefined : Number(req.body.after),
+      until: req.body.until === "ready" ? "ready" : "quiet",
+      quietMs: clampInt(req.body.quietMs, 200, 10_000, 1000),
+      settleMs: clampInt(req.body.settleMs, 0, 30_000, 4000),
+      timeoutMs: clampInt(req.body.timeoutMs, 1000, 120_000, 60_000),
+    }),
+  "POST /api/check": async (req) => {
+    let url = typeof req.body.url === "string" ? req.body.url : "";
+    if (!url) {
+      const project = knownProject(req.body.dir);
+      const base = listDevServers().find((s) => s.dir.toLowerCase() === project.dir.toLowerCase())?.url ?? project.url;
+      if (!base) throw new HttpError(400, `${project.name} has no URL yet. Start its dev server first.`);
+      url = new URL(String(req.body.path ?? "/"), base).href;
+    }
+    try {
+      return await checkUrl({
+        url,
+        method: typeof req.body.method === "string" ? req.body.method : undefined,
+        headers: req.body.headers && typeof req.body.headers === "object" ? (req.body.headers as Record<string, string>) : undefined,
+        body: typeof req.body.body === "string" ? req.body.body : req.body.body === undefined ? undefined : JSON.stringify(req.body.body),
+        timeoutMs: clampInt(req.body.timeoutMs, 500, 120_000, 15_000),
+      });
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  },
+  "POST /api/open-file": async (req) => {
+    const project = knownProject(req.body.dir);
+    const raw = String(req.body.file ?? "");
+    const norm = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+    const inside = (p: string) => norm(p).startsWith(norm(project.dir) + path.sep);
+    // Dev servers print paths absolute, relative to the project, or from its root ("/src/App.tsx").
+    const candidates = [path.resolve(project.dir, raw), path.resolve(project.dir, raw.replace(/^[\\/]+/, ""))];
+    const file = candidates.find((p) => inside(p) && fs.existsSync(p));
+    if (!file) {
+      if (!candidates.some(inside)) throw new HttpError(400, "Only files inside the project can be opened.");
+      throw new HttpError(404, `${raw} doesn't exist in ${project.name}.`);
+    }
+    const line = req.body.line ? clampInt(req.body.line, 1, 10_000_000, 1) : undefined;
+    const column = req.body.column ? clampInt(req.body.column, 1, 100_000, 1) : undefined;
+    await openFileInEditor(file, line, column, project.editor ?? loadConfig().editor);
+    return { message: `Opened ${path.relative(project.dir, file)}${line ? `:${line}` : ""}` };
+  },
   "POST /api/dev/stop": async (req) => (await stopDevServer(String(req.body.dir))) ?? null,
   "POST /api/dev/clear": (req) => {
     clearDevServer(String(req.body.dir));
@@ -242,6 +311,11 @@ const routes: Record<string, Handler> = {
     return { name, files: result.files, dir: result.dir };
   },
 
+  // ------------------------------------------------------------ AI tools
+  "GET /api/ai-tools": () => listAiTools(),
+  "POST /api/ai-tools/connect": (req) => connectAiTools(aiIds(req.body.ids)),
+  "POST /api/ai-tools/disconnect": (req) => disconnectAiTools(aiIds(req.body.ids)),
+
   // ------------------------------------------------------------ health and settings
   "GET /api/health": async () => ({
     checks: await runDoctor(),
@@ -299,6 +373,16 @@ function knownProject(dir: unknown): Project {
   const project = scanProjects(loadConfig()).find((p) => p.dir.toLowerCase() === wanted);
   if (!project) throw new HttpError(404, "That project isn't in your projects folders any more. Refresh the list.");
   return project;
+}
+
+function startedBy(raw: unknown): StartedBy {
+  return raw === "ai" || raw === "terminal" ? raw : "dashboard";
+}
+
+const AI_IDS: AiToolId[] = ["claude-code", "claude-desktop", "cursor", "windsurf", "vscode"];
+function aiIds(raw: unknown): AiToolId[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map(String).filter((id): id is AiToolId => (AI_IDS as string[]).includes(id));
 }
 
 function sourceFrom(raw: unknown): Source {

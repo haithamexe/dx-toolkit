@@ -18,7 +18,20 @@ fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "tiny-ap
 fs.writeFileSync(
   path.join(app, "server.cjs"),
   `const http = require("http");
-   const s = http.createServer((q, r) => r.end("hi")).listen(0, "127.0.0.1", () => {
+   function checkout(cart) { return cart.items.length; }
+   const s = http.createServer((q, r) => {
+     if (q.url === "/boom") {
+       try { checkout(undefined); } catch (e) { console.error(e.stack); }
+       r.statusCode = 500;
+       return r.end("Internal Server Error");
+     }
+     if (q.url === "/fixed") {
+       console.log("10:42:07 [vite] page reload src/cart.js");
+       return r.end("ok");
+     }
+     r.setHeader("content-type", "text/html");
+     r.end("<!doctype html><title>Tiny shop</title><h1>Hello</h1><script>var x = 1;</script>");
+   }).listen(0, "127.0.0.1", () => {
      console.log("  Local:   http://localhost:" + s.address().port + "/");
      console.error("a warning on stderr");
    });`,
@@ -53,6 +66,18 @@ function rawGet(p: string, host: string): Promise<number> {
   });
 }
 
+test("writes its address and token to dashboard.json, for this user only, so the MCP server can find it", async () => {
+  const { readDashboardInfo, findDashboard } = await import("../link.js");
+  const info = readDashboardInfo();
+  assert.equal(info?.port, dashboard.port);
+  assert.equal(info?.token, dashboard.token);
+  assert.equal(info?.pid, process.pid);
+  if (process.platform !== "win32") assert.equal(fs.statSync(path.join(home, "dashboard.json")).mode & 0o077, 0, "no access for group or others");
+  const client = await findDashboard();
+  assert.ok(client, "found and answering");
+  assert.deepEqual(await client.get("/api/ping"), { ok: true, pid: process.pid });
+});
+
 test("serves the page with its token and a strict content security policy", async () => {
   const res = await fetch(dashboard.url);
   assert.equal(res.status, 200);
@@ -78,6 +103,15 @@ test("lists projects and only acts on projects dx found", async () => {
   const outside = await api("/api/projects/open", { method: "POST", body: { dir: os.tmpdir(), action: "folder" } });
   assert.equal(outside.status, 404);
   assert.equal((await api("/api/dev/start", { method: "POST", body: { dir: os.homedir() } })).status, 404);
+});
+
+test("check only reaches this computer", async () => {
+  for (const url of ["http://example.com/", "http://192.168.1.1/", "file:///etc/passwd", "http://localhost.evil.com/"]) {
+    const r = await api("/api/check", { method: "POST", body: { url } });
+    assert.equal(r.status, 400, url);
+  }
+  const refused = (await api("/api/check", { method: "POST", body: { url: "http://127.0.0.1:1/" } })).json;
+  assert.match(refused.error, /Nothing is listening on port 1|ECONNREFUSED|fetch failed/);
 });
 
 test("journal: add an entry and read it back", async () => {
@@ -123,6 +157,37 @@ test("runs a dev server, streams its output, notices the URL it prints, and stop
 
   const listed = (await api("/api/projects")).json[0];
   assert.equal(listed.dev.status, "ready");
+
+  assert.equal(server.startedBy, "dashboard");
+  assert.equal(server.errorCount, 0, "a warning on stderr is not an error");
+
+  // An AI agent's loop: request a page, see the error the server logged, fix it, see it resolved.
+  const boom = (await api("/api/check", { method: "POST", body: { dir: app, path: "/boom" } })).json;
+  assert.equal(boom.status, 500);
+  assert.equal(boom.project, "tiny-app");
+  assert.equal(boom.serverErrors.length, 1, JSON.stringify(boom.serverOutput));
+  assert.match(boom.serverErrors[0].message, /^TypeError: Cannot read properties of undefined/);
+  assert.ok(boom.serverErrors[0].file.endsWith("server.cjs"));
+  assert.equal(boom.serverErrors[0].line, 2);
+
+  const errors = (await api(`/api/dev/errors?dir=${encodeURIComponent(app)}`)).json;
+  assert.equal(errors[0].errors.length, 1);
+  assert.equal((await api("/api/dev")).json[0].errorCount, 1);
+
+  const before = (await api("/api/dev")).json[0].lastLine;
+  const page = (await api("/api/check", { method: "POST", body: { dir: app } })).json;
+  assert.equal(page.status, 200);
+  assert.equal(page.title, "Tiny shop");
+  assert.equal(page.snippet, "Hello", "tags and scripts are left out");
+  await api("/api/check", { method: "POST", body: { dir: app, path: "/fixed" } });
+  const waited = (await api("/api/dev/wait", { method: "POST", body: { dir: app, after: before, quietMs: 300, settleMs: 500 } })).json;
+  assert.equal(waited.sawOutput, true);
+  assert.equal(waited.errors.length, 0, "the clean reload resolved it");
+  assert.equal((await api(`/api/dev/errors?dir=${encodeURIComponent(app)}&all=1`)).json[0].errors[0].resolved, true);
+
+  // Opening a file: only inside the project.
+  assert.equal((await api("/api/open-file", { method: "POST", body: { dir: app, file: "../../outside.txt" } })).status, 400);
+  assert.equal((await api("/api/open-file", { method: "POST", body: { dir: app, file: "missing.js" } })).status, 404);
 
   await api("/api/dev/stop", { method: "POST", body: { dir: app } });
   for (let i = 0; i < 60; i++) {

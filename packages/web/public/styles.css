@@ -732,6 +732,55 @@ select {
 .log .empty {
   color: var(--log-dim);
 }
+.log-snippet {
+  height: auto;
+  max-height: 160px;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r1);
+  font-size: var(--t-xs);
+}
+
+/* Errors found in a dev server's output */
+.dev-errors {
+  border-top: 1px solid var(--border);
+}
+.dev-error-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dev-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--border);
+}
+.dev-error:last-child {
+  border-bottom: 0;
+}
+.dev-error .log-snippet {
+  align-self: stretch;
+}
+.dev-error-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+.dev-error-message {
+  overflow-wrap: anywhere;
+}
+.dev-errors-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+  padding: var(--s3) var(--s4);
+  color: var(--text-dim);
+}
 
 /* ------------------------------------------------------------ journal and summary */
 .day {
@@ -850,6 +899,16 @@ select {
 }
 .checks li:last-child {
   border-bottom: 0;
+}
+.checks-actions li {
+  grid-template-columns: 24px 150px minmax(0, 1fr) auto;
+  align-items: center;
+}
+.check-fix {
+  display: block;
+  margin-top: var(--s1);
+  font-size: var(--t-sm);
+  color: var(--text-dim);
 }
 .status-ok {
   color: var(--ok);
@@ -1001,8 +1060,12 @@ select {
   .checks li {
     grid-template-columns: 24px minmax(0, 1fr);
   }
-  .checks li > :last-child {
+  .checks li > :last-child,
+  .checks-actions li > :not(:first-child) {
     grid-column: 2;
+  }
+  .checks-actions li > .btn {
+    justify-self: start;
   }
   .bar-row {
     grid-template-columns: minmax(0, 1fr);

@@ -20,10 +20,15 @@ import {
   loadConfig,
   openInEditor,
   openTerminal,
+  listAiTools,
   readJournal,
   recordRun,
+  runDoctor,
   scanProjects,
+  type DevError,
+  type Project,
 } from "@dx/core";
+import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
 
 const server = new McpServer({ name: "dx", version: "0.1.0" });
 
@@ -67,7 +72,8 @@ server.registerTool(
   {
     title: "Open project",
     description:
-      "Open one of the user's projects in their editor, and optionally start its dev server in a new terminal window.",
+      "Open one of the user's projects in their editor, and optionally start its dev server in a new terminal window. " +
+      "To run the app yourself and see its output and errors, use start_dev_server instead.",
     inputSchema: {
       name: z.string().describe("Project name, or part of it"),
       start_dev_server: z.boolean().optional().describe("Also start the dev server (default false)"),
@@ -264,6 +270,351 @@ server.registerTool(
     } catch (err) {
       return failure((err as Error).message);
     }
+  },
+);
+
+// ------------------------------------------------------------ running apps
+// The dev servers live in the dx dashboard, which keeps running after this session ends and shows
+// the user what's running. These tools start it in the background when needed.
+
+/** The last output line the agent has seen, per project folder, so later calls show only what's new. */
+const seen = new Map<string, number>();
+
+interface DevInfo {
+  project: string;
+  dir: string;
+  command: string;
+  url?: string;
+  status: string;
+  startedBy: string;
+  errorCount: number;
+  lastLine: number;
+}
+interface Line {
+  n: number;
+  stream: string;
+  text: string;
+}
+interface WaitResult {
+  server?: DevInfo;
+  lines: Line[];
+  newErrors: DevError[];
+  errors: DevError[];
+  sawOutput: boolean;
+  timedOut: boolean;
+}
+
+function pickProject(name: string): Project | string {
+  const { match, candidates } = findProjects(name, scanProjects(loadConfig()));
+  const project = match ?? (candidates.length === 1 ? candidates[0] : undefined);
+  if (project) return project;
+  return candidates.length
+    ? `Several projects match "${name}": ${candidates.slice(0, 8).map((p) => p.name).join(", ")}. Which one?`
+    : `No project matches "${name}". list_projects shows them all.`;
+}
+
+function formatLines(lines: Line[], max = 80): string {
+  const shown = lines.slice(-max);
+  const cut = lines.length > shown.length ? `(${lines.length - shown.length} earlier lines left out)\n` : "";
+  return cut + shown.map((l) => (l.stream === "dx" ? `[dx] ${l.text}` : l.stream === "err" ? `[stderr] ${l.text}` : l.text)).join("\n");
+}
+
+function formatError(e: DevError, detail = 8): string {
+  const where = e.file ? ` at ${e.file}${e.line ? `:${e.line}${e.column ? `:${e.column}` : ""}` : ""}` : "";
+  const times = e.count > 1 ? ` (×${e.count})` : "";
+  const body = e.lines
+    .slice(1, detail)
+    .map((l) => `    ${l}`)
+    .join("\n");
+  return `- [${e.kind}] ${e.message}${where}${times}${e.resolved ? " (resolved)" : ""}${body ? `\n${body}` : ""}`;
+}
+
+function formatErrors(errors: DevError[], none = "No errors."): string {
+  return errors.length ? errors.map((e) => formatError(e)).join("\n") : none;
+}
+
+function describe(server: DevInfo | undefined): string {
+  if (!server) return "Not running.";
+  const by = server.startedBy === "ai" ? "started by an AI agent" : `started from the ${server.startedBy}`;
+  return `${server.project}: ${server.status}${server.url ? ` at ${server.url}` : ""} (${server.command}, ${by})`;
+}
+
+async function waitAndReport(client: DashboardClient, project: Project, until: "ready" | "quiet", after: number, timeoutMs: number): Promise<string> {
+  const r = await client.post<WaitResult>("/api/dev/wait", { dir: project.dir, after, until, timeoutMs }, timeoutMs + 10_000);
+  if (r.server) seen.set(project.dir, r.server.lastLine);
+  const parts = [describe(r.server)];
+  if (r.timedOut) parts.push(until === "ready" ? `Still starting after ${Math.round(timeoutMs / 1000)}s.` : "The output didn't settle before the time ran out.");
+  if (until === "quiet" && !r.sawOutput) {
+    parts.push("The dev server printed nothing new: no rebuild was noticed (it may not watch this file, or it rebuilt silently).");
+  }
+  parts.push(
+    r.newErrors.length
+      ? `New errors:\n${formatErrors(r.newErrors)}`
+      : r.errors.length
+        ? `No new errors. Still current:\n${formatErrors(r.errors)}`
+        : "No errors.",
+  );
+  if (r.lines.length) parts.push(`Output:\n${formatLines(r.lines, 60)}`);
+  parts.push(`The user can watch it in the dx dashboard: ${client.url}`);
+  return parts.join("\n\n");
+}
+
+const notRunning = (name: string) => `${name} isn't running in dx. start_dev_server starts it.`;
+
+server.registerTool(
+  "start_dev_server",
+  {
+    title: "Start a project's dev server",
+    description:
+      "Start one of the user's projects' dev server (npm run dev and the like) inside the dx dashboard, wait until it's " +
+      "ready or has failed, and return its URL, any errors and its output. If it's already running, report on it. " +
+      "Use this to run the app you are working on; after editing files use wait_for_rebuild, and check_url to try pages.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      timeout_seconds: z.number().int().min(5).max(300).optional().describe("How long to wait for it to be ready (default 90)"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ project: name, timeout_seconds }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      const client = await ensureDashboard();
+      const started = await client.post<DevInfo>("/api/dev/start", { dir: project.dir, by: "ai" });
+      recordRun("go", true, `${project.name} started by an AI agent`, "mcp", { project: project.name });
+      const after = started.status === "starting" ? 0 : (seen.get(project.dir) ?? 0);
+      return text(await waitAndReport(client, project, "ready", after, (timeout_seconds ?? 90) * 1000));
+    } catch (err) {
+      return failure(`Couldn't start ${project.name}: ${(err as Error).message}`);
+    }
+  },
+);
+
+server.registerTool(
+  "stop_dev_server",
+  {
+    title: "Stop a project's dev server",
+    description: "Stop a dev server running in the dx dashboard, with its child processes.",
+    inputSchema: { project: z.string().describe("Project name, or part of it") },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const client = await findDashboard();
+    if (!client) return text(`${project.name} isn't running in dx.`);
+    try {
+      const r = await client.post<DevInfo | null>("/api/dev/stop", { dir: project.dir });
+      return text(r ? `Stopping ${project.name}.` : `${project.name} isn't running in dx.`);
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "restart_dev_server",
+  {
+    title: "Restart a project's dev server",
+    description: "Stop a project's dev server and start it again, e.g. after changing its config or installing packages. Waits until it's ready.",
+    inputSchema: { project: z.string().describe("Project name, or part of it") },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ project: name }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      const client = await ensureDashboard();
+      await client.post("/api/dev/restart", { dir: project.dir, by: "ai" }, 30_000);
+      return text(await waitAndReport(client, project, "ready", 0, 90_000));
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "dev_servers",
+  {
+    title: "List running dev servers",
+    description: "List the dev servers dx is running, with their status, URL, who started them and how many errors they currently show.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async () => {
+    const client = await findDashboard();
+    const list = client ? await client.get<DevInfo[]>("/api/dev") : [];
+    if (!list.length) return text("No dev servers are running in dx.");
+    return text(list.map((s) => `${describe(s)}${s.errorCount ? ` — ${s.errorCount} error(s)` : ""}`).join("\n"));
+  },
+);
+
+server.registerTool(
+  "dev_logs",
+  {
+    title: "Read a dev server's output",
+    description:
+      "Read what a project's dev server printed. By default only what's new since you last looked; since_line: 0 gives everything kept (the last 2000 lines).",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      since_line: z.number().int().min(0).optional().describe("Only lines after this number"),
+      max_lines: z.number().int().min(1).max(500).optional().describe("At most this many of the newest lines (default 120)"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name, since_line, max_lines }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const client = await findDashboard();
+    if (!client) return text(notRunning(project.name));
+    const after = since_line ?? seen.get(project.dir) ?? 0;
+    const r = await client.get<{ lines: Line[]; server?: DevInfo }>(`/api/dev/logs?dir=${encodeURIComponent(project.dir)}&after=${after}`);
+    if (!r.server) return text(notRunning(project.name));
+    seen.set(project.dir, r.server.lastLine);
+    return text(`${describe(r.server)}\n\n${r.lines.length ? formatLines(r.lines, max_lines ?? 120) : "No new output."}`);
+  },
+);
+
+server.registerTool(
+  "dev_errors",
+  {
+    title: "Errors in running apps",
+    description:
+      "Errors dx found in dev server output: compile errors, stack traces, crashes. Each has its file:line when the output names one " +
+      "and how often it happened; an error is dropped once the server rebuilds cleanly. Without a project, covers every running server.",
+    inputSchema: {
+      project: z.string().optional().describe("Project name, or part of it; every running server when left out"),
+      include_resolved: z.boolean().optional().describe("Also list errors a later clean rebuild resolved"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name, include_resolved }) => {
+    let dir = "";
+    if (name) {
+      const project = pickProject(name);
+      if (typeof project === "string") return failure(project);
+      dir = project.dir;
+    }
+    const client = await findDashboard();
+    const r = client
+      ? await client.get<{ project: string; errors: DevError[] }[]>(`/api/dev/errors?dir=${encodeURIComponent(dir)}${include_resolved ? "&all=1" : ""}`)
+      : [];
+    if (!r.length) return text(name ? notRunning(name) : "No dev servers are running in dx.");
+    return text(r.map((s) => `${s.project}:\n${formatErrors(s.errors, "  No errors.")}`).join("\n\n"));
+  },
+);
+
+server.registerTool(
+  "wait_for_rebuild",
+  {
+    title: "Wait for the app to rebuild",
+    description:
+      "Call after editing a project's files while its dev server runs: waits for the server to notice the change and finish " +
+      "rebuilding, then returns what it printed and whether the change introduced or fixed errors.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      timeout_seconds: z.number().int().min(2).max(120).optional().describe("Longest wait (default 60)"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name, timeout_seconds }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const client = await findDashboard();
+    if (!client) return text(notRunning(project.name));
+    try {
+      return text(await waitAndReport(client, project, "quiet", seen.get(project.dir) ?? 0, (timeout_seconds ?? 60) * 1000));
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+interface CheckResult {
+  url: string;
+  status?: number;
+  statusText?: string;
+  ok: boolean;
+  ms: number;
+  contentType?: string;
+  bytes?: number;
+  location?: string;
+  title?: string;
+  snippet?: string;
+  error?: string;
+  project?: string;
+  serverOutput: Line[];
+  serverErrors: DevError[];
+}
+
+server.registerTool(
+  "check_url",
+  {
+    title: "Request a page or API route",
+    description:
+      "Request a URL on a locally running app (localhost only) and report the status, timing, page title and the start of the body, " +
+      "plus what the dev server printed and any errors it logged while answering. Use it to confirm a change works. " +
+      "Give either a full URL, or a project and a path.",
+    inputSchema: {
+      url: z.string().optional().describe("e.g. http://localhost:5173/checkout"),
+      project: z.string().optional().describe("Project name; its dev server's address is used"),
+      path: z.string().optional().describe("Path on the project's server, e.g. /api/cart (default /)"),
+      method: z.string().optional().describe("GET (default), POST, PUT, DELETE…"),
+      body: z.string().optional().describe("Request body, e.g. JSON text"),
+      headers: z.record(z.string(), z.string()).optional().describe("Request headers"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ url, project: name, path, method, body, headers }) => {
+    let dir: string | undefined;
+    if (!url) {
+      if (!name) return failure("Give a url, or a project and a path.");
+      const project = pickProject(name);
+      if (typeof project === "string") return failure(project);
+      dir = project.dir;
+    }
+    try {
+      const client = await ensureDashboard();
+      const r = await client.post<CheckResult>("/api/check", { url, dir, path, method, body, headers });
+      const verb = (method ?? "GET").toUpperCase();
+      const head = r.error
+        ? `${verb} ${r.url} failed after ${r.ms} ms: ${r.error}`
+        : `${verb} ${r.url} → ${r.status} ${r.statusText ?? ""} in ${r.ms} ms${r.contentType ? ` (${r.contentType}, ${r.bytes} bytes)` : ""}`;
+      const parts = [head];
+      if (r.location) parts.push(`Redirects to ${r.location} (not followed).`);
+      if (r.title) parts.push(`Title: ${r.title}`);
+      if (r.snippet) parts.push(`Body starts:\n${r.snippet}`);
+      if (r.project) {
+        parts.push(r.serverErrors.length ? `Errors ${r.project} logged meanwhile:\n${formatErrors(r.serverErrors)}` : `${r.project} logged no errors meanwhile.`);
+        if (r.serverOutput.length) parts.push(`Its output meanwhile:\n${formatLines(r.serverOutput, 40)}`);
+      }
+      const result = text(parts.join("\n\n"));
+      return r.error || (r.status ?? 0) >= 500 ? { ...result, isError: true } : result;
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "dx_setup_check",
+  {
+    title: "Check dx's setup",
+    description:
+      "Check that everything dx needs works on this computer: Node, projects folders, editor, port listing, clipboard and AI tool connections. " +
+      "Each problem comes with a fix, a command to run or a setting to change. Offer to apply the fixes for the user; " +
+      "`dx setup` connects dx to every installed AI tool.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async () => {
+    const [checks, ai] = await Promise.all([runDoctor(), listAiTools()]);
+    const lines = checks.map((c) => `${c.status === "ok" ? "ok  " : c.status === "warn" ? "warn" : "FAIL"}  ${c.name}: ${c.detail}${c.fix ? `\n      fix: ${c.fix}` : ""}`);
+    const tools = ai.map(
+      (t) =>
+        `  ${t.name}: ${!t.installed ? "not installed" : t.connected ? (t.current ? "connected" : "points at an old copy of dx (fix: dx setup)") : "not connected (fix: dx setup)"}`,
+    );
+    return text(`${lines.join("\n")}\n\nAI tools:\n${tools.join("\n")}`);
   },
 );
 

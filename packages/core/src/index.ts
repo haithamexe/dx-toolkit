@@ -14,3 +14,5 @@ export * from "./tools/github.js";
 export * from "./tools/cleanup.js";
 export * from "./tools/deps.js";
 export * from "./tools/scaffold.js";
+export * from "./tools/devErrors.js";
+export * from "./tools/aiSetup.js";
