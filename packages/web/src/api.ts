@@ -5,7 +5,13 @@ import {
   addJournalEntry,
   auditDependencies,
   buildSummary,
+  checkEnv,
+  cloneProject,
   commandExists,
+  findUnsavedWork,
+  fixDependencies,
+  leaveNote,
+  sessionLookup,
   connectAiTools,
   copyProject,
   deleteCleanup,
@@ -77,9 +83,12 @@ const routes: Record<string, Handler> = {
   // ------------------------------------------------------------ projects
   "GET /api/projects": () => {
     const running = new Map(listDevServers().map((d) => [d.dir.toLowerCase(), d]));
+    const sessionOf = sessionLookup();
     return scanProjects(loadConfig()).map((p) => {
       const stack = detectStack(p);
+      const s = sessionOf(p.dir);
       return {
+      session: s && { at: s.at, branch: s.branch, note: s.note, noteBy: s.noteBy, noteAt: s.noteAt },
       name: p.name,
       dir: p.dir,
       kind: p.kind,
@@ -125,6 +134,25 @@ const routes: Record<string, Handler> = {
   },
 
   // ------------------------------------------------------------ dev servers
+  "POST /api/note": (req) => {
+    const project = knownProject(req.body.dir);
+    const s = leaveNote(project.dir, project.name, String(req.body.note ?? ""), "you");
+    recordRun("resume", true, `${project.name}: note ${s.note ? "left" : "removed"}`, "web", { project: project.name });
+    return { note: s.note ?? null };
+  },
+  "GET /api/env": (req) => checkEnv(knownProject(req.query.get("dir")).dir),
+  "GET /api/unsaved": () => findUnsavedWork(),
+  "POST /api/clone": async (req) => {
+    const url = String(req.body.url ?? "");
+    const name = typeof req.body.name === "string" && req.body.name.trim() ? req.body.name.trim() : undefined;
+    // Only a git address gets through (normalizeGitUrl), and git gets it as one argument after "--".
+    try {
+      return await cloneProject({ url, name, install: req.body.install !== false, source: "web" });
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  },
+
   "GET /api/dev": () => listDevServers(),
   "POST /api/dev/start": (req) => startDevServer(knownProject(req.body.dir), startedBy(req.body.by)),
   "POST /api/dev/restart": (req) => restartDevServer(knownProject(req.body.dir), startedBy(req.body.by)),
@@ -155,7 +183,9 @@ const routes: Record<string, Handler> = {
         method: typeof req.body.method === "string" ? req.body.method : undefined,
         headers: req.body.headers && typeof req.body.headers === "object" ? (req.body.headers as Record<string, string>) : undefined,
         body: typeof req.body.body === "string" ? req.body.body : req.body.body === undefined ? undefined : JSON.stringify(req.body.body),
-        timeoutMs: clampInt(req.body.timeoutMs, 500, 120_000, 15_000),
+        timeoutMs: clampInt(req.body.timeoutMs, 500, 120_000, req.body.browser === true ? 30_000 : 15_000),
+        browser: req.body.browser === true,
+        screenshot: req.body.screenshot === true,
       });
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
@@ -270,6 +300,14 @@ const routes: Record<string, Handler> = {
       },
     );
     return depsJob;
+  },
+  "POST /api/deps/fix": async (req) => {
+    const project = knownProject(req.body.dir);
+    const r = await fixDependencies(project);
+    recordRun("deps", r.ok, `${project.name} fixed (dashboard)`, "web", { project: project.name });
+    // Swap the fresh report into the last run, so the page shows the new numbers.
+    if (r.after && depsJob.reports) depsJob.reports = depsJob.reports.map((x) => (x.dir === project.dir ? r.after! : x));
+    return r;
   },
 
   // ------------------------------------------------------------ new project

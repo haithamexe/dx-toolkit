@@ -14,12 +14,15 @@ import {
   openUrl,
   readProject,
   recordRun,
+  rememberSession,
+  resumeInfo,
   scanProjects,
   waitForPort,
   type Project,
 } from "@dx/core";
 import type { Command } from "../command.js";
 import { projectLabel } from "./projects.js";
+import { printResume } from "./resume.js";
 import { follow } from "./stack.js";
 import { c, confirm, info, ok, pick, tildify, UsageError, warn } from "../ui.js";
 
@@ -64,6 +67,10 @@ export const goCommand: Command = {
     if (!project) return 1;
 
     console.log(`${c.bold(project.name)} ${c.dim(tildify(project.dir))}`);
+    // Coming back after a while: where you left off.
+    const back = resumeInfo(project);
+    if (back.session && (back.away ?? 0) > 2 * 3600_000) printResume(back);
+    rememberSession(project.dir, project.name);
 
     if (values.editor) {
       const editor = project.editor ?? config.editor;

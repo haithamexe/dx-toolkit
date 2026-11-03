@@ -49,3 +49,39 @@ test("parseAuditCounts reads npm v2 and pnpm totals", () => {
   assert.equal(parseAuditCounts({ error: { code: "ENOLOCK" } }), undefined);
   assert.equal(describeVulnerabilities(undefined), "?");
 });
+
+test("yarn and bun projects are checked against the registry", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { _auditFromRegistry } = await import("../tools/deps.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dx-deps-yarn-"));
+  const write = (file: string, json: unknown) => {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), JSON.stringify(json));
+  };
+  write("package.json", { name: "shop-website", dependencies: { react: "^18.2.0", "@scope/ui": "^2.0.0", local: "workspace:*" }, devDependencies: { vite: "^6.0.0" } });
+  write("node_modules/react/package.json", { name: "react", version: "18.2.0" });
+  write("node_modules/@scope/ui/package.json", { name: "@scope/ui", version: "2.1.0" });
+  write("node_modules/vite/package.json", { name: "vite", version: "6.3.5" });
+  write("node_modules/vite/node_modules/esbuild/package.json", { name: "esbuild", version: "0.24.0" });
+  const asked: string[] = [];
+  let bulk: Record<string, string[]> = {};
+  const fakeFetch = (async (url: string, init?: RequestInit) => {
+    asked.push(url);
+    if (url.endsWith("/advisories/bulk")) {
+      bulk = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ esbuild: [{ severity: "moderate" }], react: [{ severity: "high" }, { severity: "low" }] }));
+    }
+    const versions: Record<string, string> = { react: "19.1.0", "@scope%2fui": "2.1.0", vite: "6.3.5" };
+    const name = url.split("/").slice(-2, -1)[0];
+    return versions[name] ? new Response(JSON.stringify({ version: versions[name] })) : new Response("{}", { status: 404 });
+  }) as typeof fetch;
+  const r = await _auditFromRegistry({ name: "shop-website", dir, packageManager: "yarn" } as never, fakeFetch);
+  assert.ok(!asked.some((u) => u.includes("/local/")), "workspace packages aren't looked up");
+  assert.deepEqual(r.outdated, [{ name: "react", current: "18.2.0", wanted: undefined, latest: "19.1.0", major: true }]);
+  assert.deepEqual(bulk.esbuild, ["0.24.0"], "nested packages are audited too");
+  assert.equal(r.vulnerabilities?.high, 1);
+  assert.equal(r.vulnerabilities?.moderate, 1);
+  assert.equal(r.vulnerabilities?.total, 3);
+});

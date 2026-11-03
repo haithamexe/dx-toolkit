@@ -1,5 +1,7 @@
 import http from "node:http";
+import https from "node:https";
 import net from "node:net";
+import tls from "node:tls";
 import { localRoutes } from "./dev.js";
 
 /**
@@ -14,13 +16,26 @@ import { localRoutes } from "./dev.js";
  */
 export interface LocalDomains {
   port: number;
+  /** Where https:// is served, when local HTTPS is on. */
+  httpsPort?: number;
   close(): Promise<void>;
 }
 
 /** Port 80 gives addresses without a number; 1355 is the fallback when 80 is taken or not allowed. */
 export const DOMAIN_PORTS = [80, 1355];
+/** The same for https: 443, else 1356. */
+export const HTTPS_PORTS = [443, 1356];
 
-export async function startLocalDomains(options: { dashboardPort: number; ports?: number[] }): Promise<LocalDomains | undefined> {
+export interface TlsOptions {
+  cert: Buffer | string;
+  key: Buffer | string;
+  ports?: number[];
+  /** Called for a name the certificate doesn't cover yet; returns a new certificate that does. */
+  refresh?: (host: string) => Promise<{ cert: Buffer | string; key: Buffer | string } | undefined>;
+  covers?: (host: string) => boolean;
+}
+
+export async function startLocalDomains(options: { dashboardPort: number; ports?: number[]; tls?: TlsOptions }): Promise<LocalDomains | undefined> {
   const server = http.createServer((req, res) => forward(req, res));
   server.on("upgrade", (req, socket, head) => upgrade(req, socket as net.Socket, head));
   server.on("clientError", (_err, socket) => socket.destroy());
@@ -38,6 +53,48 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
   const v6port = await listen(v6, port, "::1");
   const proxyPort = port;
 
+  // https://, with the same routes. The certificate grows when a new project's name is asked for.
+  const secureServers: net.Server[] = [];
+  let httpsPort: number | undefined;
+  if (options.tls) {
+    const tlsOpts = options.tls;
+    let context = tls.createSecureContext({ cert: tlsOpts.cert, key: tlsOpts.key });
+    let refreshing: Promise<void> | undefined;
+    const sni = (servername: string, cb: (err: Error | null, ctx?: tls.SecureContext) => void) => {
+      const host = servername.toLowerCase();
+      const known = host === "dx.localhost" || localRoutes().has(host);
+      if (!known || !tlsOpts.refresh || tlsOpts.covers?.(host) !== false) return cb(null, context);
+      refreshing ??= tlsOpts
+        .refresh(host)
+        .then((next) => {
+          if (next) context = tls.createSecureContext({ cert: next.cert, key: next.key });
+        })
+        .catch(() => undefined)
+        .finally(() => (refreshing = undefined));
+      void refreshing.then(() => cb(null, context));
+    };
+    const make = () => {
+      const s = https.createServer({ cert: tlsOpts.cert, key: tlsOpts.key, SNICallback: sni }, (req, res) => forward(req, res));
+      s.on("upgrade", (req, socket, head) => upgrade(req, socket as net.Socket, head));
+      s.on("tlsClientError", (_err, socket) => socket.destroy());
+      return s;
+    };
+    for (const wanted of tlsOpts.ports ?? HTTPS_PORTS) {
+      const s = make();
+      httpsPort = await listen(s, wanted, "127.0.0.1");
+      if (httpsPort !== undefined) {
+        secureServers.push(s);
+        break;
+      }
+    }
+    if (httpsPort !== undefined) {
+      const s6 = make();
+      if ((await listen(s6, httpsPort, "::1")) !== undefined) secureServers.push(s6);
+    }
+  }
+
+  const isSecure = (req: http.IncomingMessage) => (req.socket as tls.TLSSocket).encrypted === true;
+
   function target(req: http.IncomingMessage): { port: number; host: string } | undefined {
     const host = hostname(req.headers.host);
     if (host === "dx.localhost") return { port: options.dashboardPort, host };
@@ -47,14 +104,16 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
     return { port: Number(u.port || 80), host };
   }
 
-  function publicOrigin(host: string): string {
+  function publicOrigin(host: string, secure = false): string {
+    if (secure && httpsPort !== undefined) return `https://${host}${httpsPort === 443 ? "" : `:${httpsPort}`}`;
     return `http://${host}${proxyPort === 80 ? "" : `:${proxyPort}`}`;
   }
 
   function headersFor(req: http.IncomingMessage, t: { port: number; host: string }): http.OutgoingHttpHeaders {
-    const headers: http.OutgoingHttpHeaders = { ...req.headers, host: `localhost:${t.port}`, "x-forwarded-host": req.headers.host, "x-forwarded-proto": "http" };
+    const secure = isSecure(req);
+    const headers: http.OutgoingHttpHeaders = { ...req.headers, host: `localhost:${t.port}`, "x-forwarded-host": req.headers.host, "x-forwarded-proto": secure ? "https" : "http" };
     // The dashboard checks Origin; its own page through dx.localhost is the dashboard.
-    if (t.host === "dx.localhost" && req.headers.origin === publicOrigin(t.host)) headers.origin = `http://localhost:${t.port}`;
+    if (t.host === "dx.localhost" && req.headers.origin === publicOrigin(t.host, secure)) headers.origin = `http://localhost:${t.port}`;
     return headers;
   }
 
@@ -67,7 +126,7 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
         const headers = { ...up.headers };
         const location = headers.location;
         if (typeof location === "string") {
-          headers.location = location.replace(new RegExp(`^https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]):${t.port}(?=/|$)`), publicOrigin(t.host));
+          headers.location = location.replace(new RegExp(`^https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]):${t.port}(?=/|$)`), publicOrigin(t.host, isSecure(req)));
         }
         res.writeHead(up.statusCode ?? 502, up.statusMessage, headers);
         up.pipe(res);
@@ -114,19 +173,20 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
       404,
       `Nothing runs at ${host}`,
       known.length ? "Running now:" : "No dev servers are running. Start one from the dx dashboard at dx.localhost, or ask your AI tool to.",
-      known.map((h) => publicOrigin(h)),
+      known.map((h) => publicOrigin(h, isSecure(req))),
     );
   }
 
   return {
     port: proxyPort,
+    httpsPort,
     async close() {
       await Promise.all(
-        [server, ...(v6port !== undefined ? [v6] : [])].map(
+        [server, ...(v6port !== undefined ? [v6] : []), ...secureServers].map(
           (s) =>
             new Promise<void>((resolve) => {
               s.close(() => resolve());
-              s.closeAllConnections();
+              (s as http.Server).closeAllConnections?.();
             }),
         ),
       );
@@ -155,7 +215,7 @@ function page(res: http.ServerResponse, status: number, title: string, text: str
 }
 
 /** Listens on host:port, or resolves undefined when the port is taken or not allowed. */
-function listen(server: http.Server, port: number, host: string): Promise<number | undefined> {
+function listen(server: net.Server, port: number, host: string): Promise<number | undefined> {
   return new Promise((resolve) => {
     const onError = () => {
       server.removeListener("listening", onListening);

@@ -7,6 +7,7 @@ import {
   killProcess,
   mainService,
   recordRun,
+  rememberSession,
   serviceName,
   splitRunnerLine,
   startOrder,
@@ -118,11 +119,16 @@ let localPort: number | undefined;
 // ------------------------------------------------------------ local domains
 
 /** Tells the dev servers the local domains proxy's port, or undefined when it isn't running. */
-export function setLocalDomainsPort(port: number | undefined): void {
+export function setLocalDomainsPort(port: number | undefined, httpsPort?: number): void {
   localPort = port;
+  localHttpsPort = port === undefined ? undefined : httpsPort;
 }
 
+let localHttpsPort: number | undefined;
+
+/** https://shop.localhost when local HTTPS is on, else http://shop.localhost. */
 function localUrlOf(host: string): string | undefined {
+  if (localHttpsPort !== undefined) return `https://${host}${localHttpsPort === 443 ? "" : `:${localHttpsPort}`}`;
   if (localPort === undefined) return undefined;
   return `http://${host}${localPort === 80 ? "" : `:${localPort}`}`;
 }
@@ -213,6 +219,8 @@ function errorsOf(list: Proc[], options: { all?: boolean; after?: number; servic
 /** Starts a project: its stack when it has one, else its dev command. */
 export function startDevServer(project: Project, startedBy: StartedBy = "dashboard"): DevServerInfo {
   const stack = detectStack(project);
+  // Where you left off: what ran, on which branch (dx resume, resume_project).
+  rememberSession(project.dir, project.name, { ran: stack ? stack.services.map((s) => s.name) : ["dev"] });
   if (stack) return startStack(project, stack, startedBy);
   if (!project.devCommand) throw new Error(`${project.name} has no dev command. Add one in .devrc.json: { "dev": "..." }`);
   const existing = procs.get(key(project.dir));
@@ -457,6 +465,11 @@ async function waitSettled(p: Proc, timeoutMs: number): Promise<void> {
 // ------------------------------------------------------------ stopping
 
 export async function stopDevServer(dir: string): Promise<DevServerInfo | undefined> {
+  const name = stacks.get(key(dir))?.name ?? procs.get(key(dir))?.project;
+  if (name) {
+    const open = devErrors(dir)[0]?.errors.filter((e) => !e.resolved).map((e) => `${e.message}${e.file ? ` (${e.file}${e.line ? `:${e.line}` : ""})` : ""}`) ?? [];
+    rememberSession(dir, name, { openErrors: open.slice(0, 5) });
+  }
   const run = stacks.get(key(dir));
   if (run) {
     await stopStack(run);

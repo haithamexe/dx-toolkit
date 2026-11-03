@@ -19,6 +19,7 @@ export interface DashboardInfo {
   background: boolean;
   /** The port *.localhost addresses are served on (80 means no port in the address). */
   localDomainsPort?: number;
+  httpsPort?: number;
 }
 
 export function dashboardInfoPath(): string {

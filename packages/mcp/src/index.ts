@@ -30,7 +30,15 @@ import {
   scanProjects,
   startOrder,
   detectStack,
+  checkEnv,
+  cloneProject,
+  fixDependencies,
+  type DepsReport,
+  findUnsavedWork,
+  leaveNote,
+  resumeInfo,
   type DevError,
+  type PageCheck,
   type Project,
 } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
@@ -418,7 +426,9 @@ server.registerTool(
       const started = await client.post<DevInfo>("/api/dev/start", { dir: project.dir, by: "ai" });
       recordRun("go", true, `${project.name} started by an AI agent`, "mcp", { project: project.name });
       const after = started.status === "starting" ? 0 : (seen.get(project.dir) ?? 0);
-      return text(await waitAndReport(client, project, "ready", after, (timeout_seconds ?? 90) * 1000));
+      const report = await waitAndReport(client, project, "ready", after, (timeout_seconds ?? 90) * 1000);
+      const note = resumeInfo(project).session?.note;
+      return text(note ? `${report}\n\nNote left last time on this project: ${note}` : report);
     } catch (err) {
       return failure(`Couldn't start ${project.name}: ${(err as Error).message}`);
     }
@@ -580,6 +590,7 @@ interface CheckResult {
   project?: string;
   serverOutput: Line[];
   serverErrors: DevError[];
+  page?: PageCheck;
 }
 
 server.registerTool(
@@ -589,6 +600,9 @@ server.registerTool(
     description:
       "Request a URL on a locally running app (localhost only) and report the status, timing, page title and the start of the body, " +
       "plus what the dev server printed and any errors it logged while answering. Use it to confirm a change works. " +
+      "With browser: true the page is loaded in a headless Chrome/Edge instead, and you also get what went wrong in the browser: " +
+      "uncaught exceptions, console errors and warnings, failed requests (4xx/5xx, refused) and a Vite/Next.js error overlay; " +
+      "use it for front-end pages, since a page can answer 200 and still crash in the browser. screenshot: true adds a picture of the page. " +
       "Give either a full URL, or a project and a path.",
     inputSchema: {
       url: z.string().optional().describe("e.g. http://localhost:5173/checkout, or a stack service's local domain: http://api.shop.localhost/health"),
@@ -597,10 +611,12 @@ server.registerTool(
       method: z.string().optional().describe("GET (default), POST, PUT, DELETE…"),
       body: z.string().optional().describe("Request body, e.g. JSON text"),
       headers: z.record(z.string(), z.string()).optional().describe("Request headers"),
+      browser: z.boolean().optional().describe("Load the page in a headless browser and report console errors, exceptions and failed requests"),
+      screenshot: z.boolean().optional().describe("With browser: also return a screenshot of the page"),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
-  async ({ url, project: name, path, method, body, headers }) => {
+  async ({ url, project: name, path, method, body, headers, browser, screenshot }) => {
     let dir: string | undefined;
     if (!url) {
       if (!name) return failure("Give a url, or a project and a path.");
@@ -610,7 +626,9 @@ server.registerTool(
     }
     try {
       const client = await ensureDashboard();
-      const r = await client.post<CheckResult>("/api/check", { url, dir, path, method, body, headers });
+      const useBrowser = browser === true || screenshot === true;
+      const r = await client.post<CheckResult>("/api/check", { url, dir, path, method, body, headers, browser: useBrowser, screenshot }, useBrowser ? 90_000 : 30_000);
+      if (r.page) return pageReport(r);
       const verb = (method ?? "GET").toUpperCase();
       const head = r.error
         ? `${verb} ${r.url} failed after ${r.ms} ms: ${r.error}`
@@ -630,6 +648,44 @@ server.registerTool(
     }
   },
 );
+
+/** check_url with browser: what the page showed, what broke in the browser, and what the server logged meanwhile. */
+function pageReport(r: CheckResult) {
+  const p = r.page!;
+  const parts: string[] = [];
+  parts.push(
+    p.error
+      ? `${r.url} couldn't be loaded in ${p.browser} (${p.ms} ms): ${p.error}`
+      : `${r.url} loaded in headless ${p.browser} in ${p.ms} ms${p.status ? ` (HTTP ${p.status})` : ""}: ${p.ok ? "no browser errors." : "problems below."}`,
+  );
+  if (p.title) parts.push(`Title: ${p.title}`);
+  if (p.overlay) parts.push(`The dev server's error overlay is showing:\n${p.overlay}`);
+  const list = (title: string, items: { text: string; source?: string }[]) => {
+    if (items.length) parts.push(`${title}:\n${items.map((m) => `- ${m.text}${m.source ? `\n    at ${m.source}` : ""}`).join("\n")}`);
+  };
+  list("Uncaught exceptions", p.exceptions);
+  list("Console errors", p.consoleErrors);
+  if (p.failedRequests.length) {
+    parts.push(`Failed requests:\n${p.failedRequests.map((f) => `- ${f.method ?? "GET"} ${f.url} → ${f.status ?? f.error}${f.type ? ` (${f.type})` : ""}`).join("\n")}`);
+  }
+  list("Console warnings", p.consoleWarnings.slice(0, 10));
+  if (p.text) parts.push(`Visible text:\n${p.text}`);
+  else if (!p.error) parts.push("The page shows no text: it may be blank.");
+  if (r.project) {
+    parts.push(r.serverErrors.length ? `Errors ${r.project} logged meanwhile:\n${formatErrors(r.serverErrors)}` : `${r.project} logged no errors meanwhile.`);
+    if (r.serverOutput.length) parts.push(`Its output meanwhile:\n${formatLines(r.serverOutput, 30)}`);
+  }
+  const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: parts.join("\n\n") }];
+  if (p.screenshot) {
+    try {
+      content.push({ type: "image", data: readFileSync(p.screenshot).toString("base64"), mimeType: "image/png" });
+      content.push({ type: "text", text: `Screenshot saved at ${p.screenshot}` });
+    } catch {
+      // the picture is a bonus
+    }
+  }
+  return { content };
+}
 
 server.registerTool(
   "set_stack",
@@ -680,6 +736,178 @@ server.registerTool(
     } catch (err) {
       return failure((err as Error).message);
     }
+  },
+);
+
+server.registerTool(
+  "fix_dependencies",
+  {
+    title: "Update a project's packages",
+    description:
+      "In one Node project: update packages to the newest versions package.json's ranges allow and apply the audit fixes that need no " +
+      "breaking change (npm update + npm audit fix, pnpm update, bun update, yarn upgrade). Major versions are left alone and listed, " +
+      "since they can need code changes. Reports before and after. Ask the user first, and suggest committing before.",
+    inputSchema: { project: z.string().describe("Project name, or part of it") },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async ({ project: name }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    if (project.kind !== "node") return failure(`${project.name} isn't a Node project.`);
+    const r = await fixDependencies(project);
+    recordRun("deps", r.ok, `${project.name} fixed by an AI agent`, "mcp", { project: project.name });
+    const was = (d?: DepsReport) => `${d?.outdated.length ?? "?"} outdated, vulnerabilities: ${describeVulnerabilities(d?.vulnerabilities)}`;
+    const majors = r.after?.outdated.filter((p) => p.major) ?? [];
+    const lines = [
+      ...r.steps.map((s) => `${s.ok ? "ok  " : "FAIL"}  ${s.command}${s.ok ? "" : `\n${s.output ?? ""}`}`),
+      "",
+      `Before: ${was(r.before)}`,
+      `After:  ${was(r.after)}`,
+      ...(majors.length ? [`Major updates left (may need code changes): ${majors.map((p) => `${p.name} ${p.current ?? "?"} → ${p.latest}`).join(", ")}`] : []),
+    ];
+    const result = text(lines.join("\n"));
+    return r.ok ? result : { ...result, isError: true };
+  },
+);
+
+server.registerTool(
+  "clone_project",
+  {
+    title: "Set up a repository",
+    description:
+      "Clone a git repository into the user's projects folder and get it ready to run: install its packages with the tool it uses " +
+      "(npm, pnpm, yarn, bun, pip, uv, go) and create .env from .env.example. Reports each step and the variables that still need a value. " +
+      "Then start_dev_server runs it. Installing runs the repository's install scripts, so only clone what the user asked for.",
+    inputSchema: {
+      url: z.string().describe("https://…, git@host:owner/repo.git, or owner/repo for GitHub"),
+      name: z.string().optional().describe("Folder name (default: the repository's name)"),
+      install: z.boolean().optional().describe("Install packages (default true)"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async ({ url, name, install }) => {
+    try {
+      const r = await cloneProject({ url, name, install, source: "mcp" });
+      const steps = r.steps.map((s) => `${s.ok ? "ok  " : "FAIL"}  ${s.name}: ${s.detail ?? ""}${s.fix ? `\n      fix: ${s.fix}` : ""}`);
+      const next = r.ok ? `start_dev_server with project "${r.name}" runs it${r.runs ? ` (${r.runs})` : ""}.` : "Fix the failed step, then start_dev_server.";
+      const result = text(`${r.name} is in ${r.dir}\n\n${steps.join("\n")}\n\n${next}`);
+      return r.ok ? result : { ...result, isError: true };
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "check_env",
+  {
+    title: "Check .env and committed secrets",
+    description:
+      "For one project: the variables .env.example lists that no .env file sets (or sets empty), .env files git tracks or doesn't ignore, " +
+      "and API keys, tokens and private keys in files git tracks (values masked). Use it when an app fails on a missing setting, " +
+      "after cloning, or before committing.",
+    inputSchema: { project: z.string().describe("Project name, or part of it") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const r = checkEnv(project.dir);
+    const parts: string[] = [];
+    if (r.exampleFile) {
+      if (!r.envFiles.length) parts.push(`There is no .env; ${r.exampleFile} lists what it needs. Copy it to .env and fill it in.`);
+      if (r.missing.length) parts.push(`Not set in any .env file: ${r.missing.join(", ")}`);
+      if (r.empty.length) parts.push(`Set but empty: ${r.empty.join(", ")}`);
+      if (r.envFiles.length && !r.missing.length && !r.empty.length) parts.push(`Every variable in ${r.exampleFile} has a value.`);
+    } else {
+      parts.push("No .env.example to compare with.");
+    }
+    if (r.tracked.length) parts.push(`Committed .env files (their values are in the repository): ${r.tracked.join(", ")}`);
+    if (r.notIgnored.length) parts.push(`.env files git doesn't ignore: ${r.notIgnored.join(", ")}. Add them to .gitignore.`);
+    if (r.secrets.length) parts.push(`Keys and tokens in tracked files (move them to .env and revoke them):\n${r.secrets.map((s) => `- ${s.kind} in ${s.file}:${s.line} (${s.preview})`).join("\n")}`);
+    else if (r.scanned) parts.push("No keys or tokens in tracked files.");
+    return text(`${project.name} (${project.dir})\n\n${parts.join("\n\n")}`);
+  },
+);
+
+server.registerTool(
+  "unsaved_work",
+  {
+    title: "Find work that isn't backed up",
+    description:
+      "Across all the user's git projects: uncommitted changes, commits no remote has (with the branches), stashes, and repositories " +
+      "with no remote. Most at risk first. Use it when the user asks what they haven't pushed or committed, or before wiping a machine.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async () => {
+    const list = await findUnsavedWork();
+    if (!list.length) return text("Everything is committed and pushed.");
+    const rows = list.map((w) => {
+      const parts: string[] = [];
+      if (w.noRemote) parts.push("no remote at all");
+      if (w.unpushed) parts.push(`${w.unpushed} unpushed commit(s) on ${w.unpushedBranches.join(", ")}`);
+      if (w.changed) parts.push(`${w.changed} changed file(s)`);
+      if (w.untracked) parts.push(`${w.untracked} untracked file(s)`);
+      if (w.stashes) parts.push(`${w.stashes} stash(es), oldest ${w.oldestStash}`);
+      return `- ${w.project}${w.branch ? ` (${w.branch})` : ""}: ${parts.join("; ")}\n    ${w.dir}`;
+    });
+    return text(rows.join("\n"));
+  },
+);
+
+server.registerTool(
+  "resume_project",
+  {
+    title: "Where the user left off",
+    description:
+      "For one project: when it was last worked on, on which branch, what was running, the note left last time (by the user or an AI agent) " +
+      "on what was in progress, errors open when it stopped, commits since, uncommitted files and recent journal entries about it. " +
+      "Read this first when the user says \"carry on with X\" or \"where was I\".",
+    inputSchema: { project: z.string().describe("Project name, or part of it") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const r = resumeInfo(project);
+    const s = r.session;
+    const parts = [`${project.name} (${project.dir})`];
+    if (!s) parts.push("dx has no record of earlier work on it.");
+    else {
+      parts.push(`Last worked on ${s.at}${s.branch ? ` on branch ${s.branch}` : ""}${s.ran?.length ? `, running ${s.ran.join(" + ")}` : ""}.`);
+      if (s.note) parts.push(`Note left ${s.noteAt ?? ""} by ${s.noteBy === "ai" ? "an AI agent" : "the user"}:\n${s.note}`);
+      if (s.openErrors?.length) parts.push(`Errors open when it stopped:\n${s.openErrors.map((e) => `- ${e}`).join("\n")}`);
+    }
+    if (r.branchThen) parts.push(`Then on ${r.branchThen}, now on ${r.branch}.`);
+    if (r.newCommits) parts.push(`${r.newCommits} commit(s) since then; latest: ${r.lastCommit?.subject}`);
+    else if (r.lastCommit) parts.push(`Last commit ${r.lastCommit.at}: ${r.lastCommit.subject}`);
+    if (r.uncommitted.length) parts.push(`Uncommitted: ${r.uncommitted.slice(0, 30).join(", ")}`);
+    if (r.journal.length) parts.push(`Journal:\n${r.journal.map((e) => `- ${e.date} ${e.time}: ${e.text}`).join("\n")}`);
+    return text(parts.join("\n\n"));
+  },
+);
+
+server.registerTool(
+  "leave_note",
+  {
+    title: "Leave a note on where things stand",
+    description:
+      "Save a short note on a project for next time: what is done, what is half-done, the next step, anything to watch out for. " +
+      "The user sees it in `dx go`, `dx resume` and the dashboard, and resume_project returns it. Leave one when you stop partway " +
+      "through a task. An empty note removes it.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      note: z.string().max(2000).describe("e.g. Checkout form done; payment step half-done in src/pay.ts; next: handle declined cards"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name, note }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    leaveNote(project.dir, project.name, note, "ai");
+    recordRun("resume", true, `${project.name}: note left by an AI agent`, "mcp", { project: project.name });
+    return text(note.trim() ? `Saved the note on ${project.name}.` : `Removed the note on ${project.name}.`);
   },
 );
 

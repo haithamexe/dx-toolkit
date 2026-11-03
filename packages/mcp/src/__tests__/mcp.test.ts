@@ -28,6 +28,10 @@ fs.writeFileSync(
        r.statusCode = 500;
        return r.end("Internal Server Error");
      }
+     if (q.url === "/broken") {
+       r.setHeader("content-type", "text/html");
+       return r.end("<!doctype html><title>Cart</title><p>Cart</p><script>fetch('/checkout'); setTimeout(() => { null.items; }, 30);</script>");
+     }
      if (q.url === "/reload") {
        console.log("[vite] page reload server.cjs");
        return r.end("ok");
@@ -38,6 +42,7 @@ fs.writeFileSync(
 );
 
 const { findDashboard } = await import("@dx/web/link");
+const { findBrowser } = await import("@dx/core");
 const serverScript = fileURLToPath(new URL("../index.js", import.meta.url));
 const client = new Client({ name: "dx-test", version: "1.0.0" });
 
@@ -97,8 +102,35 @@ test("an agent runs the app, finds an error through a request, and sees it clear
   const logs = await call("dev_logs", { project: "tiny-shop", since_line: 0 });
   assert.match(logs.text, /\[dx\] \$ npm run dev/);
 
+  // A page that answers 200 and still breaks in the browser. CI runners have Chrome; skip without one.
+  if (findBrowser()) {
+    const page = await call("check_url", { project: "tiny-shop", path: "/broken", browser: true });
+    assert.match(page.text, /loaded in headless \w+/, page.text);
+    assert.match(page.text, /Uncaught exceptions:\n- TypeError: Cannot read properties of null \(reading 'items'\)/, page.text);
+    assert.match(page.text, /Failed requests:\n- GET http:\/\/localhost:\d+\/checkout → 500/, page.text);
+    assert.match(page.text, /Errors tiny-shop logged meanwhile:\n- \[runtime\] TypeError/, "the server's side of the same page load");
+    assert.match(page.text, /Visible text:\nCart/);
+  }
+
   const stopped = await call("stop_dev_server", { project: "tiny-shop" });
   assert.match(stopped.text, /Stopping tiny-shop/);
+});
+
+test("an agent leaves a note, reads it back, and checks the project's .env", async () => {
+  fs.writeFileSync(path.join(app, ".env.example"), "PORT=3000\nSTRIPE_KEY=\n");
+  fs.writeFileSync(path.join(app, ".env"), "PORT=4000\n");
+
+  const left = await call("leave_note", { project: "tiny-shop", note: "Checkout fixed; next: the empty-cart page" });
+  assert.equal(left.isError, false, left.text);
+  const back = await call("resume_project", { project: "tiny-shop" });
+  assert.match(back.text, /Note left .* by an AI agent:\nCheckout fixed; next: the empty-cart page/);
+  assert.match(back.text, /running dev/, "start_dev_server recorded what ran");
+
+  const env = await call("check_env", { project: "tiny-shop" });
+  assert.match(env.text, /Not set in any \.env file: STRIPE_KEY/);
+
+  const unsaved = await call("unsaved_work");
+  assert.match(unsaved.text, /Everything is committed and pushed/, "the test projects aren't git repositories");
 });
 
 test("an agent joins two repositories into a stack with set_stack, then runs it", async () => {

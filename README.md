@@ -73,13 +73,13 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 
 | Page | What you can do there |
 |---|---|
-| **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; see servers your AI agent started; open a project in your editor, in a terminal window or in File Explorer; save one as a template |
-| **New project** | Create a project from a template or a copy of another, with git and packages installed |
+| **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; **Check page** loads it in a headless browser and lists exceptions, console errors and failed requests; see servers your AI agent started; **work that isn't backed up** across all projects; **leave a note** on a project for next time; **check its .env** and look for committed keys; open a project in your editor, in a terminal window or in File Explorer; save one as a template |
+| **New project** | Create a project from a template or a copy of another, with git and packages installed; or **clone a repository** and get it ready to run |
 | **Ports** | See what's listening and stop it (it asks first, naming the process) |
 | **Journal** | Add what you did, read back 7, 30 or 90 days |
 | **Summary** | Your week: commits, pull requests, journal, where the time went, uncommitted work; copy it as markdown or save it |
 | **Cleanup** | See which `node_modules` and build folders can go, pick them, delete them (it asks first) |
-| **Dependencies** | Run the audit across all projects with a progress bar; open a row for its outdated packages |
+| **Dependencies** | Run the audit across all projects (npm, pnpm, yarn and bun) with a progress bar; open a row for its outdated packages, and **Update packages** within their ranges |
 | **Health & settings** | `dx doctor`'s checks with how to fix each problem, which AI tools are connected (with Connect and Disconnect buttons), your projects folders, editor and GitHub username, and recent activity |
 
 | Summary | Cleanup |
@@ -131,6 +131,8 @@ dx up shop
 - **Safety**: it listens on your computer only, and forwards only to dev servers dx is running. Any other name gets a "not a dx address" page.
 - **Off**: set `"localDomains": false` in `~/.dx/config.json` to turn it off.
 
+**HTTPS**, for what browsers allow only on `https://` (secure cookies, service workers, OAuth callbacks): run `dx https` once. It uses [mkcert](https://github.com/FiloSottile/mkcert) to add a local certificate authority to your system (your system asks you to allow it, once) and makes a certificate for your projects' `.localhost` names. After the dashboard restarts, apps are at `https://shop.localhost` too, and dx hands out the https addresses. A project you add later is added to the certificate the first time you open it. `dx https --off` turns it off. It's opt-in because it changes what your system trusts; `dx doctor` gives the mkcert install command (`winget install FiloSottile.mkcert`, `brew install mkcert nss`, or your distro's package).
+
 ---
 
 ## The `dx` command
@@ -148,7 +150,12 @@ dx up shop
 | `dx go` | Pick from your most recently active projects |
 | `dx go .` | The project in the current folder |
 | `dx new vite-app shop` | New project `shop` from a template or a copy of a project, then open it |
-| `dx projects` / `dx ls flam` | List projects (most recent first) / search them |
+| `dx clone octocat/todo-app` | Clone a repository into your projects folder, install its packages with the tool it uses (npm, pnpm, yarn, bun, pip, uv, go), create `.env` from `.env.example`, then open and run it. It lists the variables that still need a value |
+| `dx resume todo-app` | Where you left off: when, which branch, what was running, your last note, commits since, uncommitted files. `dx go` shows it too when you come back after a while |
+| `dx resume todo-app --note "next: due dates"` | Leave a note for next time (`--clear` removes it); your AI agent can leave one too |
+| `dx status` | Work that exists only on this computer: uncommitted changes, commits no remote has, stashes, repos with no remote; most at risk first |
+| `dx env todo-app` / `dx env --all` | Variables `.env.example` lists that your `.env` doesn't set, `.env` files git would commit, and API keys or tokens in tracked files |
+| `dx projects` / `dx ls todo` | List projects (most recent first) / search them |
 | `dx port` | Every listening port 1024+, with the process and its command line |
 | `dx port 3000` | What's on port 3000 |
 | `dx kill 3000` | Kill it (asks first; `-y` skips the question) |
@@ -157,7 +164,9 @@ dx up shop
 | `dx summary` | Your commits across all projects plus your journal for the last 7 days, as markdown |
 | `dx summary --copy` / `--save` | Copy it to the clipboard / save it to `~/.dx/summaries/` |
 | `dx clean` | Delete `node_modules` and build folders in projects idle for 30+ days (asks first) |
-| `dx deps` | Outdated packages and known vulnerabilities in every Node project |
+| `dx deps` | Outdated packages and known vulnerabilities in every Node project (npm, pnpm, yarn, bun) |
+| `dx deps --fix todo-app` | Update its packages within `package.json`'s ranges and apply the audit fixes that need no breaking change (asks first); major versions are listed for you |
+| `dx https` | Serve `https://shop.localhost` with a certificate your browsers trust (`--status`, `--off`) |
 | `dx runs` / `dx runs --failed` | Recent tool runs |
 | `dx config` | Show settings; `dx config edit`, `dx config add-root <folder>`, `dx config editor <cmd>`, `dx config github <user>` |
 | `dx doctor` | Check the setup |
@@ -325,11 +334,13 @@ npm run raycast:install
 npm run raycast:dev
 ```
 
-Four commands appear in Raycast:
+Six commands appear in Raycast:
 - **Open Project**: open in the editor, start the dev server, open in the browser, terminal here, show in File Explorer.
 - **Kill Port**
 - **Log Work**
 - **Work Journal**
+- **Work Summary**: your week, with copy and save actions and a range to pick.
+- **Clean Up Projects**: build folders in idle projects with their size; delete one or all (it asks first).
 
 To give them hotkeys, go to Raycast Settings → Extensions → DX Toolkit and assign one per command (for example Alt+P for Open Project, Alt+K for Kill Port).
 
@@ -349,11 +360,14 @@ Ask your agent to work on a project and check its own work, for example *"Start 
 |---|---|
 | `start_dev_server` | Starts the project's dev server, waits until it's ready or has failed, and returns the URL, any errors and the output |
 | `wait_for_rebuild` | After it edits files: waits for the server to rebuild, then says whether the change added or fixed errors |
-| `check_url` | Requests a page or API route (localhost only) and returns the status, title and start of the body, plus anything the server logged and any error it hit while answering |
+| `check_url` | Requests a page or API route (localhost only) and returns the status, title and start of the body, plus anything the server logged and any error it hit while answering. With `browser: true` it loads the page in a headless Chrome, Edge, Chromium or Brave already on your computer and adds what went wrong **in the browser**: uncaught exceptions, console errors, failed requests and a Vite or Next.js error overlay. A page can answer 200 and still be blank; this catches it. `screenshot: true` returns a picture of the page |
 | `dev_errors` | Current errors across running servers: TypeScript, Vite, esbuild, webpack and Next.js, Node stack traces, Python tracebacks, Go panics, with file and line. An error disappears once the server rebuilds cleanly |
 | `dev_logs` | The server's output, only what's new since it last looked |
 | `dev_servers`, `stop_dev_server`, `restart_dev_server` | What's running, and stopping or restarting it |
 | `set_stack` | Defines a stack dx can't find by itself, such as two repositories, by writing it to `.devrc.json` |
+| `clone_project` | Clones a repository and gets it ready: packages installed with the tool it uses, `.env` made from `.env.example`, and the variables that still need a value |
+| `check_env` | What a project's `.env` is missing compared with `.env.example`, `.env` files git would commit, and keys or tokens in tracked files |
+| `resume_project`, `leave_note` | Where things were left in a project (branch, what ran, open errors, commits since, the last note), and a note for next time. Ask *"carry on with todo-app"* and the agent starts from there |
 | `dx_setup_check` | dx's health checks, each problem with the command that fixes it, so the agent can fix your setup for you |
 
 These work on stacks too: `start_dev_server` starts every service in order and reports each with its address, errors are labelled with their service, and `check_url` accepts `.localhost` addresses such as `http://api.shop.localhost/health`.
@@ -367,7 +381,8 @@ The servers run in the dx dashboard, not inside the AI tool, so they keep runnin
 - `add_log_entry`, `read_log`
 - `work_summary`: your commits, pull requests and journal for the last few days
 - `find_cleanup`: which folders `dx clean` would delete and how much space that frees (it never deletes)
-- `audit_dependencies`: outdated packages and vulnerabilities per project
+- `audit_dependencies`: outdated packages and vulnerabilities per project; `fix_dependencies` updates one project within its ranges
+- `unsaved_work`: uncommitted changes, unpushed commits, stashes and repos with no remote, across all projects
 
 Then you can say things like "free port 3000 and start todo-app" or "write my standup from what I did this week".
 
@@ -411,12 +426,16 @@ Call `recordRun(tool, ok, detail)` from anything that changes something, so it s
 
 ## Tests and CI
 
-`npm test` builds everything and runs the tests in `packages/core`, `packages/web` and `packages/mcp`:
-- **core**: the tools, including error detection on real output from each tool it knows and connecting to AI tools on a pretend computer.
+`npm test` builds everything and runs the tests in `packages/core`, `packages/web`, `packages/mcp` and `packages/cli`:
+- **core**: the tools, including error detection on real output from each tool it knows, connecting to AI tools on a pretend computer, loading broken pages in a real headless browser, cloning and setting up a repository, `.env` and secret checks, and unsaved work across repositories.
 - **web**:
   - the dashboard's server: its security checks, and a real dev server started, streamed, checked for errors and stopped through it;
-  - a real two-service stack: started in order, reached through `shop.localhost` (WebSockets and redirects included), then stopped.
-- **mcp**: a real MCP client that starts an app, finds an error through a request and sees it cleared, as an agent would. On GitHub, [.github/workflows/ci.yml](.github/workflows/ci.yml) runs them on every push to `main` and every pull request, on Windows, macOS and Linux with Node 22 and 24, and tries the `dx` command itself.
+  - a real two-service stack: started in order, reached through `shop.localhost` (WebSockets and redirects included), then stopped;
+  - https through the local domains proxy, with a throwaway certificate.
+- **mcp**: a real MCP client that starts an app, finds an error through a request and in the browser, sees it cleared, and leaves a note, as an agent would.
+- **cli**: the `dx` command run as a user runs it.
+
+On GitHub, [.github/workflows/ci.yml](.github/workflows/ci.yml) runs them on every push to `main` and every pull request, on Windows, macOS and Linux with Node 22 and 24, and tries the `dx` command itself.
 
 ## Working on dx with Claude Code
 
@@ -424,11 +443,9 @@ Call `recordRun(tool, ok, detail)` from anything that changes something, so it s
 
 ## Next on the list
 
-- **Raycast**: install and check the extension, and add commands for the summary and cleanup.
-- **Local HTTPS** (`https://shop.localhost`): it needs a certificate your system trusts, which means an admin prompt once, so it'll be an opt-in step your AI tool can do for you.
-- **Browser console errors** for agents: dx sees the server's output; pairing it with a browser MCP server covers what happens in the page.
-- **Tests for the CLI**: `core`, the dashboard and the MCP server are tested today.
-- **`dx deps --fix`**, and yarn and bun projects in `dx deps`.
+- **Raycast**: try the extension in Raycast itself (it type-checks, but hasn't been run there yet).
+- **A yearly work record**: a year of commits, pull requests and journal, as one document.
+- **Agents clicking through a page**: `check_url` loads a page; following a flow (log in, add to cart) is a browser MCP server's job for now.
 
 The full backlog is in [docs/MEMORY.md](docs/MEMORY.md).
 

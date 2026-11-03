@@ -595,6 +595,51 @@ select {
 .project-meta .mono {
   overflow-wrap: anywhere;
 }
+.project-note {
+  margin: var(--s1) 0 0;
+  font-size: var(--t-sm);
+  overflow-wrap: anywhere;
+}
+.project-panel {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+}
+.env-list,
+.unsaved-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.env-list li,
+.unsaved-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: var(--s2) var(--s4);
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.env-list li:last-child,
+.unsaved-list li:last-child {
+  border-bottom: 0;
+}
+.unsaved-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s3) var(--s5);
+  cursor: pointer;
+  color: var(--warn);
+}
+.unsaved-summary strong {
+  color: var(--text);
+}
+.unsaved[open] .unsaved-summary {
+  border-bottom: 1px solid var(--border);
+}
 .project-actions {
   display: flex;
   flex-wrap: wrap;
@@ -818,6 +863,15 @@ select {
   margin: 0;
   padding: var(--s3) var(--s4);
   color: var(--text-dim);
+}
+
+.page-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding-right: var(--s3);
+  border-bottom: 1px solid var(--border);
 }
 
 /* ------------------------------------------------------------ journal and summary */

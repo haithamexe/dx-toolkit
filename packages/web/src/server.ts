@@ -4,10 +4,33 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { handleApi, HttpError } from "./api.js";
-import { loadConfig } from "@dx/core";
+import { certCovers, ensureCert, loadConfig, projectHostNames, type CertFiles, type DxConfig } from "@dx/core";
 import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
-import { DOMAIN_PORTS, startLocalDomains, type LocalDomains } from "./proxy.js";
+import { DOMAIN_PORTS, startLocalDomains, type LocalDomains, type TlsOptions } from "./proxy.js";
 import { clearDashboardInfo, writeDashboardInfo } from "./link.js";
+
+/** The certificate for https://*.localhost when `dx https` turned it on and mkcert is still here. */
+async function localTls(config: DxConfig): Promise<TlsOptions | undefined> {
+  if (config.https !== true) return undefined;
+  try {
+    const cert = await ensureCert(projectHostNames());
+    if (!cert) return undefined;
+    const read = (c: CertFiles) => ({ cert: fs.readFileSync(c.cert), key: fs.readFileSync(c.key) });
+    return {
+      ...read(cert),
+      ports: config.httpsPort !== undefined ? [config.httpsPort] : undefined,
+      covers: (host) => certCovers(host),
+      // A project made since the dashboard started: add its name (and its services') to the certificate.
+      refresh: async (host) => {
+        const base = host.replace(/\.localhost$/, "").split(".").pop();
+        const next = base ? await ensureCert([`${base}.localhost`, `*.${base}.localhost`]) : undefined;
+        return next && read(next);
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The dx dashboard's server. It listens on 127.0.0.1 only, and because the dashboard can kill
@@ -128,10 +151,10 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   let domains: LocalDomains | undefined;
   const config = loadConfig();
   const domainPorts = options.localDomainPorts ?? (config.localDomains === false ? false : config.localDomainsPort !== undefined ? [config.localDomainsPort] : DOMAIN_PORTS);
-  if (domainPorts !== false) domains = await startLocalDomains({ dashboardPort: port, ports: domainPorts }).catch(() => undefined);
-  setLocalDomainsPort(domains?.port);
+  if (domainPorts !== false) domains = await startLocalDomains({ dashboardPort: port, ports: domainPorts, tls: await localTls(config) }).catch(() => undefined);
+  setLocalDomainsPort(domains?.port, domains?.httpsPort);
 
-  writeDashboardInfo({ url, port, token, pid: process.pid, startedAt: new Date().toISOString(), background: !!options.background, localDomainsPort: domains?.port });
+  writeDashboardInfo({ url, port, token, pid: process.pid, startedAt: new Date().toISOString(), background: !!options.background, localDomainsPort: domains?.port, httpsPort: domains?.httpsPort });
 
   const idleMs = (options.idleMinutes ?? 30) * 60_000;
   const idleTimer = setInterval(() => {

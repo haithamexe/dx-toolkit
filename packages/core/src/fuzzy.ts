@@ -54,7 +54,7 @@ function normalize(s: string): string {
   return s.toLowerCase().replace(/[\s_\-.]+/g, "");
 }
 
-/** "Admin-Frontend" -> ["Slyder", "Frontend"]; "gitHooks" -> ["gateway", "Hub"] */
+/** "Admin-Frontend" -> ["Admin", "Frontend"]; "apiGateway" -> ["api", "Gateway"] */
 export function splitWords(s: string): string[] {
   return s
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")

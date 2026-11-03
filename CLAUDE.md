@@ -48,8 +48,9 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - CSP: `default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; …`. No inline scripts or styles, no external hosts. The page builds DOM with the `h()` helper and text nodes, never `innerHTML` with data.
 - Every action takes a project `dir` and checks it against `scanProjects()`; cleanup deletes only folders `findCleanup()` returns on a fresh scan.
 - `~/.dx/dashboard.json` (mode 0600) holds the URL and token so the CLI and MCP server can call the API (`web/src/link.ts`). Never put the token anywhere else: not in a URL, a log line or `runs.jsonl`.
-- `POST /api/check` reaches loopback hosts only and doesn't follow redirects; `POST /api/open-file` opens files inside a known project only.
-- The local domains proxy (`proxy.ts`) listens on loopback only and forwards only to dev servers dx runs (`localRoutes()`) or the dashboard (`dx.localhost`). Never route to an arbitrary host or port from a request.
+- `POST /api/check` reaches loopback hosts only and doesn't follow redirects, also with `browser: true` (`checkPage` refuses anything but loopback itself); `POST /api/open-file` opens files inside a known project only.
+- `POST /api/clone` takes only a git address (`normalizeGitUrl`) and passes it to git after `--`. `POST /api/deps/fix`, `GET /api/env` and `POST /api/note` take a known project's `dir`, and the fix runs fixed commands only.
+- The local domains proxy (`proxy.ts`) listens on loopback only and forwards only to dev servers dx runs (`localRoutes()`) or the dashboard (`dx.localhost`), over http and, when `dx https` is on, https. Never route to an arbitrary host or port from a request; the certificate grows only for names that are already routes.
 - `server.test.ts` and `stack.test.ts` cover all of this. Run them after touching these files.
 
 ## No setup

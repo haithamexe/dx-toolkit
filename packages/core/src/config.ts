@@ -35,6 +35,10 @@ export interface DxConfig {
   localDomains?: boolean;
   /** Port for name.localhost; default 80, or 1355 when 80 is taken. */
   localDomainsPort?: number;
+  /** Also serve https://name.localhost with a trusted local certificate (turned on by `dx https`). */
+  https?: boolean;
+  /** Port for https://name.localhost; default 443, or 1356 when 443 is taken. */
+  httpsPort?: number;
 }
 
 /** Folders people usually keep their code in, checked on first run. */

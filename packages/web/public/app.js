@@ -71,6 +71,7 @@ const ICONS = {
   info: "M12 8h.01M11 12h1v5h1M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z",
   warn: "M12 9v4M12 17h.01M10.3 4l-8 14a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0z",
   x: "M6 6l12 12M18 6L6 18",
+  check: "M5 12l5 5L20 7",
 };
 
 function icon(name) {
@@ -330,6 +331,9 @@ function projectsPage(root) {
   const openErrors = new Set(JSON.parse(pref("openErrors", "[]")));
   const logState = new Map(); // dir -> { after, el }
   const errorPanels = new Map(); // dir -> { el, dir, sig }
+  const pageChecks = new Map(); // dir -> what the headless browser saw last time
+  const envChecks = new Map(); // dir -> the last .env check
+  let unsaved = null;
   let stopped = false;
 
   const search = h("input", {
@@ -343,6 +347,7 @@ function projectsPage(root) {
     },
   });
   const devSection = h("section", { class: "section", "aria-labelledby": "dev-title", hidden: true });
+  const unsavedSection = h("section", { class: "section", "aria-label": "Work that isn't backed up", hidden: true });
   const listSection = h("section", { class: "section", "aria-label": "All projects" });
   const listHolder = h("div", { class: "card" }, loadingView("Finding your projects…"));
   append(listSection, listHolder);
@@ -354,9 +359,10 @@ function projectsPage(root) {
       "Open a project, run its dev server here, or open it in the browser.",
       search,
       h("a", { class: "btn", href: "#/new" }, icon("new"), "New project"),
-      btn("Refresh", () => load(), { iconName: "refresh", kind: "ghost" }),
+      btn("Refresh", () => (load(), loadUnsaved()), { iconName: "refresh", kind: "ghost" }),
     ),
     devSection,
+    unsavedSection,
     listSection,
   );
 
@@ -368,6 +374,55 @@ function projectsPage(root) {
     } catch (err) {
       listHolder.replaceChildren(errorView(err, load));
     }
+  }
+
+  // Slower than the list (git in every repository), so it fills in after.
+  async function loadUnsaved() {
+    try {
+      unsaved = await api("/api/unsaved");
+    } catch {
+      unsaved = null;
+    }
+    renderUnsaved();
+  }
+
+  function renderUnsaved() {
+    const list = unsaved ?? [];
+    unsavedSection.hidden = list.length === 0;
+    if (!list.length) return;
+    const risky = list.filter((w) => w.unpushed || w.noRemote).length;
+    const details = h(
+      "details",
+      { class: "card unsaved", open: pref("unsavedOpen", "") === "1" ? true : undefined, ontoggle: (e) => setPref("unsavedOpen", e.currentTarget.open ? "1" : "") },
+      h(
+        "summary",
+        { class: "unsaved-summary" },
+        icon("warn"),
+        h("strong", null, `${plural(list.length, "project")} with work that isn't backed up`),
+        risky ? h("span", { class: "badge badge-danger" }, `${risky} not pushed anywhere`) : null,
+      ),
+      h("ul", { class: "unsaved-list" }, list.map(unsavedRow)),
+    );
+    unsavedSection.replaceChildren(details);
+  }
+
+  function unsavedRow(w) {
+    const parts = [];
+    if (w.noRemote) parts.push(h("span", { class: "badge badge-danger" }, "No remote"));
+    if (w.unpushed) parts.push(h("span", { class: "badge badge-danger" }, `${plural(w.unpushed, "unpushed commit")}`));
+    if (w.changed) parts.push(h("span", { class: "badge badge-warn" }, plural(w.changed, "changed file")));
+    if (w.untracked) parts.push(h("span", { class: "badge" }, plural(w.untracked, "new file")));
+    if (w.stashes) parts.push(h("span", { class: "badge" }, `${plural(w.stashes, "stash", "stashes")}${w.oldestStash ? `, oldest ${relativeTime(Date.parse(w.oldestStash))}` : ""}`));
+    return h(
+      "li",
+      null,
+      h("strong", null, w.project),
+      w.branch ? h("span", { class: "dim mono" }, w.branch) : null,
+      parts,
+      w.unpushedBranches.length && w.unpushedBranches.some((b) => b !== w.branch)
+        ? h("span", { class: "dim" }, `on ${w.unpushedBranches.join(", ")}`)
+        : null,
+    );
   }
 
   function renderList() {
@@ -409,6 +464,15 @@ function projectsPage(root) {
           p.stack ? h("span", null, `${plural(p.stack.services.length, "service")}, started in order`) : p.devCommand ? h("span", { class: "mono" }, p.devCommand) : h("span", null, "No dev command"),
           h("span", { class: "mono" }, tildify(p.dir)),
         ),
+        p.session?.note
+          ? h(
+              "p",
+              { class: "project-note" },
+              h("strong", null, p.session.noteBy === "ai" ? "Note from your AI agent: " : "Your note: "),
+              p.session.note,
+              p.session.noteAt ? h("span", { class: "dim" }, ` · ${relativeTime(Date.parse(p.session.noteAt))}`) : null,
+            )
+          : null,
       ),
       h(
         "div",
@@ -427,6 +491,57 @@ function projectsPage(root) {
         btn("Open in editor", (e) => open(e.currentTarget, p, "editor"), { iconName: "code", small: true, name: `Open ${p.name} in editor` }),
         moreMenu(p),
       ),
+      envChecks.has(p.dir.toLowerCase()) ? envPanel(p, envChecks.get(p.dir.toLowerCase())) : null,
+    );
+  }
+
+  async function leaveNote(p) {
+    const note = prompt(`A note on ${p.name} for next time: what you were doing, the next step. Leave it empty to remove the note.`, p.session?.note ?? "");
+    if (note === null) return;
+    try {
+      await api("/api/note", { method: "POST", body: { dir: p.dir, note } });
+      toast(note.trim() ? `Noted on ${p.name}. dx go and dx resume show it.` : `Removed the note on ${p.name}.`);
+      load();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  async function checkEnvOf(p) {
+    try {
+      envChecks.set(p.dir.toLowerCase(), await api(`/api/env?dir=${encodeURIComponent(p.dir)}`));
+      renderList();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  /** The .env check under a project's row: what to fill in, what not to commit. */
+  function envPanel(p, r) {
+    const base = (f) => f.split(/[\\/]/).pop();
+    const items = [];
+    const add = (kind, label, text) => items.push(h("li", null, h("span", { class: `badge badge-${kind}` }, label), h("span", null, text)));
+    if (r.exampleFile && !r.envFiles.length) add("warn", "No .env", `Copy ${base(r.exampleFile)} to .env and fill it in.`);
+    if (r.missing.length) add("warn", "Missing", r.missing.join(", "));
+    if (r.empty.length) add("warn", "Empty", r.empty.join(", "));
+    for (const f of r.tracked) add("danger", "Committed", `${f}: its values are in the repository. Remove it from git and change those secrets.`);
+    for (const f of r.notIgnored) add("warn", "Not ignored", `${f} isn't in .gitignore, so git add . would commit it.`);
+    for (const s of r.secrets) add("danger", s.kind, `${s.file}:${s.line} (${s.preview}). Move it to .env and revoke it.`);
+    const summary = items.length
+      ? `${plural(items.length, "thing")} to look at in ${p.name}'s settings`
+      : !r.exampleFile && !r.envFiles.length
+        ? `${p.name} has no .env files${r.scanned ? ", and no keys or tokens in tracked files" : ""}.`
+        : `${r.exampleFile ? `Every variable in ${base(r.exampleFile)} has a value` : "No .env.example to compare with"}${r.scanned ? "; no keys or tokens in tracked files" : ""}.`;
+    return h(
+      "div",
+      { class: "project-panel", "aria-live": "polite" },
+      h(
+        "div",
+        { class: "page-check-head" },
+        h("p", { class: "dev-errors-empty" }, icon(items.length ? "warn" : "check"), summary),
+        btn("Close", () => (envChecks.delete(p.dir.toLowerCase()), renderList()), { iconName: "x", small: true, kind: "ghost", name: "Close the .env check" }),
+      ),
+      items.length ? h("ul", { class: "env-list" }, items) : null,
     );
   }
 
@@ -444,6 +559,8 @@ function projectsPage(root) {
         item("Open in browser", "external", () => open(null, p, "browser", p.dev?.localUrl ?? p.dev?.url ?? p.url), !(p.dev?.localUrl ?? p.dev?.url ?? p.url)),
         item("Run in a terminal window", "terminal", () => open(null, p, "terminal"), !p.devCommand),
         item("Show in folder", "folder", () => open(null, p, "folder")),
+        item(p.session?.note ? "Change the note…" : "Leave a note…", "journal", () => leaveNote(p)),
+        item("Check .env and secrets", "deps", () => checkEnvOf(p)),
         item("Save as template…", "template", () => saveTemplate(p)),
       ),
     );
@@ -541,6 +658,13 @@ function projectsPage(root) {
           (s.localUrl ?? s.url) && s.status === "ready"
             ? btn("Open in browser", (e) => open(e.currentTarget, { dir: s.dir }, "browser", s.localUrl ?? s.url), { iconName: "external", small: true, kind: "primary" })
             : null,
+          (s.localUrl ?? s.url) && s.status === "ready"
+            ? btn("Check page", (e) => checkInBrowser(e.currentTarget, s), {
+                iconName: "check",
+                small: true,
+                title: "Load the page in a headless browser and list console errors, exceptions and failed requests",
+              })
+            : null,
           s.errorCount || showingErrors
             ? btn(showingErrors ? "Hide errors" : "Show errors", () => toggle(openErrors, "openErrors"), { iconName: "warn", small: true })
             : null,
@@ -559,6 +683,7 @@ function projectsPage(root) {
       ),
       s.services ? h("ul", { class: "stack-services", "aria-label": `Services of ${s.project}` }, s.services.map(serviceRow)) : null,
       s.note ? h("p", { class: "stack-note" }, icon("warn"), s.note) : null,
+      pageChecks.has(key) ? pagePanel(key, pageChecks.get(key)) : null,
       showingErrors ? errorsEl : null,
       showing && s.services ? outputFilter(key, s.services) : null,
       showing ? logEl : null,
@@ -575,6 +700,44 @@ function projectsPage(root) {
       void refreshErrors(key);
     }
     return card;
+  }
+
+  async function checkInBrowser(button, s) {
+    const r = await busy(button, "Checking…", () => api("/api/check", { method: "POST", body: { dir: s.dir, browser: true } }));
+    if (!r) return;
+    pageChecks.set(s.dir.toLowerCase(), r);
+    renderDev();
+  }
+
+  /** What the headless browser saw: the problems first, or that there were none. */
+  function pagePanel(key, r) {
+    const p = r.page;
+    const items = [];
+    const add = (label, kind, text, where) =>
+      items.push(h("li", { class: "dev-error" }, h("div", { class: "dev-error-head" }, h("span", { class: `badge badge-${kind}` }, label), h("strong", { class: "dev-error-message" }, text)), where ? h("span", { class: "dim mono" }, where) : null));
+    if (p.error) add("Didn't load", "danger", p.error);
+    if (p.overlay) add("Error overlay", "danger", p.overlay);
+    for (const m of p.exceptions) add("Exception", "danger", m.text, m.source);
+    for (const m of p.consoleErrors) add("Console error", "danger", m.text, m.source);
+    for (const f of p.failedRequests) add(f.status ? `HTTP ${f.status}` : "Request failed", "danger", `${f.method ?? "GET"} ${f.url}`, f.error);
+    for (const m of p.consoleWarnings.slice(0, 5)) add("Warning", "warn", m.text, m.source);
+    const summary = p.ok
+      ? `No browser errors on ${r.url} (${p.browser}, ${p.ms} ms).`
+      : `${plural(items.length, "problem")} on ${r.url} in ${p.browser}.`;
+    return h(
+      "div",
+      { class: "dev-errors", "aria-live": "polite", "aria-label": "What the browser saw" },
+      h(
+        "div",
+        { class: "page-check-head" },
+        h("p", { class: "dev-errors-empty" }, icon(p.ok ? "check" : "warn"), summary),
+        btn("Close", () => {
+          pageChecks.delete(key);
+          renderDev();
+        }, { iconName: "x", small: true, kind: "ghost", name: "Close the page check" }),
+      ),
+      items.length ? h("ul", { class: "dev-error-list" }, items) : null,
+    );
   }
 
   /** The address to show: the local domain when there is one, the dev server's own otherwise. */
@@ -723,6 +886,7 @@ function projectsPage(root) {
     if (servers && (servers.some(differs) || servers.length !== projects.filter((p) => p.dev).length)) load();
   }, 3000);
   load();
+  loadUnsaved();
   return () => {
     stopped = true;
     clearTimeout(timer);
@@ -821,6 +985,7 @@ function newProjectPage(root) {
 
     holder.replaceChildren(
       h("div", { class: "section" }, form, result),
+      cloneSection(),
       h(
         "section",
         { class: "section", "aria-labelledby": "tpl-title" },
@@ -829,6 +994,78 @@ function newProjectPage(root) {
           ? h("div", { class: "chips" }, data.templates.map((t) => h("span", { class: "chip" }, t)))
           : h("p", { class: "dim" }, "No templates yet. On the Projects page, open a project's ⋯ menu and choose Save as template."),
       ),
+    );
+  }
+  /** Clone a repository and get it ready: packages installed, .env made from .env.example. */
+  function cloneSection() {
+    const url = h("input", { class: "input", id: "clone-url", required: true, placeholder: "https://github.com/octocat/todo-app or octocat/todo-app", autocomplete: "off", spellcheck: "false" });
+    const name = h("input", { class: "input", id: "clone-name", placeholder: "the repository's name", pattern: "[a-z0-9A-Z][a-zA-Z0-9._\\-]*", autocomplete: "off", spellcheck: "false" });
+    const install = h("input", { type: "checkbox", checked: true });
+    const submit = btn("Clone and set up", null, { kind: "primary", type: "submit", iconName: "play" });
+    const result = h("div", { "aria-live": "polite" });
+    const form = h(
+      "form",
+      {
+        class: "card card-pad section",
+        novalidate: true,
+        onsubmit: async (e) => {
+          e.preventDefault();
+          if (!url.value.trim()) return toast("Paste the repository's address.", "error"), url.focus();
+          const r = await busy(submit, install.checked ? "Cloning and installing…" : "Cloning…", () =>
+            api("/api/clone", { method: "POST", body: { url: url.value.trim(), name: name.value.trim() || undefined, install: install.checked } }),
+          );
+          if (!r) return;
+          toast(r.ok ? `${r.name} is ready` : `${r.name} is cloned; a step needs you`, r.ok ? "ok" : "error");
+          result.replaceChildren(
+            h(
+              "div",
+              { class: r.ok ? "note" : "note note-warn" },
+              icon(r.ok ? "info" : "warn"),
+              h(
+                "div",
+                { class: "section" },
+                h("p", null, h("strong", null, r.name), " is in ", h("span", { class: "mono" }, tildify(r.dir)), r.runs ? ` and runs ${r.runs}.` : "."),
+                h(
+                  "ul",
+                  { class: "bullets" },
+                  r.steps.map((s) => h("li", null, s.ok ? "" : h("strong", null, "Needs you: "), `${s.name}: ${s.detail ?? ""}`, s.fix ? h("span", { class: "dim" }, ` (${s.fix})`) : null)),
+                ),
+                h(
+                  "div",
+                  { class: "toolbar" },
+                  r.project
+                    ? btn("Run it", async (ev) => {
+                        await busy(ev.currentTarget, "Starting…", async () => {
+                          await api("/api/dev/start", { method: "POST", body: { dir: r.dir } });
+                          location.hash = "#/projects";
+                        });
+                      }, { kind: "primary", iconName: "play", small: true })
+                    : null,
+                  h("a", { class: "btn btn-sm", href: "#/projects" }, "Go to projects"),
+                ),
+              ),
+            ),
+          );
+          form.reset();
+          install.checked = true;
+        },
+      },
+      h(
+        "div",
+        { class: "form-grid" },
+        h("label", { class: "field", for: "clone-url" }, h("span", { class: "field-label" }, "Repository"), url, h("span", { class: "field-hint" }, "A git address, or owner/repo for GitHub. Private ones need git signed in (gh auth login or an SSH key).")),
+        h("label", { class: "field", for: "clone-name" }, h("span", { class: "field-label" }, "Folder name (optional)"), name),
+      ),
+      h("div", { class: "toolbar" }, h("label", { class: "check" }, install, "Install packages and create .env")),
+      h("div", { class: "form-actions" }, submit),
+    );
+    return h(
+      "section",
+      { class: "section", "aria-labelledby": "clone-title" },
+      h("h2", { class: "section-title", id: "clone-title" }, "Clone a repository"),
+      h("p", { class: "dim" }, "Clones it into your first projects folder, installs its packages with the tool it uses, and creates .env from .env.example."),
+      form,
+      result,
     );
   }
   load();
@@ -1101,7 +1338,7 @@ function summaryPage(root) {
     const notes = [];
     if (s.skipped.length) notes.push(`Couldn't read ${s.skipped.map((x) => `${x.project} (${x.reason})`).join(", ")}.`);
     if (s.github && "error" in s.github) notes.push(`No pull requests: ${s.github.error}.`);
-    else if (gh && !gh.authenticated) notes.push("Pull requests come from public repos only. Set GITHUB_TOKEN before running dx ui to include private ones.");
+    else if (gh && !gh.authenticated) notes.push("Pull requests come from public repos only. To include private ones, sign in once with the GitHub CLI (gh auth login); dx uses that login from then on. A GITHUB_TOKEN set before dx ui starts works too.");
     if (notes.length) out.push(h("div", { class: "note" }, icon("info"), h("div", null, notes.map((n) => h("p", null, n)))));
     out.push(h("p", { class: "dim" }, `Commits by ${s.author}.`));
     return out;
@@ -1310,7 +1547,7 @@ function depsPage(root) {
           h("tbody", null, reports.flatMap((r) => rows(r))),
         ),
       ),
-      h("p", { class: "dim" }, `Checked ${relativeTime(Date.parse(job.finishedAt))}. Fix in a project with npm audit fix (or npm update), then run the audit again.`),
+      h("p", { class: "dim" }, `Checked ${relativeTime(Date.parse(job.finishedAt))}. Open a project's details to update its packages.`),
     );
   }
 
@@ -1347,11 +1584,32 @@ function depsPage(root) {
                   h("tbody", null, r.outdated.map((p) => h("tr", null, h("td", { class: "mono" }, p.name), h("td", { class: "mono" }, p.current ?? "—"), h("td", { class: "mono" }, p.wanted ?? "—"), h("td", { class: "mono" }, p.latest, p.major ? h("span", { class: "badge badge-warn" }, " major") : null)))),
                 )
               : null,
-            h("div", { class: "toolbar" }, btn("Open in editor", (e) => busy(e.currentTarget, "Opening…", async () => toast((await api("/api/projects/open", { method: "POST", body: { dir: r.dir, action: "editor" } })).message)), { small: true, iconName: "code" })),
+            h(
+              "div",
+              { class: "toolbar" },
+              r.outdated.some((p) => !p.major) || (r.vulnerabilities?.total ?? 0) > 0 ? btn("Update packages", (e) => fixProject(e.currentTarget, r), { small: true, kind: "primary", iconName: "refresh", title: "Update within package.json's ranges and apply non-breaking audit fixes" }) : null,
+              btn("Open in editor", (e) => busy(e.currentTarget, "Opening…", async () => toast((await api("/api/projects/open", { method: "POST", body: { dir: r.dir, action: "editor" } })).message)), { small: true, iconName: "code" }),
+            ),
           ),
         ),
       ),
     ];
+  }
+
+  async function fixProject(button, r) {
+    const commands = { npm: "npm update and npm audit fix", pnpm: "pnpm update", bun: "bun update", yarn: "yarn upgrade" }[r.packageManager] ?? "an update";
+    const yes = await confirmDialog({
+      title: `Update ${r.project}'s packages?`,
+      text: [`This runs ${commands} in ${tildify(r.dir)}: packages move to the newest version package.json allows, and non-breaking security fixes are applied.`, "Major versions are left alone, since they may need code changes. Commit first if you want an easy way back."],
+      confirm: "Update packages",
+      danger: false,
+    });
+    if (!yes) return;
+    const result = await busy(button, "Updating…", () => api("/api/deps/fix", { method: "POST", body: { dir: r.dir } }));
+    if (!result) return;
+    const failed = result.steps.filter((s) => !s.ok);
+    toast(failed.length ? `${failed.map((s) => s.command).join(", ")} failed: ${failed[0].output ?? ""}` : `Updated ${r.project}: ${result.after?.outdated.length ?? "?"} outdated left`, failed.length ? "error" : "ok");
+    poll();
   }
 
   function vulnBadges(v) {

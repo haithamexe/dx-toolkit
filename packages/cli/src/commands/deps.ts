@@ -1,21 +1,23 @@
 import { parseArgs } from "node:util";
-import { auditDependencies, describeVulnerabilities, loadConfig, recordRun, type DepsReport } from "@dx/core";
+import { auditDependencies, describeVulnerabilities, findProjects, fixDependencies, loadConfig, readProject, recordRun, scanProjects, type DepsReport } from "@dx/core";
 import type { Command } from "../command.js";
-import { c, table, tildify, UsageError, warn } from "../ui.js";
+import { c, confirm, ok, table, tildify, UsageError, warn } from "../ui.js";
 
 export const depsCommand: Command = {
   name: "deps",
   aliases: ["audit"],
-  summary: "Outdated packages and known vulnerabilities across all your Node projects",
+  summary: "Outdated packages and known vulnerabilities across all your Node projects, and fixing them",
   usage: [
     "dx deps                 every Node project (npm outdated + npm audit in each)",
     "dx deps todo-app          only projects matching a name",
     "dx deps --active 30     only projects active in the last 30 days",
     "dx deps --details       also list each outdated package",
     "dx deps --json          the raw report",
+    "dx deps --fix todo-app  update within package.json's ranges and fix what the audit can without",
+    "                        breaking changes (npm update + npm audit fix, pnpm/bun update, yarn upgrade)",
     "",
-    "It asks the npm registry, so it needs the internet and takes a few seconds per project.",
-    "Nothing is changed: fix with npm update / npm audit fix in the project.",
+    "npm, pnpm, yarn and bun projects. It asks the npm registry, so it needs the internet and takes",
+    "a few seconds per project. Only --fix changes anything; major versions are left for you.",
   ].join("\n"),
   async run(argv) {
     const { values, positionals } = parseArgs({
@@ -25,8 +27,11 @@ export const depsCommand: Command = {
         active: { type: "string", short: "a" },
         details: { type: "boolean", short: "d" },
         json: { type: "boolean" },
+        fix: { type: "boolean" },
+        yes: { type: "boolean", short: "y" },
       },
     });
+    if (values.fix) return fix(positionals.join(" ").trim(), Boolean(values.yes));
     const activeDays = values.active === undefined ? undefined : Number(values.active);
     if (activeDays !== undefined && (!Number.isInteger(activeDays) || activeDays < 1)) {
       throw new UsageError("--active must be a whole number of days, 1 or more.");
@@ -88,7 +93,7 @@ export const depsCommand: Command = {
       `\n${checked.length} project(s) checked in ${Math.round((Date.now() - started) / 1000)}s: ` +
         `${outdated} outdated package(s), ${vulnerable.length} project(s) with known vulnerabilities.`,
     );
-    if (vulnerable.length) console.log(c.dim("Fix in a project with: npm audit fix   (details: npm audit)"));
+    if (vulnerable.length || outdated) console.log(c.dim("Fix one project: dx deps --fix <project>"));
     if (!values.details && outdated) console.log(c.dim("Each package: dx deps --details"));
     recordRun("deps", true, `${checked.length} checked, ${vulnerable.length} vulnerable, ${outdated} outdated`);
   },
@@ -106,4 +111,27 @@ function vulnCell(r: DepsReport): string {
   if (v.critical || v.high) return c.red(text);
   if (v.moderate || v.low) return c.yellow(text);
   return c.green(text);
+}
+
+async function fix(query: string, yes: boolean): Promise<number> {
+  let project = query && query !== "." ? undefined : readProject(process.cwd());
+  if (!project) {
+    if (!query) throw new UsageError("Which project? dx deps --fix <project>, or run it inside the project.");
+    const { match, candidates } = findProjects(query, scanProjects(loadConfig()).filter((p) => p.kind === "node"));
+    project = match ?? (candidates.length === 1 ? candidates[0] : undefined);
+    if (!project) throw new UsageError(candidates.length ? `Several projects match "${query}": ${candidates.slice(0, 8).map((p) => p.name).join(", ")}` : `No Node project matches "${query}".`);
+  }
+  if (!yes && !(await confirm(`Update ${project.name}'s packages within their ranges and apply non-breaking audit fixes?`))) {
+    console.log("Nothing changed.");
+    return 1;
+  }
+  console.log(c.dim("Updating…"));
+  const r = await fixDependencies(project);
+  for (const s of r.steps) (s.ok ? ok : warn)(`${s.command}${s.ok ? "" : `: ${s.output?.split("\n").pop() ?? "failed"}`}`);
+  const was = (d?: DepsReport) => `${d?.outdated.length ?? "?"} outdated, vulnerabilities: ${describeVulnerabilities(d?.vulnerabilities)}`;
+  console.log(`\nBefore: ${was(r.before)}\nAfter:  ${was(r.after)}`);
+  const majors = r.after?.outdated.filter((p) => p.major) ?? [];
+  if (majors.length) console.log(c.dim(`Left for you (major versions, may need code changes): ${majors.map((p) => `${p.name} ${p.latest}`).join(", ")}`));
+  recordRun("deps", r.ok, `${project.name} fixed: ${was(r.after)}`, "cli", { project: project.name });
+  return r.ok ? 0 : 1;
 }

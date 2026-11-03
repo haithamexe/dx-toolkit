@@ -8,24 +8,23 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
   - the core tools;
-  - the `dx` command: `ui, go, up, down, new, projects, port, kill, log, summary, clean, deps, logs, errors, setup, config, runs, doctor`;
-  - the MCP server with 19 tools, 10 of them for running apps;
-  - stacks and local domains (`shop.localhost`);
+  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, env, logs, errors, setup, https, config, runs, doctor`;
+  - the MCP server with 25 tools, 10 of them for running apps;
+  - stacks and local domains (`shop.localhost`), with opt-in https;
   - the dashboard with 8 pages (Projects, New project, Ports, Journal, Summary, Cleanup, Dependencies, Health & settings);
-  - error detection in dev-server output;
+  - error detection in dev-server output, and in the browser (headless check);
+  - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - setting itself up with no configuration.
+- **Not merged yet into a release**: everything under *Unreleased* in CHANGELOG.md.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
 
-- **Raycast**: the extension in `packages/raycast` has never been installed or checked. Add commands for summary and cleanup.
-- **Local HTTPS** for `*.localhost`: needs a trusted local CA (an admin prompt once), so an opt-in step an agent can run.
-- **More from the earlier idea list**: resume where you left off, an unsaved-work radar, `dx setup <git URL>`, a yearly work record, `.env` and secrets checks.
-- **Browser console errors for agents**: point to pairing with a browser MCP server, or add a headless check later.
-- **Tests for `cli`**: `core`, `web` and `mcp` have tests.
-- **Private pull requests in the summary** need `GITHUB_TOKEN` or `gh auth login`; the dashboard could say so when neither is set.
-- **`dx deps --fix`**: it only reports today; fixing is left to `npm update` / `npm audit fix`.
-- **yarn and bun** projects are skipped by `dx deps`.
+- **Raycast**: the extension type-checks (six commands, Work Summary and Clean Up Projects added), but has never been run in Raycast itself.
+- **`dx https` end to end**: the proxy's https is tested with a throwaway openssl certificate; the real `mkcert -install` path hasn't been run on a maintainer machine (it changes the system trust store, so it needs the maintainer's go-ahead).
+- **A yearly work record**: a year of commits, pull requests and journal as one document.
+- **Agents following a flow in the browser** (log in, add to cart): `check_url` loads one page; clicking through is a browser MCP server's job for now.
+- **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
   - **1.1.0** is the first on npm, as `dx-devkit`. npm refused `dxkit` as too close to existing names (degit, pdfkit). A free name (`npm view <name>` gives E404) can still be refused: the look-alike check only runs on a real publish, and short names fail it most.
@@ -33,6 +32,52 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Browser errors (`core/src/tools/browser.ts`)
+
+- **A browser already on the computer, driven over the DevTools protocol with Node's own WebSocket.** No Puppeteer or Playwright: they'd add a dependency tree and a 150 MB browser download, against the no-dependencies and no-setup rules. Chrome, Edge, Chromium and Brave are looked for in their usual places; `DX_BROWSER` points at another.
+- **One page load, then a short settle** (1.5s, until the network is quiet) to catch errors that come after load: hydration, data fetched later.
+- **Reported**: uncaught exceptions, console errors and warnings, failed requests (a missing `/favicon.ico` the browser asks for by itself doesn't count), and the text of Vite's, Next.js's or webpack's error overlay.
+- **Only loopback addresses**, like `check_url`; `*.localhost` goes straight to the dev server behind it.
+- **Screenshots** go to `~/.dx/screenshots` (the newest 30 are kept) and are returned to the agent as an image.
+
+### Clone and set up (`core/src/tools/clone.ts`)
+
+- **Named `dx clone`, not `dx setup <url>`**, because `dx setup` already connects AI tools.
+- **Only git addresses get through** (`normalizeGitUrl`: https, ssh, scp-style, file:///, or GitHub's owner/repo), and git gets the URL after `--`, so it can't be read as an option.
+- **The install command comes from the lock file**: npm, pnpm, yarn or bun; through corepack, or npx, when pnpm or yarn isn't installed. Python gets a `.venv` and `pip install -r requirements.txt` (or `uv sync` with a uv.lock); Go gets `go mod download`.
+- **Install scripts run**, as they would by hand, so the MCP tool's description tells agents to clone only what the user asked for.
+- **`GIT_TERMINAL_PROMPT=0` except in the CLI**, so a private repository fails with a "sign in with gh auth login" message instead of hanging the dashboard or an agent.
+
+### Where you left off (`core/src/tools/sessions.ts`)
+
+- **`~/.dx/sessions.json`, one entry per project**: when, branch, commit, what ran, errors open at stop, and a note with who wrote it (you or ai). It's written on `dx go`, on dev server start and stop, and on notes, through a temp file and a rename.
+- **The branch isn't switched back for you.** `dx go` says "you were on X, now on Y" with the command; switching silently could carry uncommitted work across.
+- **`dx go` shows it only after 2 hours away**, so it isn't noise when you restart a server.
+
+### Unsaved work (`core/src/tools/status.ts`)
+
+- **"Unpushed" means commits no remote has** (`rev-list --not --remotes`), on any local branch, not only the current one's upstream: a branch never pushed counts too.
+- **Worktrees share one repository**, so each worktree counts only its own branch, and the main checkout counts the branches no worktree has checked out. Otherwise every worktree reported the same commits.
+
+### `.env` and secrets (`core/src/tools/envcheck.ts`)
+
+- **Patterns match the shape of real credentials only** (AKIA…, ghp_…, sk-ant-…, -----BEGIN PRIVATE KEY-----), so placeholders like `your-key-here` don't match.
+- **Values are never shown whole**: the first few characters and the length.
+- **Only files git tracks are scanned**, since those are the ones that leak; lock files, minified files and binaries are skipped.
+- **Tests build fake keys from pieces** (`"gh" + "p_" + …`), so the repository itself never holds a key-shaped string.
+
+### Local HTTPS (`core/src/tools/https.ts`, `web/src/proxy.ts`)
+
+- **mkcert, opt-in.** Node can't add a certificate authority to the system's trust store, and doing that is a security change, so it's `dx https`, never automatic. `dx doctor` gives the install command.
+- **No `*.localhost` wildcard**: browsers reject wildcards that sit right under a top-level name. The certificate lists each project (`shop.localhost`) and its services (`*.shop.localhost`).
+- **A name the certificate doesn't cover is added when it's first asked for**: the proxy's SNI callback runs mkcert again and swaps in the new certificate. No restart is needed for a new project.
+- **https on 443, falling back to 1356**; when it's on, dev servers' `localUrl` and `DX_*_PUBLIC_URL` use https.
+
+### Deps for yarn and bun, and `--fix`
+
+- **yarn and bun are checked against the registry directly**: `/<name>/latest` for versions, and the bulk advisory endpoint (`/-/npm/v1/security/advisories/bulk`, the one npm audit uses) for the installed versions in node_modules, nested ones included. Their own CLIs print different formats from version to version.
+- **`--fix` stays within the ranges**: `npm update` + `npm audit fix` (never `--force`), `pnpm update`, `bun update`, `yarn upgrade` (or `yarn up -R` on yarn 2+). Major versions are listed for the user, since they can need code changes.
 
 ### No setup, ever (the guiding rule)
 
@@ -145,6 +190,8 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 - **Clipboard on Windows**: `clip.exe` pastes a UTF-8 BOM as a visible character. Write UTF-16LE without a BOM.
 - **Shell-mangled regexes**: tests built through a shell lost their backslashes; prefer `includes` checks in tests over regexes that pass through a shell.
+- **Editing code through a shell breaks escapes**: `\n`, `\r` and `\\` in a python/sed/heredoc edit came out as real line breaks or lost backslashes, several times. Edit `.ts` and `.js` files with an editor tool, not a shell script.
+- **git checks files out with CRLF on Windows** (`core.autocrlf`): compare file contents in tests after `.replace(/\r\n/g, "\n")`.
 - **The dashboard was blank** because `append` was called with an array where it takes `...children`. Keep the signature `append(el, ...children)`.
 - **Horizontal scroll at phone width** came from a visually hidden `th` label positioned against the page. `.table-wrap { position: relative }` contains it.
 - **LF/CRLF warnings** on commit are harmless (`core.autocrlf`).

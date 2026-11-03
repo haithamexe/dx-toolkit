@@ -3,6 +3,9 @@ import fs from "node:fs";
 import { promisify } from "node:util";
 import { configPath, dxHome, dxPath, ensureDxHome, loadConfig } from "../config.js";
 import { listAiTools } from "./aiSetup.js";
+import { browserInstallFix, findBrowser } from "./browser.js";
+import { githubToken } from "./github.js";
+import { certFiles, mkcertInstallFix } from "./https.js";
 import { listListeningPorts } from "./ports.js";
 import { scanProjects } from "./projects.js";
 import { detectStack } from "./stacks.js";
@@ -128,6 +131,40 @@ export async function runDoctor(): Promise<Check[]> {
     }
   }
 
+  // Local HTTPS is opt-in (dx https); once on, it needs mkcert and the certificate.
+  if (config.https === true) {
+    const mkcert = await commandExists("mkcert");
+    const cert = fs.existsSync(certFiles().cert);
+    checks.push({
+      name: "Local HTTPS",
+      status: mkcert && cert ? "ok" : "warn",
+      detail: mkcert && cert ? "https://name.localhost uses a trusted local certificate" : !mkcert ? "on, but mkcert isn't installed" : "on, but there's no certificate yet",
+      fix: mkcert && cert ? undefined : !mkcert ? `${mkcertInstallFix()}, then dx https` : "dx https",
+    });
+  }
+
+  // AI agents load pages in it to see browser errors (check_url with browser).
+  const browser = findBrowser();
+  checks.push({
+    name: "Headless browser",
+    status: browser ? "ok" : "warn",
+    detail: browser ? `${browser.name}: ${browser.path}` : "no Chrome, Edge, Chromium or Brave found; agents can't see errors in the browser",
+    fix: browser ? undefined : browserInstallFix(),
+  });
+
+  // Private pull requests in dx summary need a GitHub login; only worth saying when there are GitHub repos.
+  const onGithub = projects.some((p) => p.hasGit && hasGithubRemote(p.dir));
+  if (onGithub) {
+    const token = await githubToken();
+    const gh = token ? undefined : await commandExists("gh");
+    checks.push({
+      name: "GitHub",
+      status: token ? "ok" : "warn",
+      detail: token ? "signed in: dx summary includes private pull requests" : "not signed in: dx summary shows pull requests from public repos only",
+      fix: token ? undefined : gh ? "gh auth login" : `${ghInstall()}, then gh auth login (or set GITHUB_TOKEN)`,
+    });
+  }
+
   const ai = await listAiTools();
   const installed = ai.filter((t) => t.installed);
   const missing = installed.filter((t) => !t.connected || !t.current);
@@ -163,6 +200,20 @@ function readDashboardFile(): { localDomainsPort?: number; pid: number } | undef
   } catch {
     return undefined;
   }
+}
+
+function hasGithubRemote(dir: string): boolean {
+  try {
+    return /github\.com/i.test(fs.readFileSync(`${dir}/.git/config`, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+function ghInstall(): string {
+  if (process.platform === "win32") return "winget install GitHub.cli";
+  if (process.platform === "darwin") return "brew install gh";
+  return linuxInstall("gh");
 }
 
 function linuxInstall(pkg: string): string {

@@ -1,5 +1,5 @@
 import { devErrors, devLogs, localRoutes, serverForPort, type DevLine } from "./dev.js";
-import type { DevError } from "@dx/core";
+import { checkPage, isLoopbackUrl, type DevError, type PageCheck } from "@dx/core";
 
 /**
  * Requests a page or API route on a local dev server, the way an AI agent checks its own change:
@@ -12,6 +12,10 @@ export interface CheckOptions {
   headers?: Record<string, string>;
   body?: string;
   timeoutMs?: number;
+  /** Also load it in a headless browser: console errors, exceptions, failed requests. */
+  browser?: boolean;
+  /** With browser: save a screenshot. */
+  screenshot?: boolean;
 }
 
 export interface CheckResult {
@@ -35,19 +39,13 @@ export interface CheckResult {
   serverOutput: DevLine[];
   /** Errors that server logged while handling the request. */
   serverErrors: DevError[];
+  /** What the browser saw, with `browser: true`. */
+  page?: PageCheck;
 }
 
-const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\]|[\w.-]+\.localhost)$/i;
+export { isLoopbackUrl };
+
 const MAX_BODY = 2 * 1024 * 1024;
-
-export function isLoopbackUrl(raw: string): boolean {
-  try {
-    const u = new URL(raw);
-    return (u.protocol === "http:" || u.protocol === "https:") && LOOPBACK.test(u.hostname);
-  } catch {
-    return false;
-  }
-}
 
 export async function checkUrl(options: CheckOptions): Promise<CheckResult> {
   if (!isLoopbackUrl(options.url)) throw new Error("Only http://localhost and http://127.0.0.1 addresses can be checked.");
@@ -59,6 +57,16 @@ export async function checkUrl(options: CheckOptions): Promise<CheckResult> {
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   const server = serverForPort(port);
   const before = server ? Math.max(0, ...devLogs(server.dir).lines.map((l) => l.n)) : 0;
+
+  // GET only: a browser loads pages, it doesn't send bodies.
+  if (options.browser) {
+    if ((options.method ?? "GET").toUpperCase() !== "GET") throw new Error("A page is loaded in the browser with GET; leave out method and body.");
+    const result: CheckResult = { url: options.url, ok: false, ms: 0, project: server ? (server.service ? `${server.project}/${server.service}` : server.project) : undefined, serverOutput: [], serverErrors: [] };
+    const page = await checkPage({ url: url.href, screenshot: options.screenshot, timeoutMs: options.timeoutMs ?? 30_000 });
+    Object.assign(result, { page, ok: page.ok, ms: page.ms, status: page.status, title: page.title, snippet: page.text, error: page.error });
+    await collectServer(result, server, before);
+    return result;
+  }
 
   const started = Date.now();
   const result: CheckResult = { url: options.url, ok: false, ms: 0, project: server ? (server.service ? `${server.project}/${server.service}` : server.project) : undefined, serverOutput: [], serverErrors: [] };
@@ -96,13 +104,16 @@ export async function checkUrl(options: CheckOptions): Promise<CheckResult> {
           : e.message;
   }
 
-  if (server) {
-    // Give the server a moment to finish logging what it did for this request.
-    await new Promise((r) => setTimeout(r, 400));
-    result.serverOutput = devLogs(server.dir, before, server.service).lines.slice(-60);
-    result.serverErrors = devErrors(server.dir, { after: before, service: server.service })[0]?.errors ?? [];
-  }
+  await collectServer(result, server, before);
   return result;
+}
+
+async function collectServer(result: CheckResult, server: ReturnType<typeof serverForPort>, before: number): Promise<void> {
+  if (!server) return;
+  // Give the server a moment to finish logging what it did for this request.
+  await new Promise((r) => setTimeout(r, 400));
+  result.serverOutput = devLogs(server.dir, before, server.service).lines.slice(-60);
+  result.serverErrors = devErrors(server.dir, { after: before, service: server.service })[0]?.errors ?? [];
 }
 
 async function readCapped(res: Response): Promise<Buffer> {
