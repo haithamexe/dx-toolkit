@@ -4,6 +4,16 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **Git page** in the dashboard:
+  - **A staging board.** A project's changed files are cards in **Changes** and **Staged**. Drag them across, press the arrow on a card, or pick several with Ctrl+click and Shift+click. Cards slide to their new place; under "reduce motion" they don't.
+  - **One block at a time.** Open a file to see its changes side by side and stage or unstage one block, by its button or by dragging it.
+  - **Commit** from the page, with Ctrl+Enter. The committed cards fly into the history, where the new commit appears.
+  - **The history as a graph**: every branch, tag and remote branch in its own coloured lane. Open a commit for its message and its diff, Visual side by side or Raw.
+  - Changes you make in your editor or a terminal show up by themselves.
+- **`dx git <project>`** prints the branch, what's staged and changed, and the recent history as a graph in the terminal. `--ui` opens the Git page.
+
 ## 1.4.0 (2026-11-04)
 
 Keep secrets out of git with the new Env & secrets page, see your app's APIs, errors and console in their own views, and have it recorded at the address you always open, `localhost:<port>`, in any browser. Update with `npm install -g dx-devkit@latest`.

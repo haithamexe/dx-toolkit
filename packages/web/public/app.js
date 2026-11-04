@@ -74,6 +74,10 @@ const ICONS = {
   warn: "M12 9v4M12 17h.01M10.3 4l-8 14a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0z",
   x: "M6 6l12 12M18 6L6 18",
   check: "M5 12l5 5L20 7",
+  git: "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9",
+  right: "M5 12h14M13 6l6 6-6 6",
+  left: "M19 12H5M11 6l-6 6 6 6",
+  tag: "M3 12V4h8l10 10-8 8zM7.5 7.5h.01",
 };
 
 function icon(name) {
@@ -589,6 +593,165 @@ function requestDetail(e, tab = { current: undefined }) {
   return view;
 }
 
+/** Where a diff block starts: "@@ -12,5 +12,7 @@ function name" → { old: 12, new: 12, context: "function name" }. */
+function hunkStart(header) {
+  const m = /^@@+ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@+ ?(.*)$/.exec(header);
+  return m ? { old: Number(m[1]), new: Number(m[2]), context: m[3] } : { old: 0, new: 0, context: "" };
+}
+
+const DIFF_ROWS_MAX = 3000;
+
+/**
+ * One block of a diff side by side: unchanged lines on both sides, each removed line next to the
+ * added line that replaced it. Under 860px the sides stack into one column. `budget.rows` caps
+ * how many rows a whole diff draws.
+ */
+function hunkView(header, lines, { action, budget = { rows: DIFF_ROWS_MAX } } = {}) {
+  const start = hunkStart(header);
+  let oldNo = start.old;
+  let newNo = start.new;
+  // A block that only adds (a new file) or only removes needs one side, not two.
+  const oneSide = lines.every((l) => l[0] === "+" || l[0] === "\\") || lines.every((l) => l[0] === "-" || l[0] === "\\");
+  const grid = h("div", { class: `diff-grid${oneSide ? " diff-grid-one" : ""}` });
+  const cells = (side, kind, no, text) => [
+    h("span", { class: `diff-no diff-${side} diff-${kind}`, "aria-hidden": "true" }, no ?? ""),
+    h("span", { class: `diff-text diff-${side} diff-${kind}` }, kind === "del" ? h("span", { class: "visually-hidden" }, "removed: ") : kind === "add" ? h("span", { class: "visually-hidden" }, "added: ") : null, text ?? ""),
+  ];
+  let dels = [];
+  let adds = [];
+  let cut = 0;
+  const row = (cls, ...children) => {
+    if (budget.rows <= 0) return void cut++;
+    budget.rows--;
+    grid.append(h("div", { class: `diff-row ${cls}` }, children));
+  };
+  const flush = () => {
+    for (let i = 0; i < Math.max(dels.length, adds.length); i++) {
+      const d = dels[i];
+      const a = adds[i];
+      row("diff-row-change", d ? cells("left", "del", d.no, d.text) : cells("left", "empty"), a ? cells("right", "add", a.no, a.text) : cells("right", "empty"));
+    }
+    dels = [];
+    adds = [];
+  };
+  for (const raw of lines) {
+    const line = raw.replace(/\r$/, "");
+    const mark = line[0];
+    const text = line.slice(1);
+    if (mark === "-") {
+      if (adds.length) flush();
+      dels.push({ no: oldNo++, text });
+    } else if (mark === "+") adds.push({ no: newNo++, text });
+    else if (mark === "\\") continue; // "\ No newline at end of file"
+    else {
+      flush();
+      row("diff-row-ctx", cells("left", "ctx", oldNo++, text), cells("right", "ctx", newNo++, text));
+    }
+  }
+  flush();
+  return h(
+    "div",
+    { class: "diff-hunk" },
+    h("div", { class: "diff-hunk-head" }, h("span", { class: "mono" }, header.replace(/ @@+ .*$/, " @@")), start.context ? h("span", { class: "diff-context mono" }, start.context) : null, action ?? null),
+    grid,
+    cut ? h("p", { class: "dim diff-cut" }, `${plural(cut, "more line")} not drawn. Raw shows them all.`) : null,
+  );
+}
+
+/** A patch ("diff --git …") split into files, each with its blocks and what kind of change it is. */
+function parsePatch(patch) {
+  const files = [];
+  let file;
+  let hunk;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      file = { head: [line], hunks: [], path: "", from: "", additions: 0, deletions: 0, kind: "modified", binary: false };
+      files.push(file);
+      hunk = undefined;
+      continue;
+    }
+    if (!file) continue;
+    if (line.startsWith("@@")) {
+      hunk = { header: line, lines: [] };
+      file.hunks.push(hunk);
+    } else if (hunk) {
+      if (line === "") continue;
+      hunk.lines.push(line);
+      if (line[0] === "+") file.additions++;
+      else if (line[0] === "-") file.deletions++;
+    } else {
+      file.head.push(line);
+      if (line.startsWith("+++ ")) file.path = line.slice(4).replace(/^b\//, "");
+      else if (line.startsWith("--- ")) file.from = line.slice(4).replace(/^a\//, "");
+      else if (line.startsWith("rename from ")) (file.from = line.slice(12)), (file.kind = "renamed");
+      else if (line.startsWith("rename to ")) file.path = line.slice(10);
+      else if (line.startsWith("new file mode")) file.kind = "added";
+      else if (line.startsWith("deleted file mode")) file.kind = "deleted";
+      else if (line.startsWith("Binary files ") || line === "GIT binary patch") file.binary = true;
+    }
+  }
+  for (const f of files) {
+    if (!f.path || f.path === "/dev/null") f.path = f.from && f.from !== "/dev/null" ? f.from : (/ b\/(.+)$/.exec(f.head[0])?.[1] ?? "");
+    if (f.kind !== "renamed") f.from = "";
+  }
+  return files;
+}
+
+const CHANGE_LABELS = { modified: "M", added: "A", deleted: "D", renamed: "R" };
+
+/** A patch, Visual (files folded, blocks side by side) or Raw (the exact text). */
+function diffBlock(patch, { truncated = false } = {}) {
+  return (mode) => {
+    const cutNote = truncated ? h("p", { class: "dim" }, "The patch is cut at 512 KB; the rest isn't shown in either view.") : null;
+    if (mode === "raw" || !patch.startsWith("diff --git")) {
+      return h(
+        "section",
+        { class: "detail-section" },
+        h("div", { class: "detail-head" }, h("strong", null, "Patch"), copyButton(patch)),
+        h("pre", { class: "log-snippet raw-text diff-raw" }, patch || "No changes."),
+        cutNote,
+      );
+    }
+    const files = parsePatch(patch);
+    const budget = { rows: DIFF_ROWS_MAX };
+    return h(
+      "section",
+      { class: "detail-section" },
+      h("div", { class: "detail-head" }, h("strong", null, plural(files.length, "file")), h("span", { class: "diff-add-count" }, `+${files.reduce((n, f) => n + f.additions, 0)}`), h("span", { class: "diff-del-count" }, `−${files.reduce((n, f) => n + f.deletions, 0)}`), copyButton(patch)),
+      h(
+        "div",
+        { class: "diff-files" },
+        files.map((f, i) => {
+          const body = h("div", { class: "diff-file-body" });
+          // The files open at first share one budget; one opened later gets its own.
+          const fill = (rows = { rows: DIFF_ROWS_MAX }) => {
+            if (body.childElementCount) return;
+            if (f.binary) body.append(h("p", { class: "dim" }, "A binary file: its changes can't be shown as text."));
+            else if (!f.hunks.length) body.append(h("p", { class: "dim" }, f.kind === "renamed" ? "Renamed, with no changes inside." : "Only the file's mode changed."));
+            else body.append(...f.hunks.map((hk) => hunkView(hk.header, hk.lines, { budget: rows })));
+          };
+          const open = i < 6;
+          const el = h(
+            "details",
+            { class: "diff-file", open: open || undefined, ontoggle: (e) => e.target.open && fill() },
+            h(
+              "summary",
+              { class: "diff-file-head" },
+              h("span", { class: `git-code git-code-${CHANGE_LABELS[f.kind]}`, title: f.kind }, CHANGE_LABELS[f.kind]),
+              h("span", { class: "diff-file-name mono" }, f.from ? `${f.from} → ${f.path}` : f.path),
+              f.binary ? h("span", { class: "badge" }, "binary") : h("span", { class: "diff-file-counts" }, h("span", { class: "diff-add-count" }, `+${f.additions}`), " ", h("span", { class: "diff-del-count" }, `−${f.deletions}`)),
+            ),
+            body,
+          );
+          if (open) fill(budget);
+          return el;
+        }),
+      ),
+      cutNote,
+    );
+  };
+}
+
 /**
  * Which terminal projects open in: the installed ones, saved to the settings on change. Used on
  * the Projects page and in Health & settings.
@@ -629,6 +792,7 @@ const pages = [
   { id: "projects", label: "Projects", icon: "projects", render: projectsPage },
   { id: "new", label: "New project", icon: "new", render: newProjectPage },
   { id: "ports", label: "Ports", icon: "ports", render: portsPage },
+  { id: "git", label: "Git", icon: "git", render: gitPage },
   { id: "activity", label: "Activity", icon: "activity", render: activityPage },
   { id: "env", label: "Env & secrets", icon: "key", render: envPage },
   { id: "journal", label: "Journal", icon: "journal", render: journalPage },
@@ -1972,6 +2136,682 @@ function envPage(root) {
   }
 
   load();
+}
+
+// ------------------------------------------------------------------ Git
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const LANE_COLOURS = 6;
+const MAX_LANES = 12;
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const GIT_CODES = { M: "Modified", A: "Added", D: "Deleted", R: "Renamed", C: "Copied", T: "Type changed", U: "Conflict", N: "New file" };
+
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  return el;
+}
+
+/**
+ * One commit's slice of the graph, in a 16 × 32 grid per lane: lines from its children above, to
+ * its parents below, and the lanes passing by. The SVG scales with the row's height in CSS.
+ */
+function graphCell(row, lanes, merge) {
+  const w = lanes * 16;
+  const svg = svgEl("svg", { class: "graph-cell", viewBox: `0 0 ${w} 32`, width: w, height: 32, "aria-hidden": "true" });
+  const x = (lane) => lane * 16 + 8;
+  const path = (d, lane) => svg.append(svgEl("path", { d, class: `graph-line lane-${lane % LANE_COLOURS}` }));
+  const curve = (x1, y1, x2, y2) => (x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}C${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`);
+  for (const l of row.through) if (l < lanes) path(`M${x(l)} 0V32`, l);
+  // A branch joining the line on its left: straight down to the dot's height, then across.
+  for (const [from, to] of row.moves ?? []) if (from < lanes && to < lanes) path(`M${x(from)} 0V16C${x(from)} 26 ${x(to)} 24 ${x(to)} 32`, from);
+  for (const l of row.up) if (l < lanes) path(curve(x(l), 0, x(row.lane), 16), l);
+  for (const l of row.down) if (l < lanes) path(curve(x(row.lane), 16, x(l), 32), l);
+  if (row.lane < lanes) svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: merge ? 4 : 4.5, class: `graph-dot lane-${row.lane % LANE_COLOURS}${merge ? " graph-dot-merge" : ""}` }));
+  return svg;
+}
+
+/** The lanes that go on past a commit, drawn down the side of its open detail so the graph doesn't break. */
+function laneStrip(row, lanes) {
+  const w = lanes * 16;
+  const svg = svgEl("svg", { class: "graph-strip", viewBox: `0 0 ${w} 32`, width: w, preserveAspectRatio: "none", "aria-hidden": "true" });
+  for (const l of new Set([...row.through, ...row.down])) {
+    if (l < lanes) svg.append(svgEl("path", { d: `M${l * 16 + 8} 0V32`, class: `graph-line lane-${l % LANE_COLOURS}`, "vector-effect": "non-scaling-stroke" }));
+  }
+  return svg;
+}
+
+function refBadge(ref) {
+  const kind = ref.current ? "current" : ref.kind;
+  const label = ref.kind === "head" ? "HEAD" : ref.name;
+  const title = { current: "The branch you're on", branch: "Branch", remote: "Branch on the remote", tag: "Tag", head: "HEAD is here, on no branch" }[kind];
+  return h("span", { class: `graph-ref graph-ref-${kind}`, title }, ref.kind === "tag" ? icon("tag") : ref.current ? icon("git") : null, label);
+}
+
+/** FLIP: where each keyed element is now, so after the DOM changes it can slide from there. */
+function rememberPlaces(container) {
+  const places = new Map();
+  for (const el of container.querySelectorAll("[data-key]")) places.set(el.dataset.key, el.getBoundingClientRect());
+  return places;
+}
+
+/** Slides each keyed element from where it was (or, for a card that changed column, from its other self). */
+function slideFromPlaces(container, places) {
+  if (reducedMotion.matches || !places.size) return;
+  for (const el of container.querySelectorAll("[data-key]")) {
+    const [col, ...rest] = el.dataset.key.split(":");
+    const was = places.get(el.dataset.key) ?? places.get(`${col === "changes" ? "staged" : "changes"}:${rest.join(":")}`);
+    const now = el.getBoundingClientRect();
+    if (!was) {
+      el.animate([{ opacity: 0, transform: "scale(0.96)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "ease-out" });
+      continue;
+    }
+    const dx = was.left - now.left;
+    const dy = was.top - now.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+    el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 280, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
+  }
+}
+
+/** Commit messages being written, per project, kept while you visit other pages. */
+const gitDrafts = new Map();
+
+function gitPage(root) {
+  const fromLink = new URLSearchParams(location.hash.split("?")[1] ?? "").get("dir");
+  let dir = fromLink || pref("gitDir", "");
+  let projects = [];
+  let status = null;
+  let statusSig = "";
+  let graph = null;
+  let graphHead;
+  let limit = 200;
+  let drag = null; // { from: "changes" | "staged", paths, hunk? }
+  let working = 0; // actions on their way: polling waits for them
+  let selected = new Set(); // "changes:path" / "staged:path"
+  let lastClicked = null;
+  let openFile = null; // { path, staged }
+  let openCommit = null; // hash
+  let newCommit = null; // the hash just committed, to animate in
+  let historyList = null;
+  let stopped = false;
+  const drafts = gitDrafts;
+
+  const live = h("p", { class: "visually-hidden", "aria-live": "polite" });
+  const say = (text) => (live.textContent = text);
+  const projectSelect = h("select", {
+    disabled: true,
+    onchange: (e) => {
+      drafts.set(dir, message.value);
+      dir = e.target.value;
+      setPref("gitDir", dir);
+      load();
+    },
+  });
+  const headInfo = h("div", { class: "card card-pad git-branch", "aria-live": "polite" }, loadingView("Reading the repository…"));
+  const filePanel = h("div", { class: "git-file-panel" });
+  const history = h("div", { class: "card graph-card" }, loadingView("Reading the history…"));
+
+  const columns = { changes: makeColumn("changes"), staged: makeColumn("staged") };
+  const message = h("textarea", {
+    class: "input git-message",
+    rows: 4,
+    placeholder: "What does this commit do?",
+    "aria-label": "Commit message",
+    oninput: () => updateCommitBox(),
+    onkeydown: (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        if (!commitButton.disabled) commitButton.click();
+      }
+    },
+  });
+  const commitSummary = h("p", { class: "dim git-commit-summary" });
+  const commitButton = btn("Commit", (ev) => commit(ev.currentTarget), { kind: "primary", iconName: "check" });
+  const commitBox = h(
+    "section",
+    { class: "card git-col git-commit", "aria-labelledby": "git-commit-title" },
+    h("div", { class: "git-col-head" }, h("h2", { class: "git-col-title", id: "git-commit-title" }, "Commit")),
+    message,
+    commitSummary,
+    h("div", { class: "toolbar" }, commitButton, h("span", { class: "dim git-hint" }, h("kbd", null, "Ctrl"), "+", h("kbd", null, "Enter"))),
+  );
+  dropZone(commitBox, "staged");
+  const board = h("div", { class: "git-board" }, columns.changes.col, columns.staged.col, commitBox);
+
+  append(
+    root,
+    pageHead(
+      "Git",
+      "Drag your changes into the next commit, and see every branch's history as a graph.",
+      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
+      btn("Refresh", () => load({ keep: true }), { iconName: "refresh", kind: "ghost" }),
+    ),
+    headInfo,
+    board,
+    filePanel,
+    h("section", { class: "section", "aria-labelledby": "git-history-title" }, h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-history-title" }, "History")), history),
+    live,
+  );
+
+  /** replaceChildren, skipping null and taking arrays, the way h() does. */
+  function put(el, ...children) {
+    el.replaceChildren();
+    append(el, ...children);
+  }
+
+  function makeColumn(kind) {
+    const title = kind === "changes" ? "Changes" : "Staged";
+    const count = h("span", { class: "badge" }, "0");
+    const all = btn(kind === "changes" ? "Stage all" : "Unstage all", () => {
+      const keys = [...selected].filter((k) => k.startsWith(`${kind}:`));
+      const paths = keys.length ? keys.map((k) => k.slice(kind.length + 1)) : filesIn(kind).map((f) => f.path);
+      move(kind, paths);
+    }, { small: true, kind: "ghost", iconName: kind === "changes" ? "right" : "left" });
+    const list = h("ul", { class: "git-cards", "aria-label": `${title} files` });
+    const empty = h("p", { class: "git-empty dim" });
+    const col = h(
+      "section",
+      { class: `card git-col git-col-${kind}`, "aria-labelledby": `git-${kind}-title` },
+      h("div", { class: "git-col-head" }, h("h2", { class: "git-col-title", id: `git-${kind}-title` }, title), count, all),
+      list,
+      empty,
+    );
+    dropZone(col, kind);
+    return { col, list, count, all, empty };
+  }
+
+  /** A column (or the commit box) that takes cards and blocks dragged from the other column. */
+  function dropZone(el, target) {
+    el.addEventListener("dragover", (e) => {
+      if (!drag || drag.from === target) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      el.classList.add("drop-target");
+    });
+    el.addEventListener("dragleave", (e) => {
+      if (!el.contains(e.relatedTarget)) el.classList.remove("drop-target");
+    });
+    el.addEventListener("drop", (e) => {
+      e.preventDefault();
+      el.classList.remove("drop-target");
+      const d = drag;
+      drag = null;
+      if (!d || d.from === target) return;
+      if (d.hunk) moveHunk(d);
+      else move(d.from, d.paths);
+    });
+  }
+
+  const filesIn = (kind) => (status?.files ?? []).filter((f) => (kind === "changes" ? f.unstaged : f.staged));
+
+  function card(f, kind) {
+    const key = `${kind}:${f.path}`;
+    const code = f.conflicted ? "U" : f.untracked ? "N" : kind === "staged" ? f.index : f.worktree;
+    const slash = f.path.lastIndexOf("/");
+    const isOpen = openFile?.path === f.path && openFile.staged === (kind === "staged");
+    const li = h(
+      "li",
+      { class: `git-card${selected.has(key) ? " selected" : ""}${isOpen ? " open" : ""}`, draggable: "true", dataset: { key } },
+      h("span", { class: `git-code git-code-${code}`, title: GIT_CODES[code] ?? code }, code),
+      h(
+        "button",
+        { type: "button", class: "git-card-main", title: "Show the changes. Ctrl+click or Shift+click to select several.", "aria-pressed": String(selected.has(key)), onclick: (e) => cardClick(e, f, kind) },
+        h("span", { class: "git-name" }, f.path.slice(slash + 1)),
+        slash >= 0 ? h("span", { class: "git-folder" }, f.path.slice(0, slash + 1)) : null,
+        f.from ? h("span", { class: "git-folder" }, `from ${f.from}`) : null,
+      ),
+      f.staged && f.unstaged && !f.conflicted ? h("span", { class: "badge", title: "Part of this file is staged, part isn't" }, "partly") : null,
+      f.conflicted ? h("span", { class: "badge badge-danger" }, "conflict") : null,
+      btn(null, () => move(kind, [f.path]), { small: true, kind: "ghost", iconName: kind === "changes" ? "right" : "left", title: kind === "changes" ? "Stage" : "Unstage", name: `${kind === "changes" ? "Stage" : "Unstage"} ${f.path}` }),
+    );
+    li.addEventListener("dragstart", (e) => {
+      if (!selected.has(key)) {
+        selected = new Set([key]);
+        markSelected();
+      }
+      const paths = [...selected].filter((k) => k.startsWith(`${kind}:`)).map((k) => k.slice(kind.length + 1));
+      drag = { from: kind, paths };
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", paths.join("\n"));
+      requestAnimationFrame(() => board.querySelectorAll(".git-card.selected").forEach((c) => c.classList.add("dragging")));
+    });
+    li.addEventListener("dragend", endDrag);
+    return li;
+  }
+
+  function endDrag() {
+    drag = null;
+    for (const el of root.querySelectorAll(".dragging, .drop-target")) el.classList.remove("dragging", "drop-target");
+  }
+
+  function cardClick(e, f, kind) {
+    const key = `${kind}:${f.path}`;
+    if (e.ctrlKey || e.metaKey) {
+      for (const k of [...selected]) if (!k.startsWith(`${kind}:`)) selected.delete(k);
+      if (selected.has(key)) selected.delete(key);
+      else selected.add(key);
+      lastClicked = key;
+      return markSelected();
+    }
+    if (e.shiftKey && lastClicked?.startsWith(`${kind}:`)) {
+      const keys = filesIn(kind).map((x) => `${kind}:${x.path}`);
+      const [a, b] = [keys.indexOf(lastClicked), keys.indexOf(key)].sort((x, y) => x - y);
+      if (a >= 0) {
+        selected = new Set(keys.slice(a, b + 1));
+        return markSelected();
+      }
+    }
+    selected.clear();
+    lastClicked = key;
+    markSelected();
+    openDiff(f.path, kind === "staged");
+  }
+
+  function markSelected() {
+    for (const el of board.querySelectorAll(".git-card")) {
+      const on = selected.has(el.dataset.key);
+      el.classList.toggle("selected", on);
+      el.querySelector(".git-card-main")?.setAttribute("aria-pressed", String(on));
+    }
+    for (const kind of ["changes", "staged"]) {
+      const n = [...selected].filter((k) => k.startsWith(`${kind}:`)).length;
+      const verb = kind === "changes" ? "Stage" : "Unstage";
+      columns[kind].all.replaceChildren(icon(kind === "changes" ? "right" : "left"), n ? `${verb} ${n} selected` : `${verb} all`);
+    }
+  }
+
+  function renderBoard({ animate = true } = {}) {
+    const places = animate ? rememberPlaces(board) : new Map();
+    for (const kind of ["changes", "staged"]) {
+      const files = filesIn(kind);
+      const c = columns[kind];
+      c.count.textContent = String(files.length);
+      c.all.disabled = files.length === 0;
+      c.list.replaceChildren(...files.map((f) => card(f, kind)));
+      c.empty.hidden = files.length > 0;
+      c.empty.textContent =
+        kind === "changes"
+          ? status?.files.length ? "Everything changed is staged." : "Nothing changed since the last commit."
+          : "Drag files here, or press the arrow on a card, to put them in the next commit.";
+    }
+    for (const k of [...selected]) if (!board.querySelector(`[data-key="${CSS.escape(k)}"]`)) selected.delete(k);
+    markSelected();
+    updateCommitBox();
+    slideFromPlaces(board, places);
+  }
+
+  function updateCommitBox() {
+    const staged = filesIn("staged");
+    commitSummary.textContent = staged.length ? `${plural(staged.length, "file")} go${staged.length === 1 ? "es" : ""} in this commit.` : "Stage some changes first.";
+    commitButton.disabled = !staged.length || !message.value.trim() || working > 0 || staged.some((f) => f.conflicted) || (status?.files ?? []).some((f) => f.conflicted);
+  }
+
+  function renderHead() {
+    const s = status;
+    const sync = !s.upstream
+      ? h("span", { class: "dim" }, s.hasCommits ? "Not pushed anywhere yet: this branch has no upstream." : "No commits yet.")
+      : s.ahead || s.behind
+        ? [
+            s.ahead ? h("span", { class: "badge badge-warn" }, `${s.ahead} to push`) : null,
+            s.behind ? h("span", { class: "badge badge-accent" }, `${s.behind} to pull`) : null,
+            h("span", { class: "dim" }, `compared with ${s.upstream}`),
+          ]
+        : h("span", { class: "dim" }, `Up to date with ${s.upstream}.`);
+    put(headInfo,
+      h("span", { class: "graph-ref graph-ref-current git-branch-name" }, icon("git"), s.detached ? "No branch (detached HEAD)" : (s.branch ?? "No branch")),
+      sync,
+      s.truncated ? h("span", { class: "badge badge-warn" }, "Only the first 1000 changed files are listed") : null,
+    );
+  }
+
+  function setStatus(fresh) {
+    status = fresh;
+    statusSig = JSON.stringify(fresh);
+    renderHead();
+    renderBoard();
+    if (graph && fresh.head !== graphHead) loadGraph();
+  }
+
+  async function loadStatus({ quiet = false } = {}) {
+    const forDir = dir;
+    try {
+      const fresh = await api(`/api/git/status?dir=${encodeURIComponent(dir)}`);
+      if (forDir !== dir || stopped) return;
+      if (JSON.stringify(fresh) === statusSig) return;
+      setStatus(fresh);
+      if (openFile && quiet) refreshOpenFile();
+    } catch (err) {
+      if (quiet) return;
+      headInfo.replaceChildren(errorView(err, () => load()));
+    }
+  }
+
+  /** What the board will look like once git has done it: shown at once, replaced by git's answer. */
+  function expected(paths, stage) {
+    const set = new Set(paths);
+    return {
+      ...status,
+      files: status.files.map((f) => {
+        if (!set.has(f.path)) return f;
+        if (stage) return { ...f, staged: true, unstaged: false, untracked: false, index: f.untracked ? "A" : f.index === "." ? f.worktree : f.index, worktree: "." };
+        return { ...f, staged: false, unstaged: true, untracked: f.index === "A", index: ".", worktree: f.index === "A" ? "?" : f.worktree === "." ? f.index : f.worktree };
+      }),
+    };
+  }
+
+  async function move(from, paths) {
+    if (!paths.length || !status) return;
+    const stage = from === "changes";
+    const before = status;
+    working++;
+    status = expected(paths, stage);
+    selected.clear();
+    renderBoard();
+    try {
+      setStatus(await api(`/api/git/${stage ? "stage" : "unstage"}`, { method: "POST", body: { dir, paths } }));
+      say(`${stage ? "Staged" : "Unstaged"} ${paths.length === 1 ? paths[0] : plural(paths.length, "file")}`);
+    } catch (err) {
+      status = before;
+      renderBoard();
+      toast(err.message, "error");
+      loadStatus();
+    } finally {
+      working--;
+      updateCommitBox();
+    }
+    refreshOpenFile();
+  }
+
+  async function moveHunk({ from, path, hunk }) {
+    const unstage = from === "staged";
+    working++;
+    try {
+      setStatus(await api("/api/git/hunk", { method: "POST", body: { dir, path, hunk, staged: unstage } }));
+      say(`${unstage ? "Unstaged" : "Staged"} a block of ${path}`);
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      working--;
+      updateCommitBox();
+    }
+    refreshOpenFile();
+  }
+
+  // ---------------------------------------------------------------- one file's changes
+
+  function refreshOpenFile() {
+    if (!openFile || !status) return;
+    const f = status.files.find((x) => x.path === openFile.path);
+    if (f && (openFile.staged ? f.staged : f.unstaged)) return void openDiff(openFile.path, openFile.staged, { quiet: true });
+    // Staged whole (or unstaged): follow the file to the column it's in now.
+    if (f) return void openDiff(f.path, f.staged && !f.unstaged, { quiet: true });
+    closeFile();
+  }
+
+  function closeFile() {
+    openFile = null;
+    filePanel.replaceChildren();
+    for (const el of board.querySelectorAll(".git-card.open")) el.classList.remove("open");
+  }
+
+  async function openDiff(file, staged, { quiet = false } = {}) {
+    openFile = { path: file, staged };
+    for (const el of board.querySelectorAll(".git-card")) el.classList.toggle("open", el.dataset.key === `${staged ? "staged" : "changes"}:${file}`);
+    if (!quiet) filePanel.replaceChildren(h("div", { class: "card card-pad" }, loadingView(`Reading ${file}…`)));
+    try {
+      const d = await api(`/api/git/diff?dir=${encodeURIComponent(dir)}&path=${encodeURIComponent(file)}&staged=${staged}`);
+      if (openFile?.path !== file || openFile.staged !== staged) return;
+      renderFile(d);
+      if (!quiet) filePanel.scrollIntoView({ block: "nearest", behavior: reducedMotion.matches ? "auto" : "smooth" });
+    } catch (err) {
+      if (openFile?.path === file) filePanel.replaceChildren(h("div", { class: "card card-pad" }, errorView(err)));
+    }
+  }
+
+  function renderFile(d) {
+    const from = d.staged ? "staged" : "changes";
+    const firstLine = d.hunks.length ? hunkStart(d.hunks[0].header).new : undefined;
+    const hunkAction = (hk) =>
+      btn(d.staged ? "Unstage block" : "Stage block", (ev) => {
+        ev.currentTarget.disabled = true;
+        moveHunk({ from, path: d.path, hunk: hk.id });
+      }, { small: true, iconName: d.staged ? "left" : "right" });
+    const detail = liveDetail((mode) => {
+      if (mode === "raw") return h("section", { class: "detail-section" }, h("div", { class: "detail-head" }, h("strong", null, "Diff"), copyButton(d.patch)), h("pre", { class: "log-snippet raw-text diff-raw" }, d.patch || "No changes to show."));
+      if (d.binary) return h("p", { class: "dim" }, "A binary file: its changes can't be shown as text.");
+      if (!d.hunks.length) return h("p", { class: "dim" }, "No changes to show: an empty file, or only its mode changed.");
+      const budget = { rows: DIFF_ROWS_MAX };
+      return d.hunks.map((hk) => {
+        const el = hunkView(hk.header, hk.lines, { action: d.stageable ? hunkAction(hk) : null, budget });
+        if (d.stageable) {
+          // A block can be dragged to the other column too, by its header.
+          const head = el.querySelector(".diff-hunk-head");
+          head.draggable = true;
+          head.title = `Drag to ${d.staged ? "Changes" : "Staged"}`;
+          head.addEventListener("dragstart", (e) => {
+            drag = { from, path: d.path, hunk: hk.id };
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", hk.header);
+            el.classList.add("dragging");
+          });
+          head.addEventListener("dragend", endDrag);
+        }
+        return el;
+      });
+    });
+    filePanel.replaceChildren(
+      h(
+        "section",
+        { class: "card card-pad section git-file", "aria-labelledby": "git-file-title" },
+        h(
+          "div",
+          { class: "section-head" },
+          h("div", { class: "git-file-title" }, h("h2", { class: "section-title mono", id: "git-file-title" }, d.path), h("span", { class: "badge" }, d.staged ? "Staged" : d.untracked ? "New file" : "Not staged")),
+          h(
+            "div",
+            { class: "toolbar" },
+            btn(d.staged ? "Unstage file" : "Stage file", () => move(from, [d.path]), { small: true, iconName: d.staged ? "left" : "right" }),
+            btn("Open in editor", (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file: d.path, line: firstLine } })).message)), { small: true, kind: "ghost", iconName: "code" }),
+            btn(null, () => closeFile(), { small: true, kind: "ghost", iconName: "x", name: "Close the changes", title: "Close" }),
+          ),
+        ),
+        d.truncated ? h("p", { class: "dim" }, "This file's changes are cut at 512 KB, so it can only be staged whole.") : null,
+        !d.stageable && d.hunks.length && !d.truncated ? h("p", { class: "dim" }, "New, deleted and renamed files go whole: stage or unstage the file.") : null,
+        detail,
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------- commit
+
+  async function commit(button) {
+    const text = message.value;
+    const flying = [...columns.staged.list.children];
+    working++;
+    updateCommitBox();
+    const r = await busy(button, "Committing…", () => api("/api/git/commit", { method: "POST", body: { dir, message: text } }));
+    working--;
+    if (!r) return updateCommitBox();
+    message.value = "";
+    drafts.delete(dir);
+    newCommit = r.hash;
+    say(`Committed ${r.short}: ${r.subject}`);
+    toast(`Committed ${r.short}: ${r.subject}`);
+    await flyToHistory(flying);
+    closeFile();
+    await Promise.all([loadStatus(), loadGraph()]);
+  }
+
+  /** The committed cards fly into the top of the history, where the new commit appears. */
+  async function flyToHistory(cards) {
+    if (reducedMotion.matches || !cards.length) return;
+    const target = (historyList?.firstElementChild ?? history).getBoundingClientRect();
+    await Promise.all(
+      cards.slice(0, 30).map((c, i) => {
+        const r = c.getBoundingClientRect();
+        const dx = target.left + 16 - r.left;
+        const dy = target.top + target.height / 2 - (r.top + r.height / 2);
+        return c
+          .animate([{ transform: "none", opacity: 1 }, { transform: `translate(${dx}px, ${dy}px) scale(0.3)`, opacity: 0 }], { duration: 520, delay: Math.min(i, 8) * 40, easing: "cubic-bezier(0.5, 0, 0.2, 1)", fill: "forwards" })
+          .finished.catch(() => {});
+      }),
+    );
+  }
+
+  // ---------------------------------------------------------------- history
+
+  async function loadGraph() {
+    const forDir = dir;
+    try {
+      const g = await api(`/api/git/graph?dir=${encodeURIComponent(dir)}&limit=${limit}`);
+      if (forDir !== dir || stopped) return;
+      graph = g;
+      // The commit HEAD is on, as this graph saw it: when the status says HEAD moved, the graph is redrawn.
+      graphHead = g.commits.find((c) => c.refs.some((r) => r.current || r.kind === "head"))?.hash ?? status?.head;
+      renderGraph();
+    } catch (err) {
+      history.replaceChildren(errorView(err, () => loadGraph()));
+    }
+  }
+
+  function renderGraph() {
+    if (!graph.commits.length) {
+      historyList = null;
+      history.replaceChildren(stateView("No commits yet", "Stage your files and make the first commit: it shows up here."));
+      return;
+    }
+    const lanes = Math.min(MAX_LANES, Math.max(1, graph.width));
+    historyList = h("ol", { class: "graph", "aria-label": "Commits, newest first" }, graph.commits.map((c) => graphRow(c, lanes)));
+    put(history,
+      historyList,
+      graph.more
+        ? h(
+            "div",
+            { class: "graph-more" },
+            btn("Show older commits", (ev) =>
+              busy(ev.currentTarget, "Reading…", async () => {
+                limit = Math.min(2000, limit + 300);
+                await loadGraph();
+              }), { small: true, kind: "ghost" }),
+          )
+        : null,
+    );
+    newCommit = null;
+  }
+
+  function graphRow(c, lanes) {
+    const isOpen = openCommit === c.hash;
+    const li = h("li", { class: `graph-item${c.hash === newCommit ? " graph-new" : ""}${isOpen ? " open" : ""}`, dataset: { hash: c.hash } });
+    li.style.setProperty("--lanes", String(lanes));
+    const row = h(
+      "button",
+      { type: "button", class: "graph-row", "aria-expanded": String(isOpen), onclick: () => toggleCommit(c, lanes) },
+      graphCell(c.row, lanes, c.parents.length > 1),
+      h("span", { class: "graph-text" }, c.refs.length ? h("span", { class: "graph-refs" }, c.refs.map(refBadge)) : null, h("span", { class: "graph-subject" }, c.subject || "(no message)")),
+      h("span", { class: "graph-author" }, c.author),
+      h("span", { class: "graph-hash mono" }, c.short),
+      h("time", { class: "graph-time", datetime: new Date(c.at).toISOString(), title: new Date(c.at).toLocaleString() }, relativeTime(c.at)),
+    );
+    li.append(row);
+    if (isOpen) li.append(commitDetail(c, lanes));
+    return li;
+  }
+
+  function toggleCommit(c, lanes) {
+    const previous = openCommit;
+    openCommit = previous === c.hash ? null : c.hash;
+    for (const hash of [previous, c.hash]) {
+      const el = hash && historyList?.querySelector(`[data-hash="${hash}"]`);
+      const commitOf = hash && graph.commits.find((x) => x.hash === hash);
+      if (el && commitOf) el.replaceWith(graphRow(commitOf, lanes));
+    }
+    historyList?.querySelector(`[data-hash="${c.hash}"] .graph-row`)?.focus();
+  }
+
+  function commitDetail(c, lanes) {
+    const body = h("div", { class: "graph-detail-body" }, loadingView("Reading the commit…"));
+    const box = h("div", { class: "graph-detail" }, laneStrip(c.row, lanes), body);
+    (async () => {
+      try {
+        const d = await api(`/api/git/commit?dir=${encodeURIComponent(dir)}&hash=${c.hash}`);
+        const [, ...rest] = d.message.split("\n");
+        const more = rest.join("\n").trim();
+        put(body,
+          h("p", { class: "graph-detail-subject" }, d.subject),
+          more ? h("p", { class: "graph-detail-message" }, more) : null,
+          h(
+            "p",
+            { class: "graph-detail-meta dim" },
+            d.author,
+            " · ",
+            new Date(d.at).toLocaleString(),
+            " · ",
+            h("span", { class: "mono" }, d.short),
+            d.parents.length > 1 ? ` · merge of ${d.parents.map((p) => p.slice(0, 7)).join(" and ")}` : null,
+            " ",
+            copyButton(d.hash, "Copy hash"),
+          ),
+          d.files.length ? liveDetail(diffBlock(d.patch, { truncated: d.truncated })) : h("p", { class: "dim" }, "No file changes."),
+        );
+      } catch (err) {
+        body.replaceChildren(errorView(err));
+      }
+    })();
+    return box;
+  }
+
+  // ---------------------------------------------------------------- loading
+
+  async function load({ keep = false } = {}) {
+    if (!keep) {
+      message.value = drafts.get(dir) ?? "";
+      openFile = null;
+      openCommit = null;
+      selected.clear();
+      filePanel.replaceChildren();
+      status = null;
+      statusSig = "";
+      graph = null;
+      limit = 200;
+      history.replaceChildren(loadingView("Reading the history…"));
+    }
+    await Promise.all([loadStatus(), loadGraph()]);
+    if (keep && openFile) refreshOpenFile();
+  }
+
+  (async () => {
+    try {
+      projects = (await api("/api/projects")).filter((p) => p.hasGit).sort((a, b) => a.name.localeCompare(b.name));
+    } catch (err) {
+      headInfo.replaceChildren(errorView(err, () => route()));
+      return;
+    }
+    if (!projects.length) {
+      board.hidden = true;
+      headInfo.replaceChildren(stateView("No git projects", "dx didn't find a project with git in your projects folders.", h("a", { class: "btn", href: "#/projects" }, "Go to projects")));
+      history.closest("section").hidden = true;
+      return;
+    }
+    if (!projects.some((p) => p.dir.toLowerCase() === dir.toLowerCase())) dir = [...projects].sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0))[0].dir;
+    else dir = projects.find((p) => p.dir.toLowerCase() === dir.toLowerCase()).dir;
+    projectSelect.replaceChildren(...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    projectSelect.disabled = false;
+    renderBoard({ animate: false });
+    load();
+  })();
+
+  // Changes made in the editor or a terminal show up on their own; never in the middle of a drag.
+  const timer = setInterval(() => {
+    if (!document.hidden && !drag && !working && status) loadStatus({ quiet: true });
+  }, 4000);
+  const onFocus = () => !drag && !working && status && loadStatus({ quiet: true });
+  window.addEventListener("focus", onFocus);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    window.removeEventListener("focus", onFocus);
+    drafts.set(dir, message.value);
+  };
 }
 
 // ------------------------------------------------------------------ Activity

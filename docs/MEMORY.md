@@ -8,16 +8,16 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
   - the core tools;
-  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, activity, terminal, setup, https, config, runs, doctor`;
+  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, activity, terminal, git, setup, https, config, runs, doctor`;
   - the MCP server with 30 tools, 15 of them for running and checking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
-  - the dashboard with 10 pages (Projects, New project, Ports, Activity, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - the dashboard with 11 pages (Projects, New project, Ports, Git, Activity, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
   - the activity history (requests, routes, clicks, console, errors, kept 7 days) and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.4.0. Nothing under *Unreleased* yet.
+- **Latest release**: 1.4.0. Under *Unreleased*: the Git page (staging board and commit graph) and `dx git`.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -48,6 +48,18 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Git page (`core/src/tools/git.ts`, the Git page in `web/public/app.js`)
+
+- **git itself, not a library**: every command runs from the repository's top folder (`rev-parse --show-toplevel`), with its arguments as an array, `--literal-pathspecs` (a file called `[ab].txt` is only that file), `GIT_TERMINAL_PROMPT=0` and, for reads, `GIT_OPTIONAL_LOCKS=0`, so polling status every 4 s never takes the index lock from git in a terminal. Long path lists go in on stdin (`--pathspec-from-file`), not the command line.
+- **Only what `git status` lists can be staged or unstaged**, checked on a fresh status for each request, like cleanup's fresh scan.
+- **A block is staged by its id, never by a patch from the page**: the server diffs the file again, finds the block whose hash matches, and builds the patch from git's own diff (`git apply --cached`, `--reverse` to unstage). If the file changed in between, the block is gone and the page is told to refresh (409). New, deleted, renamed and binary files, and mode changes, go whole.
+- **The graph is `log --branches --remotes --tags HEAD --topo-order`**, not `--all`, so stashes don't show up as commits. `layoutGraph` is pure and tested: a lane keeps its place while it lives, a new one takes the leftmost free place, and when a branch further right waits for the same first parent, it moves over (`moves`), so the line the history follows stays on the left.
+- **A merge's diff is what it brought in** (`--diff-merges=first-parent`).
+- **The board is drawn optimistically**: a card moves at once and git's answer replaces it; on an error it moves back. Cards slide with FLIP through the Web Animations API (allowed by the CSP, unlike inline styles), skipped under `prefers-reduced-motion`. Polling never redraws during a drag, and the commit box is never rebuilt, so typing isn't lost.
+- **Drag and drop is the browser's own** (HTML5 drag events); every drag also has a button (the arrow on a card, Stage block), for the keyboard and touch.
+- **Not yet**: push, pull, branches, merging by dragging, undo, discarding changes. Those change more than the index and want their own safety (undo through the reflog first).
+
 
 ### Activity history (`core/src/tools/activity.ts` and `activityReport.ts`, `web/src/activity.ts`, `web/src/recorder.ts`, `web/public/recorder.js`)
 
