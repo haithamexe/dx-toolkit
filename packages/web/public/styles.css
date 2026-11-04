@@ -865,6 +865,39 @@ select {
   color: var(--text-dim);
 }
 
+.traffic-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.traffic-list > li {
+  border-bottom: 1px solid var(--border);
+}
+.traffic-list > li:last-child {
+  border-bottom: 0;
+}
+.traffic-list pre {
+  margin: 0 var(--s4) var(--s2);
+}
+.traffic-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: var(--s2) var(--s4);
+  font-size: var(--t-sm);
+}
+summary.traffic-row {
+  cursor: pointer;
+}
+.traffic-method {
+  min-width: 4em;
+}
+.traffic-path {
+  overflow-wrap: anywhere;
+}
 .page-check-head {
   display: flex;
   align-items: center;
@@ -875,6 +908,13 @@ select {
 }
 
 /* ------------------------------------------------------------ journal and summary */
+.md-doc {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .day {
   display: flex;
   flex-direction: column;

@@ -1,5 +1,5 @@
 import { devErrors, devLogs, localRoutes, serverForPort, type DevLine } from "./dev.js";
-import { checkPage, isLoopbackUrl, type DevError, type PageCheck } from "@dx/core";
+import { checkPage, isLoopbackUrl, type DevError, type PageCheck, type PageStep } from "@dx/core";
 
 /**
  * Requests a page or API route on a local dev server, the way an AI agent checks its own change:
@@ -16,6 +16,8 @@ export interface CheckOptions {
   browser?: boolean;
   /** With browser: save a screenshot. */
   screenshot?: boolean;
+  /** With browser: things to do on the page after it loads. */
+  steps?: PageStep[];
 }
 
 export interface CheckResult {
@@ -59,10 +61,12 @@ export async function checkUrl(options: CheckOptions): Promise<CheckResult> {
   const before = server ? Math.max(0, ...devLogs(server.dir).lines.map((l) => l.n)) : 0;
 
   // GET only: a browser loads pages, it doesn't send bodies.
-  if (options.browser) {
+  if (options.browser || options.steps?.length) {
     if ((options.method ?? "GET").toUpperCase() !== "GET") throw new Error("A page is loaded in the browser with GET; leave out method and body.");
     const result: CheckResult = { url: options.url, ok: false, ms: 0, project: server ? (server.service ? `${server.project}/${server.service}` : server.project) : undefined, serverOutput: [], serverErrors: [] };
-    const page = await checkPage({ url: url.href, screenshot: options.screenshot, timeoutMs: options.timeoutMs ?? 30_000 });
+    // A browser resolves *.localhost itself, so it goes through the proxy and its requests are logged.
+    const pageUrl = route ? options.url : url.href;
+    const page = await checkPage({ url: pageUrl, steps: options.steps, screenshot: options.screenshot, timeoutMs: options.timeoutMs ?? 30_000 });
     Object.assign(result, { page, ok: page.ok, ms: page.ms, status: page.status, title: page.title, snippet: page.text, error: page.error });
     await collectServer(result, server, before);
     return result;

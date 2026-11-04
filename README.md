@@ -73,11 +73,11 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 
 | Page | What you can do there |
 |---|---|
-| **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; **Check page** loads it in a headless browser and lists exceptions, console errors and failed requests; see servers your AI agent started; **work that isn't backed up** across all projects; **leave a note** on a project for next time; **check its .env** and look for committed keys; open a project in your editor, in a terminal window or in File Explorer; save one as a template |
+| **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; **Check page** loads it in a headless browser and lists exceptions, console errors and failed requests; **Requests** shows what the app sent through its `.localhost` address and what came back; see servers your AI agent started; **work that isn't backed up** across all projects; **leave a note** on a project for next time; **check its .env** and look for committed keys; **run its tests** and see each failure with file, line, expected and actual; open a project in your editor, in a terminal window or in File Explorer; save one as a template |
 | **New project** | Create a project from a template or a copy of another, with git and packages installed; or **clone a repository** and get it ready to run |
 | **Ports** | See what's listening and stop it (it asks first, naming the process) |
 | **Journal** | Add what you did, read back 7, 30 or 90 days |
-| **Summary** | Your week: commits, pull requests, journal, where the time went, uncommitted work; copy it as markdown or save it |
+| **Summary** | Your week: commits, pull requests, journal, where the time went, uncommitted work; copy it as markdown or save it. **This year** gives the year in review |
 | **Cleanup** | See which `node_modules` and build folders can go, pick them, delete them (it asks first) |
 | **Dependencies** | Run the audit across all projects (npm, pnpm, yarn and bun) with a progress bar; open a row for its outdated packages, and **Update packages** within their ranges |
 | **Health & settings** | `dx doctor`'s checks with how to fix each problem, which AI tools are connected (with Connect and Disconnect buttons), your projects folders, editor and GitHub username, and recent activity |
@@ -144,6 +144,7 @@ dx up shop
 | `dx up shop` / `dx down shop` | Start a project's whole stack in the background, and print its addresses / stop it |
 | `dx logs todo-app -f` | Follow the output of a dev server running in the dashboard, one your AI agent started included |
 | `dx errors` | Errors in every running dev server, with file and line (`dx errors todo-app` for one) |
+| `dx traffic todo-app -f` | The requests the app made through its `.localhost` address, live; `--bodies` for what was sent and returned (passwords, tokens and cookies masked), `--failed` for 4xx/5xx only |
 | `dx setup` | Connect dx to your AI tools (it does this by itself; `--list` shows them, `--undo` removes dx from them) |
 | `dx go todo-app` | Open the project in your editor, start its dev server here (its whole stack, if it has one), open the browser when it's ready |
 | `dx go todo-app -w` | Same, but the dev server runs in a new terminal window |
@@ -154,6 +155,8 @@ dx up shop
 | `dx resume todo-app` | Where you left off: when, which branch, what was running, your last note, commits since, uncommitted files. `dx go` shows it too when you come back after a while |
 | `dx resume todo-app --note "next: due dates"` | Leave a note for next time (`--clear` removes it); your AI agent can leave one too |
 | `dx status` | Work that exists only on this computer: uncommitted changes, commits no remote has, stashes, repos with no remote; most at risk first |
+| `dx test todo-app` | Run its tests (vitest, jest, node:test, pytest, go test) and list each failure with its file, line, expected and actual; `-m cart` runs only the matching ones, `--changed` only those related to uncommitted changes |
+| `dx db shop "select * from orders"` | A read-only query against the project's development database in docker-compose (Postgres, MySQL/MariaDB, Redis); `dx db shop` lists the tables. No password needed: it runs inside the container |
 | `dx env todo-app` / `dx env --all` | Variables `.env.example` lists that your `.env` doesn't set, `.env` files git would commit, and API keys or tokens in tracked files |
 | `dx projects` / `dx ls todo` | List projects (most recent first) / search them |
 | `dx port` | Every listening port 1024+, with the process and its command line |
@@ -163,6 +166,7 @@ dx up shop
 | `dx log` / `dx log --days 30` | Read the journal back |
 | `dx summary` | Your commits across all projects plus your journal for the last 7 days, as markdown |
 | `dx summary --copy` / `--save` | Copy it to the clipboard / save it to `~/.dx/summaries/` |
+| `dx summary --year` | The year in review: month by month, projects, busiest day, longest run of days with commits, pull requests merged, your journal (`--year 2025` for another year) |
 | `dx clean` | Delete `node_modules` and build folders in projects idle for 30+ days (asks first) |
 | `dx deps` | Outdated packages and known vulnerabilities in every Node project (npm, pnpm, yarn, bun) |
 | `dx deps --fix todo-app` | Update its packages within `package.json`'s ranges and apply the audit fixes that need no breaking change (asks first); major versions are listed for you |
@@ -360,13 +364,16 @@ Ask your agent to work on a project and check its own work, for example *"Start 
 |---|---|
 | `start_dev_server` | Starts the project's dev server, waits until it's ready or has failed, and returns the URL, any errors and the output |
 | `wait_for_rebuild` | After it edits files: waits for the server to rebuild, then says whether the change added or fixed errors |
-| `check_url` | Requests a page or API route (localhost only) and returns the status, title and start of the body, plus anything the server logged and any error it hit while answering. With `browser: true` it loads the page in a headless Chrome, Edge, Chromium or Brave already on your computer and adds what went wrong **in the browser**: uncaught exceptions, console errors, failed requests and a Vite or Next.js error overlay. A page can answer 200 and still be blank; this catches it. `screenshot: true` returns a picture of the page |
+| `check_url` | Requests a page or API route (localhost only) and returns the status, title and start of the body, plus anything the server logged and any error it hit while answering. With `browser: true` it loads the page in a headless Chrome, Edge, Chromium or Brave already on your computer and adds what went wrong **in the browser**: uncaught exceptions, console errors, failed requests and a Vite or Next.js error overlay. A page can answer 200 and still be blank; this catches it. `screenshot: true` returns a picture of the page. **`steps`** clicks through a flow after the page loads (type into a field, click *Sign in*, wait for `/dashboard`), and reports each step with the errors and failed requests it caused |
 | `dev_errors` | Current errors across running servers: TypeScript, Vite, esbuild, webpack and Next.js, Node stack traces, Python tracebacks, Go panics, with file and line. An error disappears once the server rebuilds cleanly |
 | `dev_logs` | The server's output, only what's new since it last looked |
 | `dev_servers`, `stop_dev_server`, `restart_dev_server` | What's running, and stopping or restarting it |
 | `set_stack` | Defines a stack dx can't find by itself, such as two repositories, by writing it to `.devrc.json` |
 | `clone_project` | Clones a repository and gets it ready: packages installed with the tool it uses, `.env` made from `.env.example`, and the variables that still need a value |
 | `check_env` | What a project's `.env` is missing compared with `.env.example`, `.env` files git would commit, and keys or tokens in tracked files |
+| `run_tests` | Runs the project's tests and returns each failure with its name, file and line, and expected against actual; `match` reruns just the ones being fixed |
+| `network_log` | The requests the app made through its `.localhost` address, with status, timing and bodies (credentials masked): what the front end sent the API, and what came back |
+| `db_query` | A read-only query against the project's development database (Postgres, MySQL/MariaDB, Redis in docker-compose), to check what an action actually stored |
 | `resume_project`, `leave_note` | Where things were left in a project (branch, what ran, open errors, commits since, the last note), and a note for next time. Ask *"carry on with todo-app"* and the agent starts from there |
 | `dx_setup_check` | dx's health checks, each problem with the command that fixes it, so the agent can fix your setup for you |
 
@@ -444,8 +451,8 @@ On GitHub, [.github/workflows/ci.yml](.github/workflows/ci.yml) runs them on eve
 ## Next on the list
 
 - **Raycast**: try the extension in Raycast itself (it type-checks, but hasn't been run there yet).
-- **A yearly work record**: a year of commits, pull requests and journal, as one document.
-- **Agents clicking through a page**: `check_url` loads a page; following a flow (log in, add to cart) is a browser MCP server's job for now.
+- **Coverage in `dx test`**: which lines the failing area's tests don't reach.
+- **Comparing screenshots** before and after a change, so an agent sees what it changed visually.
 
 The full backlog is in [docs/MEMORY.md](docs/MEMORY.md).
 

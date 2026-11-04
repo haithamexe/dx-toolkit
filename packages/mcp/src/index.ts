@@ -37,6 +37,10 @@ import {
   findUnsavedWork,
   leaveNote,
   resumeInfo,
+  runTests,
+  queryDatabase,
+  buildYearReview,
+  formatYearReview,
   type DevError,
   type PageCheck,
   type Project,
@@ -211,16 +215,19 @@ server.registerTool(
     title: "Work summary",
     description:
       "Summarize what the user did over the last few days: their git commits across all their local projects plus " +
-      "their work journal, as markdown. Use it to write a standup, weekly update or status report.",
+      "their work journal, as markdown. Use it to write a standup, weekly update or status report. With year, a whole year in review " +
+      "instead (month by month, projects, busiest day, longest run, pull requests merged, journal): for a performance review or a CV.",
     inputSchema: {
       days: z.number().int().min(1).max(366).optional().describe("How many days back, today included (default 7)"),
+      year: z.number().int().min(1990).max(2100).optional().describe("A whole year in review instead, e.g. 2026"),
       all_authors: z.boolean().optional().describe("Count everyone's commits, not only the user's (default false)"),
       github: z.boolean().optional().describe("Include merged and reviewed GitHub pull requests (default true)"),
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
-  async ({ days, all_authors, github }) => {
+  async ({ days, year, all_authors, github }) => {
     try {
+      if (year !== undefined) return text(formatYearReview(await buildYearReview(year, { allAuthors: all_authors, github: github ?? true })));
       const summary = await buildSummary({ days: days ?? 7, allAuthors: all_authors, github: github ?? true });
       const skipped = summary.skipped.map((s) => `- ${s.project}: ${s.reason}`).join("\n");
       return text(formatSummary(summary) + (skipped ? `\nRepos that couldn't be read:\n${skipped}\n` : ""));
@@ -603,6 +610,8 @@ server.registerTool(
       "With browser: true the page is loaded in a headless Chrome/Edge instead, and you also get what went wrong in the browser: " +
       "uncaught exceptions, console errors and warnings, failed requests (4xx/5xx, refused) and a Vite/Next.js error overlay; " +
       "use it for front-end pages, since a page can answer 200 and still crash in the browser. screenshot: true adds a picture of the page. " +
+      "steps clicks through a flow after the page loads (fill a form, sign in, add to cart), reporting each step and the errors it caused: " +
+      'e.g. [{"type":"me@example.com","into":"#email"},{"click":"text=Sign in"},{"waitFor":"url=/dashboard"}]. ' +
       "Give either a full URL, or a project and a path.",
     inputSchema: {
       url: z.string().optional().describe("e.g. http://localhost:5173/checkout, or a stack service's local domain: http://api.shop.localhost/health"),
@@ -613,10 +622,25 @@ server.registerTool(
       headers: z.record(z.string(), z.string()).optional().describe("Request headers"),
       browser: z.boolean().optional().describe("Load the page in a headless browser and report console errors, exceptions and failed requests"),
       screenshot: z.boolean().optional().describe("With browser: also return a screenshot of the page"),
+      steps: z
+        .array(
+          z.object({
+            goto: z.string().optional().describe("Go to a path, e.g. /cart"),
+            click: z.string().optional().describe('Click: a CSS selector, or text=Sign in'),
+            type: z.string().optional().describe("Type this text…"),
+            into: z.string().optional().describe("…into this field: a CSS selector or text=Email"),
+            press: z.string().optional().describe("Press Enter, Tab, Escape, Backspace, ArrowDown or ArrowUp"),
+            wait_for: z.string().optional().describe('Wait for a selector, text=Order placed, or url=/dashboard'),
+            screenshot: z.boolean().optional().describe("Screenshot after this step"),
+          }),
+        )
+        .max(50)
+        .optional()
+        .describe("Things to do after the page loads, in order; implies browser. A failed step stops the rest."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
-  async ({ url, project: name, path, method, body, headers, browser, screenshot }) => {
+  async ({ url, project: name, path, method, body, headers, browser, screenshot, steps }) => {
     let dir: string | undefined;
     if (!url) {
       if (!name) return failure("Give a url, or a project and a path.");
@@ -626,8 +650,8 @@ server.registerTool(
     }
     try {
       const client = await ensureDashboard();
-      const useBrowser = browser === true || screenshot === true;
-      const r = await client.post<CheckResult>("/api/check", { url, dir, path, method, body, headers, browser: useBrowser, screenshot }, useBrowser ? 90_000 : 30_000);
+      const useBrowser = browser === true || screenshot === true || !!steps?.length;
+      const r = await client.post<CheckResult>("/api/check", { url, dir, path, method, body, headers, browser: useBrowser, screenshot, steps, timeoutMs: steps?.length ? 120_000 : undefined }, useBrowser ? 150_000 : 30_000);
       if (r.page) return pageReport(r);
       const verb = (method ?? "GET").toUpperCase();
       const head = r.error
@@ -658,15 +682,24 @@ function pageReport(r: CheckResult) {
       ? `${r.url} couldn't be loaded in ${p.browser} (${p.ms} ms): ${p.error}`
       : `${r.url} loaded in headless ${p.browser} in ${p.ms} ms${p.status ? ` (HTTP ${p.status})` : ""}: ${p.ok ? "no browser errors." : "problems below."}`,
   );
+  if (p.steps?.length) {
+    const rows = p.steps.map(
+      (s) =>
+        `${s.ok ? "ok  " : "FAIL"}  ${s.index}. ${s.action} (${s.ms} ms)${s.error ? `: ${s.error}` : ""}${s.problems ? `, ${s.problems} problem(s), marked [step ${s.index}] below` : ""}${s.screenshot ? `, screenshot ${s.screenshot}` : ""}`,
+    );
+    const stopped = !p.steps[p.steps.length - 1].ok;
+    parts.push(`Steps:\n${rows.join("\n")}${p.finalUrl ? `\nEnded on ${p.finalUrl}` : ""}${stopped ? "\nSteps after a failed one aren't run." : ""}`);
+  }
   if (p.title) parts.push(`Title: ${p.title}`);
   if (p.overlay) parts.push(`The dev server's error overlay is showing:\n${p.overlay}`);
-  const list = (title: string, items: { text: string; source?: string }[]) => {
-    if (items.length) parts.push(`${title}:\n${items.map((m) => `- ${m.text}${m.source ? `\n    at ${m.source}` : ""}`).join("\n")}`);
+  const tag = (step?: number) => (step ? `[step ${step}] ` : "");
+  const list = (title: string, items: { text: string; source?: string; step?: number }[]) => {
+    if (items.length) parts.push(`${title}:\n${items.map((m) => `- ${tag(m.step)}${m.text}${m.source ? `\n    at ${m.source}` : ""}`).join("\n")}`);
   };
   list("Uncaught exceptions", p.exceptions);
   list("Console errors", p.consoleErrors);
   if (p.failedRequests.length) {
-    parts.push(`Failed requests:\n${p.failedRequests.map((f) => `- ${f.method ?? "GET"} ${f.url} → ${f.status ?? f.error}${f.type ? ` (${f.type})` : ""}`).join("\n")}`);
+    parts.push(`Failed requests:\n${p.failedRequests.map((f) => `- ${tag(f.step)}${f.method ?? "GET"} ${f.url} → ${f.status ?? f.error}${f.type ? ` (${f.type})` : ""}`).join("\n")}`);
   }
   list("Console warnings", p.consoleWarnings.slice(0, 10));
   if (p.text) parts.push(`Visible text:\n${p.text}`);
@@ -736,6 +769,139 @@ server.registerTool(
     } catch (err) {
       return failure((err as Error).message);
     }
+  },
+);
+
+interface TrafficEntry {
+  id: number;
+  at: string;
+  host: string;
+  service?: string;
+  method: string;
+  path: string;
+  kind: string;
+  status?: number;
+  ms?: number;
+  error?: string;
+  requestHeaders: Record<string, string>;
+  responseHeaders: Record<string, string>;
+  requestBody?: string;
+  responseBody?: string;
+  truncated?: boolean;
+}
+const seenTraffic = new Map<string, number>();
+
+server.registerTool(
+  "network_log",
+  {
+    title: "Requests the app made",
+    description:
+      "The requests that went through a running project's local domain (shop.localhost, api.shop.localhost): method, path, status, " +
+      "timing and the start of each request and response body, with passwords, tokens and cookies masked. Use it to see what the front " +
+      "end sent to the API and what came back, e.g. after check_url with browser or steps, or when the user clicked something. " +
+      "Only traffic through *.localhost is recorded, not localhost:<port>. By default lists API calls only and only what's new since you last asked.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      path: z.string().optional().describe("Only paths containing this, e.g. /api/cart"),
+      failed: z.boolean().optional().describe("Only 4xx/5xx or failed requests"),
+      all: z.boolean().optional().describe("Include pages, scripts, styles and images too"),
+      since_start: z.boolean().optional().describe("Everything kept, not only what's new since you last asked"),
+      bodies: z.boolean().optional().describe("Include request and response bodies and headers (default true when 10 or fewer requests)"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name, path, failed, all, since_start, bodies }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const client = await findDashboard();
+    if (!client) return text(notRunning(project.name));
+    const after = since_start ? 0 : (seenTraffic.get(project.dir) ?? 0);
+    const q = new URLSearchParams({ dir: project.dir, after: String(after), ...(path ? { path } : {}), ...(failed ? { failed: "1" } : {}), ...(all ? { all: "1" } : {}) });
+    const list = await client.get<TrafficEntry[]>(`/api/traffic?${q}`);
+    if (list.length) seenTraffic.set(project.dir, list[list.length - 1].id);
+    if (!list.length) {
+      return text(
+        `No ${after ? "new " : ""}requests${path ? ` to ${path}` : ""} through ${project.name}'s local domain. ` +
+          "Requests are recorded when the app is opened at its .localhost address (check_url with browser does that).",
+      );
+    }
+    const detail = bodies ?? list.length <= 10;
+    const rows = list.map((e) => {
+      const head = `#${e.id} ${e.method} ${e.service ? `[${e.service}] ` : ""}${e.path} → ${e.error ? `failed: ${e.error}` : e.status} ${e.ms !== undefined ? `(${e.ms} ms)` : ""}`;
+      if (!detail) return head;
+      const lines = [head];
+      if (e.requestBody) lines.push(`  request ${e.requestHeaders["content-type"] ?? ""}: ${e.requestBody}`);
+      if (e.responseBody) lines.push(`  response ${e.responseHeaders["content-type"] ?? ""}: ${e.responseBody}${e.truncated ? " …(cut)" : ""}`);
+      return lines.join("\n");
+    });
+    return text(`${list.length} request(s), oldest first:\n${rows.join("\n")}`);
+  },
+);
+
+server.registerTool(
+  "db_query",
+  {
+    title: "Query the development database",
+    description:
+      "Run a read-only query against a project's development database, the Postgres, MySQL/MariaDB or Redis its docker-compose runs. " +
+      "It runs inside the container as the user it was set up with, so no credentials are needed. Only SELECT, WITH, SHOW, EXPLAIN and " +
+      "DESCRIBE (or Redis commands that read: GET, HGETALL, SCAN, …), one statement at a time, in a read-only session. Leave query out " +
+      "to list the tables. Use it to check what an action actually stored. The stack must be running.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      query: z.string().optional().describe("e.g. select id, status from orders order by id desc limit 5, or for Redis: GET session:42"),
+      service: z.string().optional().describe("The compose service, when there are several databases"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name, query, service }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      const r = await queryDatabase(project, { query, service, source: "mcp" });
+      const head = `${project.name}/${r.service} (${r.kind}) in ${r.ms} ms`;
+      if (r.text !== undefined) return text(`${head}:\n${r.text}`);
+      if (!r.rows.length) return text(`${head}: no rows.`);
+      const rows = [r.columns.join("\t"), ...r.rows.map((row) => row.join("\t"))];
+      return text(`${head}, ${r.rows.length} row(s)${r.truncated ? " (only the first 200)" : ""}:\n${rows.join("\n")}`);
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "run_tests",
+  {
+    title: "Run a project's tests",
+    description:
+      "Run a project's tests and get each failure with its test name, file and line, the message, and expected against actual, " +
+      "instead of the raw output. Reads vitest, jest, node:test, pytest and go test from their own reports; another test script is " +
+      "judged by its exit code, with the end of its output. Use match to rerun only the tests you're fixing, then run them all before you finish.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      match: z.string().optional().describe("Only tests whose name matches (vitest/jest -t, pytest -k, go -run, node --test-name-pattern)"),
+      files: z.array(z.string()).optional().describe("Only these test files, relative to the project (not for node:test scripts)"),
+      changed: z.boolean().optional().describe("Only tests related to uncommitted changes (vitest and jest)"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ project: name, match, files, changed }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const r = await runTests(project, { match, files, changed, source: "mcp" });
+    const head = `${project.name}: ${r.passed} passed, ${r.failed} failed${r.skipped ? `, ${r.skipped} skipped` : ""} in ${(r.ms / 1000).toFixed(1)}s (${r.framework})`;
+    const parts = [r.ok ? `${head}. All tests pass.` : head];
+    for (const f of r.failures.slice(0, 30)) {
+      const where = f.file ? ` at ${f.file}${f.line ? `:${f.line}` : ""}` : "";
+      const ea = f.expected !== undefined || f.actual !== undefined ? `\n    expected: ${f.expected ?? "?"}\n    actual:   ${f.actual ?? "?"}` : "";
+      const stack = f.stack?.length ? `\n    ${f.stack.join("\n    ")}` : "";
+      parts.push(`- ${f.name}${where}\n    ${f.message.split("\n").slice(0, 8).join("\n    ")}${ea}${stack}`);
+    }
+    if (r.failures.length > 30) parts.push(`…and ${r.failures.length - 30} more.`);
+    if (r.error || (!r.ok && !r.failures.length)) parts.push(`${r.error ?? "The command failed."}\nEnd of its output:\n${r.outputTail.join("\n")}`);
+    const result = text(parts.join("\n\n"));
+    return r.ok ? result : { ...result, isError: true };
   },
 );
 

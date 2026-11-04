@@ -8,22 +8,23 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
   - the core tools;
-  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, env, logs, errors, setup, https, config, runs, doctor`;
-  - the MCP server with 25 tools, 10 of them for running apps;
+  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, setup, https, config, runs, doctor`;
+  - the MCP server with 28 tools, 13 of them for running and checking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
   - the dashboard with 8 pages (Projects, New project, Ports, Journal, Summary, Cleanup, Dependencies, Health & settings);
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
+  - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.2.0 (browser errors, clone, resume, unsaved work, `.env` checks, https, deps fix).
+- **Latest release**: 1.2.0. Under *Unreleased*: tests, network log, browser flows, database queries, year in review.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
 
 - **Raycast**: the extension type-checks (six commands, Work Summary and Clean Up Projects added), but has never been run in Raycast itself.
 - **`dx https` end to end**: the proxy's https is tested with a throwaway openssl certificate; the real `mkcert -install` path hasn't been run on a maintainer machine (it changes the system trust store, so it needs the maintainer's go-ahead).
-- **A yearly work record**: a year of commits, pull requests and journal as one document.
-- **Agents following a flow in the browser** (log in, add to cart): `check_url` loads one page; clicking through is a browser MCP server's job for now.
+- **Coverage in `dx test`**, and screenshot comparison before and after a change.
+- **MongoDB in `dx db`**: only Postgres, MySQL/MariaDB and Redis today.
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
@@ -33,6 +34,37 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Tests (`core/src/tools/tests.ts`)
+
+- **Each framework's own report, never its console output**: vitest `--reporter=json --outputFile`, jest `--json --outputFile --testLocationInResults`, node:test a second TAP reporter to a file through `NODE_OPTIONS` (the usual spec output still prints), pytest `--junitxml`, go `test -json`. Anything else runs the test script and is judged by its exit code, with the end of its output.
+- **`NODE_TEST_CONTEXT` is removed from the child's environment**: when dx itself runs under `node --test`, a child `node --test` would otherwise report to the parent and look like it passed.
+- **Expected and actual** come from the report (node:test) or the message: jest's "Expected:/Received:", vitest's "expected X to be Y".
+
+### Network log (`web/src/traffic.ts`, `web/src/proxy.ts`)
+
+- **Recorded in the local domains proxy**, since every request to `shop.localhost` already passes through it. Requests to `localhost:<port>` aren't seen; page checks load the page through its `.localhost` address so they are.
+- **In memory only**, the last 1000 exchanges, lost when the dashboard stops.
+- **Masked before it's stored**: the authorization, cookie and API key headers, and in JSON, form and key=value bodies, keys that look like credentials (password, token, secret, api_key, session id, card number, …). Bodies are kept up to 16 KB (request) and 32 KB (response), decompressed when gzip, deflate or brotli.
+- **API calls are listed by default**: requests that aren't GET, JSON/text/XML answers, and `/api/`, `/graphql`, `/trpc/` paths. Scripts, styles and images only with `all`.
+
+### Browser flows (`checkPage` steps)
+
+- **Real input events** (DevTools `Input.dispatchMouseEvent`, `Input.insertText`, `Input.dispatchKeyEvent`), so React and other frameworks see what a user would do; not `element.click()`.
+- **Elements by selector or text**: `text=Sign in` looks at buttons, links, labels and similar first, then any element whose own text matches, exactly before partly, visible ones only.
+- **Each step waits for what it caused**: a navigation it started, then a quiet network. A failed step stops the rest, since they depend on it. Errors are tagged with their step.
+- **`goto` only to loopback addresses**, like the page itself.
+
+### Database queries (`core/src/tools/db.ts`)
+
+- **Inside the container, with its own client** (`docker compose exec -T <service> psql|mysql|redis-cli`), using the container's own user and database variables: nothing to install, no password to ask for or store.
+- **Read-only twice**: a statement check (one statement, SELECT/WITH/SHOW/EXPLAIN/DESCRIBE only, no writing keyword outside quotes, no EXPLAIN ANALYZE) and a read-only session (`default_transaction_read_only` for Postgres, `SET SESSION TRANSACTION READ ONLY` for MySQL). Redis allows only a list of reading commands.
+- **The SQL goes in on stdin**, never through a shell on the host.
+- **The real-database test runs on Linux CI**, where Docker is available; elsewhere it's skipped.
+
+### Year in review (`core/src/tools/year.ts`)
+
+- **The weekly summary's data over the whole year** (1 January to the end of the year, or today), so the commit filtering, journal and pull requests work the same way.
 
 ### Browser errors (`core/src/tools/browser.ts`)
 
@@ -192,6 +224,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Clipboard on Windows**: `clip.exe` pastes a UTF-8 BOM as a visible character. Write UTF-16LE without a BOM.
 - **Shell-mangled regexes**: tests built through a shell lost their backslashes; prefer `includes` checks in tests over regexes that pass through a shell.
 - **Editing code through a shell breaks escapes**: `\n`, `\r` and `\\` in a python/sed/heredoc edit came out as real line breaks or lost backslashes, several times. Edit `.ts` and `.js` files with an editor tool, not a shell script.
+- **`Number(null)` is 0**: a missing query value (`URLSearchParams.get` gives null) read as a number became 0, not the default. `clampInt` in `api.ts` treats null and "" as not given.
 - **git checks files out with CRLF on Windows** (`core.autocrlf`): compare file contents in tests after `.replace(/\r\n/g, "\n")`.
 - **The dashboard was blank** because `append` was called with an array where it takes `...children`. Keep the signature `append(el, ...children)`.
 - **Horizontal scroll at phone width** came from a visually hidden `th` label positioned against the page. `.table-wrap { position: relative }` contains it.

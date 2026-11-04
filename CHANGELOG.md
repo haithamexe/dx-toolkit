@@ -4,6 +4,18 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **`dx test` and the `run_tests` MCP tool**: run a project's tests and get each failure with its name, file and line, the message, and expected against actual, read from the framework's own report (vitest and jest JSON, node:test TAP, pytest JUnit XML, go test JSON). `-m` runs only matching tests; `--changed` only those related to uncommitted changes (vitest, jest). In the dashboard: **Run tests** in a project's menu, with a button that opens your editor at the failing line.
+- **A network log** of the requests that go through an app's `.localhost` address: method, path, status, timing and the start of each body, with passwords, tokens and cookies masked. It's the **Requests** panel on a running server in the dashboard, `dx traffic <project>` (`-f` to follow), and the `network_log` MCP tool. Page checks now load the page through its `.localhost` address, so what they trigger is in the log too.
+- **Clicking through a page**: `check_url` takes `steps` (go to, click, type into, press a key, wait for an element, text or address, screenshot) and reports each step with the exceptions, console errors and failed requests it caused. Elements are found by CSS selector or by their text (`text=Sign in`).
+- **`dx db` and the `db_query` MCP tool**: read-only queries against the development database in docker-compose (Postgres, MySQL/MariaDB, Redis), run inside the container as the user it was set up with, so no credentials are needed. Only reading statements get through, one at a time, and the session itself is read-only.
+- **The year in review**: `dx summary --year` (and **This year** on the Summary page, and `year` in the `work_summary` MCP tool). It covers month by month, projects with their first and last commit, the busiest day and month, the longest run of days with commits, pull requests merged, and your journal.
+
+### Fixed
+
+- Dashboard API routes treated a missing number in the address as 0: the Cleanup route without `days` looked at projects idle for 0 days instead of 30.
+
 ## 1.2.0 (2026-11-04)
 
 Your AI agent now sees what breaks in the browser, a repository goes from URL to running in one command, and dx remembers where you left off. Update with `npm install -g dx-devkit@latest`.

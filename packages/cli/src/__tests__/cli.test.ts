@@ -41,7 +41,7 @@ test("--version and help", () => {
   assert.equal(dx("--version").out.trim(), pkg.version);
   const help = dx("help");
   assert.equal(help.code, 0);
-  for (const name of ["go", "clone", "resume", "status", "env", "https", "deps", "doctor"]) assert.match(help.out, new RegExp(`^  ${name} `, "m"), name);
+  for (const name of ["go", "clone", "resume", "status", "env", "https", "deps", "doctor", "test", "traffic", "db"]) assert.match(help.out, new RegExp(`^  ${name} `, "m"), name);
   assert.match(dx("help", "clone").out, /dx clone <git URL or owner\/repo>/);
 });
 

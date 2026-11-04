@@ -333,6 +333,9 @@ function projectsPage(root) {
   const errorPanels = new Map(); // dir -> { el, dir, sig }
   const pageChecks = new Map(); // dir -> what the headless browser saw last time
   const envChecks = new Map(); // dir -> the last .env check
+  const testRuns = new Map(); // dir -> the last test run
+  const openTraffic = new Set(JSON.parse(pref("openTraffic", "[]")));
+  const trafficPanels = new Map(); // dir -> { el, dir, sig }
   let unsaved = null;
   let stopped = false;
 
@@ -491,6 +494,7 @@ function projectsPage(root) {
         btn("Open in editor", (e) => open(e.currentTarget, p, "editor"), { iconName: "code", small: true, name: `Open ${p.name} in editor` }),
         moreMenu(p),
       ),
+      testRuns.has(p.dir.toLowerCase()) ? testPanel(p, testRuns.get(p.dir.toLowerCase())) : null,
       envChecks.has(p.dir.toLowerCase()) ? envPanel(p, envChecks.get(p.dir.toLowerCase())) : null,
     );
   }
@@ -505,6 +509,43 @@ function projectsPage(root) {
     } catch (err) {
       toast(err.message, "error");
     }
+  }
+
+  async function runTestsOf(p) {
+    const key = p.dir.toLowerCase();
+    testRuns.set(key, { running: true });
+    renderList();
+    try {
+      testRuns.set(key, await api("/api/tests", { method: "POST", body: { dir: p.dir } }));
+    } catch (err) {
+      testRuns.delete(key);
+      toast(err.message, "error");
+    }
+    renderList();
+  }
+
+  /** A test run under a project's row: each failure with where it is and expected against actual. */
+  function testPanel(p, r) {
+    const close = btn("Close", () => (testRuns.delete(p.dir.toLowerCase()), renderList()), { iconName: "x", small: true, kind: "ghost", name: "Close the test results" });
+    if (r.running) return h("div", { class: "project-panel" }, h("div", { class: "page-check-head" }, h("p", { class: "dev-errors-empty", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), `Running ${p.name}'s tests…`)));
+    const summary = `${r.passed} passed, ${r.failed} failed${r.skipped ? `, ${r.skipped} skipped` : ""} in ${(r.ms / 1000).toFixed(1)}s (${r.framework})`;
+    const items = r.failures.map((f) => {
+      const where = f.file ? `${f.file}${f.line ? `:${f.line}` : ""}` : null;
+      return h(
+        "li",
+        { class: "dev-error" },
+        h("div", { class: "dev-error-head" }, h("span", { class: "badge badge-danger" }, "Failed"), h("strong", { class: "dev-error-message" }, f.name)),
+        where ? btn(where, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: f.file, line: f.line } })).message)), { small: true, kind: "ghost", iconName: "code" }) : null,
+        h("pre", { class: "log-snippet" }, [f.message, f.expected !== undefined || f.actual !== undefined ? `expected: ${f.expected ?? "?"}\nactual:   ${f.actual ?? "?"}` : null].filter(Boolean).join("\n\n")),
+      );
+    });
+    return h(
+      "div",
+      { class: "project-panel", "aria-live": "polite" },
+      h("div", { class: "page-check-head" }, h("p", { class: "dev-errors-empty" }, icon(r.ok ? "check" : "warn"), r.error && !r.failures.length ? `${summary}. ${r.error}` : summary), close),
+      items.length ? h("ul", { class: "dev-error-list" }, items) : null,
+      !r.ok && !items.length && r.outputTail.length ? h("pre", { class: "log-snippet" }, r.outputTail.slice(-20).join("\n")) : null,
+    );
   }
 
   async function checkEnvOf(p) {
@@ -560,6 +601,7 @@ function projectsPage(root) {
         item("Run in a terminal window", "terminal", () => open(null, p, "terminal"), !p.devCommand),
         item("Show in folder", "folder", () => open(null, p, "folder")),
         item(p.session?.note ? "Change the note…" : "Leave a note…", "journal", () => leaveNote(p)),
+        item("Run tests", "check", () => runTestsOf(p)),
         item("Check .env and secrets", "deps", () => checkEnvOf(p)),
         item("Save as template…", "template", () => saveTemplate(p)),
       ),
@@ -665,6 +707,9 @@ function projectsPage(root) {
                 title: "Load the page in a headless browser and list console errors, exceptions and failed requests",
               })
             : null,
+          s.localUrl
+            ? btn(openTraffic.has(key) ? "Hide requests" : "Requests", () => toggle(openTraffic, "openTraffic"), { iconName: "ports", small: true, title: `Requests made through ${s.localUrl}` })
+            : null,
           s.errorCount || showingErrors
             ? btn(showingErrors ? "Hide errors" : "Show errors", () => toggle(openErrors, "openErrors"), { iconName: "warn", small: true })
             : null,
@@ -684,6 +729,7 @@ function projectsPage(root) {
       s.services ? h("ul", { class: "stack-services", "aria-label": `Services of ${s.project}` }, s.services.map(serviceRow)) : null,
       s.note ? h("p", { class: "stack-note" }, icon("warn"), s.note) : null,
       pageChecks.has(key) ? pagePanel(key, pageChecks.get(key)) : null,
+      openTraffic.has(key) && s.localUrl ? trafficPanel(key, s) : null,
       showingErrors ? errorsEl : null,
       showing && s.services ? outputFilter(key, s.services) : null,
       showing ? logEl : null,
@@ -700,6 +746,52 @@ function projectsPage(root) {
       void refreshErrors(key);
     }
     return card;
+  }
+
+  function trafficPanel(key, s) {
+    const el = h("div", { class: "dev-errors", "aria-label": `Requests to ${s.project}` });
+    trafficPanels.set(key, { el, dir: s.dir });
+    void refreshTraffic(key);
+    return el;
+  }
+
+  async function refreshTraffic(key) {
+    const panel = trafficPanels.get(key);
+    if (!panel) return;
+    let list;
+    try {
+      list = await api(`/api/traffic?dir=${encodeURIComponent(panel.dir)}&limit=40`);
+    } catch {
+      return;
+    }
+    // The card may have been redrawn meanwhile; the new one has its own panel.
+    if (!panel.el.isConnected) return;
+    const sig = list.map((e) => `${e.id}:${e.status}`).join(",");
+    if (panel.sig === sig) return;
+    panel.sig = sig;
+    panel.el.replaceChildren(
+      list.length
+        ? h("ul", { class: "traffic-list" }, [...list].reverse().map(trafficRow))
+        : h("p", { class: "dev-errors-empty" }, icon("info"), "No API requests yet. They're recorded when the app is opened at its .localhost address."),
+    );
+  }
+
+  function trafficRow(e) {
+    const bad = e.error || (e.status ?? 0) >= 400;
+    const status = h("span", { class: `badge ${bad ? "badge-danger" : "badge-ok"}` }, e.error ? "failed" : String(e.status ?? "…"));
+    const head = [h("span", { class: "mono traffic-method" }, e.method), status, e.service ? h("span", { class: "badge" }, e.service) : null, h("span", { class: "mono traffic-path" }, e.path), e.ms !== undefined ? h("span", { class: "dim" }, `${e.ms} ms`) : null];
+    if (!e.requestBody && !e.responseBody) return h("li", { class: "traffic-row" }, head);
+    return h(
+      "li",
+      null,
+      h(
+        "details",
+        null,
+        h("summary", { class: "traffic-row" }, head),
+        e.requestBody ? h("pre", { class: "log-snippet" }, `→ ${e.requestBody}`) : null,
+        e.responseBody ? h("pre", { class: "log-snippet" }, `← ${e.responseBody}${e.truncated ? " …" : ""}`) : null,
+      ),
+    );
   }
 
   async function checkInBrowser(button, s) {
@@ -884,6 +976,7 @@ function projectsPage(root) {
       return dev?.status !== s.status || dev?.errorCount !== s.errorCount;
     };
     if (servers && (servers.some(differs) || servers.length !== projects.filter((p) => p.dev).length)) load();
+    for (const key of trafficPanels.keys()) void refreshTraffic(key);
   }, 3000);
   load();
   loadUnsaved();
@@ -1203,7 +1296,7 @@ function journalPage(root) {
 // ------------------------------------------------------------------ Summary
 
 function summaryPage(root) {
-  let days = Number(pref("summaryDays", "7"));
+  let days = pref("summaryDays", "7") === "year" ? "year" : Number(pref("summaryDays", "7"));
   let github = pref("summaryGithub", "1") === "1";
   let everyone = false;
   let markdown = "";
@@ -1217,6 +1310,11 @@ function summaryPage(root) {
     }
   }, { iconName: "copy", disabled: true });
   const save = btn("Save to file", async (e) => {
+    if (days === "year") {
+      const r = await busy(e.currentTarget, "Saving…", () => api(`/api/summary/year?save=1&github=${github ? 1 : 0}&allAuthors=${everyone ? 1 : 0}`));
+      if (r) toast(`Saved as ${r.year}-in-review.md in ~/.dx/summaries`);
+      return;
+    }
     const r = await busy(e.currentTarget, "Saving…", () => api("/api/summary/save", { method: "POST", body: { days, github, allAuthors: everyone } }));
     if (r) toast(`Saved to ${tildify(r.file)}`);
   }, { iconName: "save", disabled: true });
@@ -1227,7 +1325,7 @@ function summaryPage(root) {
     h(
       "div",
       { class: "toolbar" },
-      segmented("Period", [[1, "Today"], [7, "7 days"], [30, "30 days"]], days, (v) => ((days = v), setPref("summaryDays", v), load())),
+      segmented("Period", [[1, "Today"], [7, "7 days"], [30, "30 days"], ["year", "This year"]], days, (v) => ((days = v), setPref("summaryDays", v), load())),
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: github, onchange: (e) => ((github = e.target.checked), setPref("summaryGithub", github ? "1" : "0"), load()) }), "GitHub pull requests"),
       h("label", { class: "check" }, h("input", { type: "checkbox", onchange: (e) => ((everyone = e.target.checked), load()) }), "Everyone's commits"),
     ),
@@ -1236,8 +1334,18 @@ function summaryPage(root) {
 
   async function load() {
     copy.disabled = save.disabled = true;
-    holder.replaceChildren(loadingView("Reading git history across your projects…"));
+    holder.replaceChildren(loadingView(days === "year" ? "Reading a year of git history across your projects…" : "Reading git history across your projects…"));
     try {
+      if (days === "year") {
+        const y = await api(`/api/summary/year?github=${github ? 1 : 0}&allAuthors=${everyone ? 1 : 0}`);
+        markdown = y.markdown;
+        copy.disabled = save.disabled = false;
+        holder.replaceChildren(
+          h("div", { class: "stats" }, stat(y.commits, y.commits === 1 ? "commit" : "commits", `in ${plural(y.projects, "project")}`), stat(y.activeDays, y.activeDays === 1 ? "day with commits" : "days with commits")),
+          h("div", { class: "card card-pad" }, h("pre", { class: "md-doc" }, y.markdown)),
+        );
+        return;
+      }
       const r = await api(`/api/summary?days=${days}&github=${github ? 1 : 0}&allAuthors=${everyone ? 1 : 0}`);
       markdown = r.markdown;
       copy.disabled = save.disabled = false;

@@ -24,13 +24,31 @@ const OVERLAY = `<!doctype html><title>App</title>
   document.addEventListener("DOMContentLoaded", () => document.body.appendChild(document.createElement("vite-error-overlay")));
 </script><body></body>`;
 const FINE = `<!doctype html><title>Fine</title><p>All good</p>`;
+const LOGIN = `<!doctype html><title>Sign in</title>
+<form id="f"><label>Email <input id="email" name="email"></label><button type="submit">Sign in</button></form>
+<button id="broken" onclick="fetch('/api/missing')">Load extras</button>
+<script>
+  document.getElementById("f").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const r = await fetch("/api/login", { method: "POST", body: document.getElementById("email").value });
+    location.href = "/dashboard?user=" + encodeURIComponent(await r.text());
+  });
+</script>`;
+const DASHBOARD = `<!doctype html><title>Dashboard</title><h1>Welcome back</h1><p id="who"></p>
+<script>document.getElementById("who").textContent = new URLSearchParams(location.search).get("user");</script>`;
 
 let server: http.Server;
 let base = "";
 before(async () => {
   server = http.createServer((req, res) => {
-    const pages: Record<string, string> = { "/broken": BROKEN, "/overlay": OVERLAY, "/fine": FINE };
-    const page = pages[req.url ?? ""];
+    if (req.url === "/api/login" && req.method === "POST") {
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", () => res.end(body.toUpperCase()));
+      return;
+    }
+    const pages: Record<string, string> = { "/broken": BROKEN, "/overlay": OVERLAY, "/fine": FINE, "/login": LOGIN, "/dashboard": DASHBOARD };
+    const page = pages[(req.url ?? "").split("?")[0]];
     res.writeHead(page ? 200 : 404, { "content-type": page ? "text/html" : "text/plain" });
     res.end(page ?? "not found");
   });
@@ -85,4 +103,33 @@ test("a server that isn't running is reported as such", opts, async () => {
   const r = await checkPage({ url: `http://127.0.0.1:${port}/` });
   assert.equal(r.ok, false);
   assert.match(r.error ?? "", /Nothing is listening/);
+});
+
+test("steps click through a flow and say which step caused what", opts, async () => {
+  const r = await checkPage({
+    url: `${base}/login`,
+    steps: [
+      { click: "#broken" },
+      { type: "alex@example.com", into: "#email" },
+      { click: "text=Sign in" },
+      { waitFor: "url=/dashboard" },
+      { waitFor: "text=Welcome back", screenshot: true },
+    ],
+  });
+  assert.equal(r.steps?.length, 5, JSON.stringify(r.steps));
+  assert.ok(r.steps!.every((s) => s.ok), JSON.stringify(r.steps));
+  assert.match(r.finalUrl ?? "", /\/dashboard\?user=ALEX%40EXAMPLE\.COM$/);
+  assert.match(r.text ?? "", /ALEX@EXAMPLE\.COM/, "the typed text reached the server and back");
+  assert.equal(r.steps![0].problems, 1);
+  assert.ok(r.failedRequests.some((f) => f.url.endsWith("/api/missing") && f.step === 1), JSON.stringify(r.failedRequests));
+  assert.ok(r.steps![4].screenshot && fs.existsSync(r.steps![4].screenshot));
+  assert.equal(r.ok, false, "the 404 during step 1 counts");
+});
+
+test("a step that can't be done stops the flow with a reason", opts, async () => {
+  const r = await checkPage({ url: `${base}/fine`, steps: [{ click: "text=Nowhere", timeoutMs: 600 }, { waitFor: "text=All good" }] });
+  assert.equal(r.steps?.length, 1, "the step after a failed one isn't run");
+  assert.equal(r.steps![0].ok, false);
+  assert.match(r.steps![0].error ?? "", /Nothing to click matches text=Nowhere/);
+  assert.equal(r.ok, false);
 });

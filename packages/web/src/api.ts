@@ -12,6 +12,10 @@ import {
   fixDependencies,
   leaveNote,
   sessionLookup,
+  runTests,
+  buildYearReview,
+  formatYearReview,
+  saveYearReview,
   connectAiTools,
   copyProject,
   deleteCleanup,
@@ -42,10 +46,12 @@ import {
   scanProjects,
   type AiToolId,
   type DepsReport,
+  type PageStep,
   type Project,
   type Source,
 } from "@dx/core";
 import { checkUrl } from "./check.js";
+import { clearTraffic, listTraffic } from "./traffic.js";
 import {
   clearDevServer,
   devErrors,
@@ -140,6 +146,29 @@ const routes: Record<string, Handler> = {
     recordRun("resume", true, `${project.name}: note ${s.note ? "left" : "removed"}`, "web", { project: project.name });
     return { note: s.note ?? null };
   },
+  "GET /api/traffic": (req) => {
+    const q = req.query;
+    const dir = q.get("dir") ? knownProject(q.get("dir")).dir : undefined;
+    return listTraffic({
+      dir,
+      service: q.get("service") || undefined,
+      after: q.get("after") ? Number(q.get("after")) : undefined,
+      all: q.get("all") === "1",
+      failed: q.get("failed") === "1",
+      path: q.get("path") || undefined,
+      limit: clampInt(q.get("limit"), 1, 1000, 200),
+    });
+  },
+  "POST /api/traffic/clear": (req) => {
+    clearTraffic(knownProject(req.body.dir).dir);
+    return { ok: true };
+  },
+  "POST /api/tests": (req) =>
+    runTests(knownProject(req.body.dir), {
+      match: typeof req.body.match === "string" && req.body.match ? req.body.match : undefined,
+      changed: req.body.changed === true,
+      source: "web",
+    }),
   "GET /api/env": (req) => checkEnv(knownProject(req.query.get("dir")).dir),
   "GET /api/unsaved": () => findUnsavedWork(),
   "POST /api/clone": async (req) => {
@@ -173,7 +202,9 @@ const routes: Record<string, Handler> = {
     let url = typeof req.body.url === "string" ? req.body.url : "";
     if (!url) {
       const project = knownProject(req.body.dir);
-      const base = listDevServers().find((s) => s.dir.toLowerCase() === project.dir.toLowerCase())?.url ?? project.url;
+      const dev = listDevServers().find((s) => s.dir.toLowerCase() === project.dir.toLowerCase());
+      // A browser check goes through the local domain when there is one, so its requests are logged.
+      const base = (req.body.browser === true || Array.isArray(req.body.steps) ? dev?.localUrl : undefined) ?? dev?.url ?? project.url;
       if (!base) throw new HttpError(400, `${project.name} has no URL yet. Start its dev server first.`);
       url = new URL(String(req.body.path ?? "/"), base).href;
     }
@@ -184,7 +215,8 @@ const routes: Record<string, Handler> = {
         headers: req.body.headers && typeof req.body.headers === "object" ? (req.body.headers as Record<string, string>) : undefined,
         body: typeof req.body.body === "string" ? req.body.body : req.body.body === undefined ? undefined : JSON.stringify(req.body.body),
         timeoutMs: clampInt(req.body.timeoutMs, 500, 120_000, req.body.browser === true ? 30_000 : 15_000),
-        browser: req.body.browser === true,
+        browser: req.body.browser === true || Array.isArray(req.body.steps),
+        steps: stepsOf(req.body.steps),
         screenshot: req.body.screenshot === true,
       });
     } catch (err) {
@@ -252,6 +284,13 @@ const routes: Record<string, Handler> = {
       github: req.query.get("github") !== "0",
     });
     return { summary, markdown: formatSummary(summary) };
+  },
+  "GET /api/summary/year": async (req) => {
+    const year = clampInt(req.query.get("year"), 1990, new Date().getFullYear(), new Date().getFullYear());
+    const review = await buildYearReview(year, { allAuthors: req.query.get("allAuthors") === "1", github: req.query.get("github") !== "0" });
+    const markdown = formatYearReview(review);
+    if (req.query.get("save") === "1") saveYearReview(markdown, year);
+    return { year, commits: review.commits, activeDays: review.activeDays, projects: review.projects.length, markdown };
   },
   "POST /api/summary/save": async (req) => {
     const summary = await buildSummary({
@@ -447,6 +486,8 @@ function sourceFrom(raw: unknown): Source {
 }
 
 function clampInt(raw: unknown, min: number, max: number, fallback: number): number {
+  // A missing query value is null, and Number(null) is 0: that's "not given", not zero.
+  if (raw === null || raw === undefined || raw === "") return fallback;
   const n = Number(raw);
   return Number.isInteger(n) ? Math.min(max, Math.max(min, n)) : fallback;
 }
@@ -460,5 +501,24 @@ function shell(command: string, cwd: string): Promise<number> {
     const child = spawn(command, { cwd, shell: true, windowsHide: true, stdio: "ignore" });
     child.once("error", () => resolve(1));
     child.once("exit", (code) => resolve(code ?? 1));
+  });
+}
+
+/** Browser steps from a request: plain objects with the known fields only, at most 50. */
+function stepsOf(raw: unknown): PageStep[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  return raw.slice(0, 50).map((x) => {
+    const o = (x && typeof x === "object" ? x : {}) as Record<string, unknown>;
+    return {
+      goto: str(o.goto),
+      click: str(o.click),
+      type: str(o.type),
+      into: str(o.into),
+      press: str(o.press),
+      waitFor: str(o.waitFor ?? o.wait_for),
+      screenshot: o.screenshot === true,
+      timeoutMs: typeof o.timeoutMs === "number" ? Math.min(60_000, Math.max(500, o.timeoutMs)) : undefined,
+    };
   });
 }

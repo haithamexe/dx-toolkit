@@ -65,7 +65,7 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<{
 test("lists the running-app tools next to the others", async () => {
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name);
-  for (const name of ["start_dev_server", "stop_dev_server", "restart_dev_server", "dev_servers", "dev_logs", "dev_errors", "wait_for_rebuild", "check_url", "dx_setup_check", "list_projects"]) {
+  for (const name of ["start_dev_server", "stop_dev_server", "restart_dev_server", "dev_servers", "dev_logs", "dev_errors", "wait_for_rebuild", "check_url", "dx_setup_check", "list_projects", "run_tests", "network_log", "db_query"]) {
     assert.ok(names.includes(name), name);
   }
 });
@@ -107,7 +107,10 @@ test("an agent runs the app, finds an error through a request, and sees it clear
     const page = await call("check_url", { project: "tiny-shop", path: "/broken", browser: true });
     assert.match(page.text, /loaded in headless \w+/, page.text);
     assert.match(page.text, /Uncaught exceptions:\n- TypeError: Cannot read properties of null \(reading 'items'\)/, page.text);
-    assert.match(page.text, /Failed requests:\n- GET http:\/\/localhost:\d+\/checkout → 500/, page.text);
+    // Loaded through tiny-shop.localhost, so the request is in the network log too.
+    assert.match(page.text, /Failed requests:\n- GET http:\/\/tiny-shop\.localhost:\d+\/checkout → 500/, page.text);
+    const log = await call("network_log", { project: "tiny-shop" });
+    assert.match(log.text, /GET \/checkout → 500/, log.text);
     assert.match(page.text, /Errors tiny-shop logged meanwhile:\n- \[runtime\] TypeError/, "the server's side of the same page load");
     assert.match(page.text, /Visible text:\nCart/);
   }

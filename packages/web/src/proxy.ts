@@ -3,6 +3,7 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { localRoutes } from "./dev.js";
+import { recordExchange } from "./traffic.js";
 
 /**
  * Local domains: shop.localhost goes to that project's front end, api.shop.localhost to its API,
@@ -120,6 +121,16 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
   function forward(req: http.IncomingMessage, res: http.ServerResponse): void {
     const t = target(req);
     if (!t) return notFound(req, res);
+    // Every exchange with a dev server is logged (network_log); the dashboard's own aren't.
+    const route = t.host === "dx.localhost" ? undefined : localRoutes().get(t.host);
+    const rec = route ? recordExchange(req, route, t.host) : undefined;
+    if (rec) req.on("data", (c: Buffer) => rec.request(c));
+    let done = false;
+    const finish = (error?: string) => {
+      if (done) return;
+      done = true;
+      rec?.end(error);
+    };
     const upstream = http.request(
       { host: "localhost", port: t.port, method: req.method, path: req.url, headers: headersFor(req, t) },
       (up) => {
@@ -128,13 +139,22 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
         if (typeof location === "string") {
           headers.location = location.replace(new RegExp(`^https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]):${t.port}(?=/|$)`), publicOrigin(t.host, isSecure(req)));
         }
+        rec?.headers(up.statusCode ?? 502, up.headers);
         res.writeHead(up.statusCode ?? 502, up.statusMessage, headers);
+        if (rec) {
+          up.on("data", (c: Buffer) => rec.response(c));
+          up.on("end", () => finish());
+          up.on("aborted", () => finish("the dev server closed the connection"));
+          res.on("close", () => finish());
+        }
         up.pipe(res);
       },
     );
     upstream.on("error", (err) => {
+      const code = (err as NodeJS.ErrnoException).code ?? err.message;
+      finish(code);
       if (res.headersSent) return res.destroy();
-      page(res, 502, `${t.host} isn't answering`, `The dev server behind it didn't accept the connection (${(err as NodeJS.ErrnoException).code ?? err.message}). It may still be starting, or it stopped: the dx dashboard shows its output.`);
+      page(res, 502, `${t.host} isn't answering`, `The dev server behind it didn't accept the connection (${code}). It may still be starting, or it stopped: the dx dashboard shows its output.`);
     });
     req.pipe(upstream);
   }

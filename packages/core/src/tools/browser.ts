@@ -15,6 +15,8 @@ export interface BrowserMessage {
   text: string;
   /** Where it came from: a script URL with its line. */
   source?: string;
+  /** The step it happened in (1-based); absent for the first page load. */
+  step?: number;
 }
 
 export interface FailedRequest {
@@ -24,6 +26,7 @@ export interface FailedRequest {
   /** Why it failed without a response: net::ERR_CONNECTION_REFUSED, … */
   error?: string;
   type?: string;
+  step?: number;
 }
 
 export interface PageCheck {
@@ -48,10 +51,53 @@ export interface PageCheck {
   screenshot?: string;
   /** Which browser ran it. */
   browser: string;
+  /** What each step did, when steps were given. */
+  steps?: StepResult[];
+  /** The address the page ended on, after steps. */
+  finalUrl?: string;
+}
+
+/**
+ * One thing to do on the page, like a person would. Elements are found by CSS selector, or by
+ * their text with "text=Sign in" (buttons and links first).
+ */
+export interface PageStep {
+  /** Go to a path on the same site, or another address on this computer. */
+  goto?: string;
+  /** Click an element. */
+  click?: string;
+  /** Type this text… */
+  type?: string;
+  /** …into this field (otherwise into the focused one). */
+  into?: string;
+  /** Press a key: Enter, Tab, Escape, Backspace, ArrowDown, ArrowUp. */
+  press?: string;
+  /** Wait until an element shows, its text shows ("text=Order placed"), or the address contains something ("url=/dashboard"). */
+  waitFor?: string;
+  /** Take a screenshot after this step. */
+  screenshot?: boolean;
+  /** How long this step may take (default 10s). */
+  timeoutMs?: number;
+}
+
+export interface StepResult {
+  index: number;
+  /** "click text=Sign in", in words. */
+  action: string;
+  ok: boolean;
+  error?: string;
+  /** Where the page was after the step. */
+  url?: string;
+  ms: number;
+  /** Exceptions, console errors and failed requests that happened during this step. */
+  problems: number;
+  screenshot?: string;
 }
 
 export interface PageCheckOptions {
   url: string;
+  /** Things to do after the page loads: fill a form, click through a flow. */
+  steps?: PageStep[];
   /** Take a screenshot and save it under ~/.dx/screenshots. */
   screenshot?: boolean;
   width?: number;
@@ -170,9 +216,13 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
     let inflight = 0;
     let lastNetwork = Date.now();
     let loaded = false;
+    let loading = false;
     let documentStatus: number | undefined;
-    const push = <T>(list: T[], item: T) => {
-      if (list.length < MAX_ITEMS) list.push(item);
+    let step = 0;
+    let problems = 0;
+    const push = <T extends object>(list: T[], item: T) => {
+      if (list === (result.exceptions as unknown) || list === (result.consoleErrors as unknown) || list === (result.failedRequests as unknown)) problems++;
+      if (list.length < MAX_ITEMS) list.push(step ? { ...item, step } : item);
     };
 
     cdp.on(sessionId, (method, p) => {
@@ -226,8 +276,13 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
           }
           break;
         }
+        case "Page.frameStartedLoading":
+          // The main frame's id is the target's id.
+          if (p.frameId === targetId) loading = true;
+          break;
         case "Page.loadEventFired":
           loaded = true;
+          loading = false;
           break;
       }
     });
@@ -246,7 +301,94 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
       const quietFrom = Date.now() + settle;
       while (Date.now() < settleEnd && !(Date.now() >= quietFrom && inflight === 0 && Date.now() - lastNetwork > 300)) await sleep(100);
 
-      const info = (await page("Runtime.evaluate", { expression: PAGE_INFO, returnByValue: true })) as { result: { value?: { title: string; text: string; overlay: string } } };
+      // Steps, like a person clicking through the page. Each waits for what it caused to finish.
+      if (options.steps?.length && !result.error) {
+        const idle = async (max: number) => {
+          const end = Date.now() + max;
+          await sleep(150);
+          while (Date.now() < end && (loading || inflight > 0 || Date.now() - lastNetwork < 300)) await sleep(100);
+        };
+        const evaluate = async <T>(expression: string): Promise<T | undefined> => {
+          const r = (await page("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })) as { result: { value?: T }; exceptionDetails?: unknown };
+          return r.exceptionDetails ? undefined : r.result.value;
+        };
+        const findBox = (target: string) =>
+          evaluate<{ x: number; y: number } | null>(
+            `(() => { const el = (${FIND})(${JSON.stringify(target)}); if (!el) return null; el.scrollIntoView({ block: "center", inline: "center" }); const r = el.getBoundingClientRect(); return r.width && r.height ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null; })()`,
+          );
+        const waitUntil = async <T>(check: () => Promise<T | null | undefined | false>, max: number): Promise<T | undefined> => {
+          const end = Date.now() + max;
+          for (;;) {
+            const v = await check();
+            if (v) return v;
+            if (Date.now() > end) return undefined;
+            await sleep(100);
+          }
+        };
+        result.steps = [];
+        for (const [i, s] of options.steps.entries()) {
+          step = i + 1;
+          const before = problems;
+          const t0 = Date.now();
+          const max = s.timeoutMs ?? 10_000;
+          const sr: StepResult = { index: step, action: describeStep(s), ok: true, ms: 0, problems: 0 };
+          try {
+            if (s.goto) {
+              const current = (await evaluate<string>("location.href")) ?? options.url;
+              const next = new URL(s.goto, current).href;
+              if (!isLoopbackUrl(next)) throw new Error("goto only goes to addresses on this computer.");
+              loaded = false;
+              const nav = (await page("Page.navigate", { url: next })) as { errorText?: string };
+              if (nav.errorText) throw new Error(nav.errorText);
+              await waitUntil(async () => loaded, max);
+              await idle(3000);
+            } else if (s.click) {
+              const box = await waitUntil(() => findBox(s.click!), max);
+              if (!box) throw new Error(`Nothing to click matches ${s.click}.`);
+              for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+                await page("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 });
+              }
+              await idle(Math.max(3000, max / 2));
+            } else if (s.type !== undefined) {
+              if (s.into) {
+                const ok = await waitUntil(() => evaluate<boolean>(`(() => { const el = (${FIND})(${JSON.stringify(s.into)}); if (!el) return false; el.focus(); if (el.select) el.select(); return true; })()`), max);
+                if (!ok) throw new Error(`No field matches ${s.into}.`);
+              }
+              await page("Input.insertText", { text: s.type });
+              await idle(1500);
+            } else if (s.press) {
+              const k = KEYS[s.press.toLowerCase()];
+              if (!k) throw new Error(`Unknown key ${s.press}. Use Enter, Tab, Escape, Backspace, ArrowDown or ArrowUp.`);
+              await page("Input.dispatchKeyEvent", { type: "keyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, ...(k.text ? { text: k.text } : {}) });
+              await page("Input.dispatchKeyEvent", { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk });
+              await idle(Math.max(3000, max / 2));
+            } else if (s.waitFor) {
+              const w = s.waitFor;
+              const check = w.startsWith("url=")
+                ? () => evaluate<boolean>(`location.href.includes(${JSON.stringify(w.slice(4))})`)
+                : () => findBox(w).then((b) => !!b);
+              if (!(await waitUntil(check, max))) throw new Error(`${w} didn't show within ${Math.round(max / 1000)}s.`);
+            } else if (!s.screenshot) {
+              throw new Error("A step needs one of goto, click, type, press, waitFor or screenshot.");
+            }
+          } catch (err) {
+            sr.ok = false;
+            sr.error = (err as Error).message;
+          }
+          sr.url = await evaluate<string>("location.href");
+          if (s.screenshot) {
+            const shot = (await page("Page.captureScreenshot", { format: "png" })) as { data: string };
+            sr.screenshot = saveScreenshot(sr.url ?? options.url, shot.data);
+          }
+          sr.ms = Date.now() - t0;
+          sr.problems = problems - before;
+          result.steps.push(sr);
+          if (!sr.ok) break; // later steps depend on this one
+        }
+        result.finalUrl = await evaluate<string>("location.href");
+      }
+
+      const info =(await page("Runtime.evaluate", { expression: PAGE_INFO, returnByValue: true })) as { result: { value?: { title: string; text: string; overlay: string } } };
       const v = info.result.value;
       if (v) {
         result.title = v.title || undefined;
@@ -278,8 +420,40 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
     !result.overlay &&
     result.exceptions.length === 0 &&
     result.consoleErrors.length === 0 &&
-    result.failedRequests.length === 0;
+    result.failedRequests.length === 0 &&
+    (result.steps ?? []).every((s) => s.ok);
   return result;
+}
+
+// Runs in the page: an element by CSS selector, or by its text with "text=…" (buttons and links
+// first, then any element whose own text matches, exactly before partly).
+const FIND = `(sel) => {
+  if (!sel.startsWith("text=")) { try { return document.querySelector(sel); } catch { return null; } }
+  const want = sel.slice(5).trim().toLowerCase();
+  const textOf = (e) => (e.innerText || e.value || e.getAttribute("aria-label") || "").trim().toLowerCase();
+  const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const pick = (list) => list.find((e) => visible(e) && textOf(e) === want) || list.find((e) => visible(e) && textOf(e).includes(want));
+  const actions = [...document.querySelectorAll("button, a, [role=button], [role=link], [role=tab], [role=menuitem], input[type=submit], input[type=button], label, summary")];
+  const leaves = [...document.querySelectorAll("body *")].filter((e) => !e.children.length);
+  return pick(actions) || pick(leaves) || null;
+}`;
+
+const KEYS: Record<string, { key: string; code: string; vk: number; text?: string }> = {
+  enter: { key: "Enter", code: "Enter", vk: 13, text: "\r" },
+  tab: { key: "Tab", code: "Tab", vk: 9 },
+  escape: { key: "Escape", code: "Escape", vk: 27 },
+  backspace: { key: "Backspace", code: "Backspace", vk: 8 },
+  arrowdown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", vk: 38 },
+};
+
+export function describeStep(s: PageStep): string {
+  if (s.goto) return `go to ${s.goto}`;
+  if (s.click) return `click ${s.click}`;
+  if (s.type !== undefined) return `type "${s.type.length > 40 ? `${s.type.slice(0, 40)}…` : s.type}"${s.into ? ` into ${s.into}` : ""}`;
+  if (s.press) return `press ${s.press}`;
+  if (s.waitFor) return `wait for ${s.waitFor}`;
+  return "screenshot";
 }
 
 // Runs in the page: its title, visible text, and the text of a dev server's error overlay.

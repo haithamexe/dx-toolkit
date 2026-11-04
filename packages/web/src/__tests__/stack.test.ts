@@ -166,6 +166,42 @@ test("errors are tagged with their service, and checks work on .localhost addres
   assert.equal(missing.status, 400);
 });
 
+test("requests through the local domains are logged, with credentials masked", async () => {
+  const body = JSON.stringify({ email: "alex@example.com", password: "hunter2", items: [{ id: 7 }] });
+  await new Promise<void>((resolve, reject) => {
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port: dashboard.localDomainsPort,
+        method: "POST",
+        path: "/orders",
+        headers: { host: "api.shop.localhost", "content-type": "application/json", authorization: "Bearer abc123", "content-length": Buffer.byteLength(body) },
+      },
+      (res) => {
+        res.resume();
+        res.on("end", () => resolve());
+      },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+  const log = await api(`/api/traffic?dir=${encodeURIComponent(shop)}`);
+  const order = log.find((e: { path: string }) => e.path === "/orders");
+  assert.ok(order, JSON.stringify(log.map((e: { path: string }) => e.path)));
+  assert.equal(order.method, "POST");
+  assert.equal(order.status, 200);
+  assert.equal(order.service, "api");
+  assert.equal(order.kind, "api");
+  assert.equal(order.requestHeaders.authorization, "•••");
+  assert.deepEqual(JSON.parse(order.requestBody), { email: "alex@example.com", password: "•••", items: [{ id: 7 }] });
+  assert.match(order.responseBody, /"ok":true/);
+  const everything = await api(`/api/traffic?dir=${encodeURIComponent(shop)}&all=1`);
+  assert.ok(log.some((e: { path: string }) => e.path === "/health"), JSON.stringify(everything.map((e: { path: string; kind: string; status: number; service: string }) => [e.path, e.kind, e.status, e.service])));
+
+  const failedOnly = await api(`/api/traffic?dir=${encodeURIComponent(shop)}&failed=1`);
+  assert.ok(failedOnly.every((e: { status: number }) => e.status >= 400));
+});
+
 test("stopping the stack stops every service and frees its addresses", async () => {
   await api("/api/dev/stop", { dir: shop });
   let server: any;

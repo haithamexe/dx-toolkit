@@ -4,6 +4,7 @@ import { recordRun } from "@dx/core";
 import type { Command } from "./command.js";
 import { errorsCommand, firstRunSetup, logsCommand, setupCommand } from "./commands/ai.js";
 import { cleanCommand } from "./commands/clean.js";
+import { dbCommand } from "./commands/db.js";
 import { cloneCommand, envCommand } from "./commands/clone.js";
 import { depsCommand } from "./commands/deps.js";
 import { goCommand } from "./commands/go.js";
@@ -15,6 +16,8 @@ import { resumeCommand, statusCommand } from "./commands/resume.js";
 import { downCommand, upCommand } from "./commands/stack.js";
 import { httpsCommand } from "./commands/https.js";
 import { summaryCommand } from "./commands/summary.js";
+import { testCommand } from "./commands/test.js";
+import { trafficCommand } from "./commands/traffic.js";
 import { configCommand, doctorCommand, runsCommand } from "./commands/system.js";
 import { uiCommand } from "./commands/ui.js";
 import { c, UsageError } from "./ui.js";
@@ -36,9 +39,12 @@ const commands: Command[] = [
   summaryCommand,
   cleanCommand,
   depsCommand,
+  testCommand,
   envCommand,
+  dbCommand,
   logsCommand,
   errorsCommand,
+  trafficCommand,
   setupCommand,
   httpsCommand,
   configCommand,

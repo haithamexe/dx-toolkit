@@ -23,3 +23,6 @@ export * from "./tools/clone.js";
 export * from "./tools/sessions.js";
 export * from "./tools/status.js";
 export * from "./tools/https.js";
+export * from "./tools/tests.js";
+export * from "./tools/db.js";
+export * from "./tools/year.js";
