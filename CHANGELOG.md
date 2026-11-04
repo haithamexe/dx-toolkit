@@ -16,6 +16,7 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 - Dashboard API routes treated a missing number in the address as 0: the Cleanup route without `days` looked at projects idle for 0 days instead of 30.
 - Browser checks gave up when the browser took more than 20 seconds to start, which a first start on a fresh machine can. It now has 60 seconds, the page's own time starts once the browser is up, and it starts without its sandbox on systems that don't allow one.
+- `dx test` showed a failing test's file as a full path instead of one relative to the project when the project's folder is reached through a link (on macOS, anything under the temp folder).
 
 ## 1.2.0 (2026-11-04)
 

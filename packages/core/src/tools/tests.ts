@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { recordRun } from "../runs.js";
 import type { Project } from "./projects.js";
 
@@ -325,10 +326,30 @@ function shorten(line: string, dir: string): string {
 }
 
 function relative(dir: string, file: string): string {
-  const f = file.replace(/^file:\/\/\/?/, "");
+  let f = file;
+  if (f.startsWith("file:")) {
+    try {
+      f = fileURLToPath(f);
+    } catch {
+      // not a valid file URL: keep it as written
+    }
+  }
   const abs = path.isAbsolute(f) ? f : path.join(dir, f);
-  const rel = path.relative(dir, abs);
-  return rel.startsWith("..") ? f : rel.split(path.sep).join("/");
+  // A test runner reports the real path; the project's folder can be reached through a link
+  // (on macOS the temp folder /var is /private/var), so compare the real paths too.
+  for (const [from, to] of [[dir, abs], [realpath(dir), realpath(abs)]]) {
+    const rel = path.relative(from, to);
+    if (!rel.startsWith("..") && !path.isAbsolute(rel)) return rel.split(path.sep).join("/");
+  }
+  return f;
+}
+
+function realpath(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
 }
 
 // eslint-disable-next-line no-control-regex
