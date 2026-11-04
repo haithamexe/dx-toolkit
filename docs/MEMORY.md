@@ -8,16 +8,16 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
   - the core tools;
-  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, activity, terminal, setup, https, config, runs, doctor`;
-  - the MCP server with 30 tools, 15 of them for running and checking apps;
+  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, activity, terminal, machine, setup, https, config, runs, doctor`;
+  - the MCP server with 31 tools, 15 of them for running and checking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
-  - the dashboard with 10 pages (Projects, New project, Ports, Activity, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - the dashboard with 11 pages (Projects, New project, Ports, Machine, Activity, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
   - the activity history (requests, routes, clicks, console, errors, kept 7 days) and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.4.0. Nothing under *Unreleased* yet.
+- **Latest release**: 1.4.0. *Unreleased*: the Machine page (`dx machine`, `machine_info`).
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -28,6 +28,12 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Terminals beyond Windows**: Command Prompt, Windows PowerShell and Git Bash were opened for real on Windows; the macOS (iTerm2, Warp, Ghostty, kitty) and Linux launch commands are written from each one's documentation and haven't been run on those systems.
 - **The localhost door for stacks**: single-project dev servers are recorded at `localhost:<port>`; a stack's front end isn't moved yet. Next.js, Astro, Nuxt, Angular, webpack and Gatsby are moved by the documented flag but only Vite was tried for real.
 - **MongoDB in `dx db`**: only Postgres, MySQL/MariaDB and Redis today.
+- **Machine, next parts**:
+  - caches (npm, pnpm store, yarn, bun, pip, Go, Gradle, Xcode DerivedData) on the Cleanup page, through each tool's own clean command;
+  - developer setup checks in `dx doctor` (git name and email, line endings and long paths on Windows, SSH key, `gh` signed in, PATH with missing folders or two Nodes, the Linux file-watch limit, WSL);
+  - `dx machine export` / `restore` for moving to a new computer;
+  - a warning on the Projects page before Start when a project doesn't match this computer.
+- **Machine beyond Windows**: the process list (`ps`), services (`brew services`, `systemctl`) and update commands for macOS and Linux are written from each tool's documentation and covered by parsing tests, but have only run for real on Windows.
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
@@ -48,6 +54,23 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Machine (`core/src/tools/machine.ts`, `projectNeeds.ts`, `background.ts`, `versions.ts`)
+
+- **Versions from fixed commands only** (`node --version`, `go version`, `java -version`…), run through `cmd.exe /d /s /c` on Windows because npm, pnpm and yarn are `.cmd` shims. The Microsoft Store's `python.exe` stub prints no version, so the `py` launcher is tried next.
+- **Support status from endoflife.date** for Node, Python and Go (a line's end-of-support date and its latest release); newest versions from the npm registry (npm, pnpm, yarn, bun) and GitHub releases (gh, deno, Git for Windows). Cached 12 hours in `~/.dx/cache/latest-versions.json`; offline, the installed versions are still listed. "Support ends soon" is 120 days.
+- **Node's line to move to is the newest LTS**; Python's and Go's, the newest release.
+- **The update command follows how a tool was installed**, read from its path (nvm, nvm-windows by `NVM_HOME`, fnm, volta, mise, asdf, pyenv, rustup, Homebrew, scoop, choco, winget, npm global, corepack). An unknown install gets advice, not a command.
+- **dx never runs an update or an install itself**: the dashboard opens it in a terminal (`openTerminal`), where installers can ask for a password or a yes. `POST /api/machine/run` takes a tool (and a known project) and works the command out again; it never takes a command.
+- **Project needs come from the project's own files**, the most specific first: `.nvmrc` / `.node-version` / `.tool-versions` / `volta` before `engines`, `packageManager` before lock files. An exact version in a version-manager file means its line (20.11.0 → any 20; 3.12.1 → any 3.12): a different patch isn't worth a warning. `go.mod`'s `go` line is a minimum.
+- **Ranges are read by a small matcher in `versions.ts`** (`||`, hyphen ranges, `^ ~ >= <`, `x`, partial versions, `lts/*`, `lts/<codename>`), since core has no dependencies. A range it can't read is not a mismatch.
+- **Without a version manager there's one Node**, so a project that wants another gets advice to install fnm, not a command that replaces the system's Node.
+- **Processes: one PowerShell CIM query on Windows** (every process, for parents) plus CPU time sampled twice 500 ms apart; `ps` elsewhere. Only developer programs are listed (node, bun, deno, python, ruby, php, java, dotnet, esbuild…).
+- **A tree is one entry**: a developer process whose parent is one (directly, or through a shell: npm → cmd.exe → node vite) is folded into it, with memory and CPU added up, and named by its most telling member (Vite rather than `npm run dev`). **dx's own processes split trees**: what the dashboard started is its own entry, marked **run by dx**, and stopped from the Projects page.
+- **"Left behind"** means the parent is gone, or its id now belongs to a process started later (ids are reused), or it was handed to init/launchd/systemd. AI tools and editor helpers are never marked: their parent app owns them.
+- **Stopping finds the process again in a fresh list** and refuses dx itself, servers dx runs and system processes; the tree goes with it (`taskkill /T`, or children first elsewhere).
+- **Docker Clean up uses what `docker system df` counts as reclaimable**: `container prune`, `image prune -a` (images no container uses; a stopped container keeps its image), `builder prune -a`. The button frees what the page says. Volumes are never removed: they hold databases' data.
+- **Services are only shown, with commands to copy**: stopping one or changing when it starts needs admin rights, so dx doesn't do it.
 
 ### Activity history (`core/src/tools/activity.ts` and `activityReport.ts`, `web/src/activity.ts`, `web/src/recorder.ts`, `web/public/recorder.js`)
 

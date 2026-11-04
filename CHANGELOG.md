@@ -4,6 +4,15 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **Machine page**, `dx machine` and the `machine_info` MCP tool: what this computer has, and what runs on it.
+  - **Tools**: Node, npm, pnpm, yarn, bun, deno, git, gh, docker, Python, Go, Java and Rust, with the installed version, the newest one, and whether yours still gets security fixes (from endoflife.date, the npm registry and GitHub releases, kept for 12 hours). **Update** opens the command that fits how the tool was installed (nvm, fnm, volta, mise, asdf, winget, Homebrew, scoop, npm, corepack…) in a terminal you can watch.
+  - **Your projects**: what each project asks for (`.nvmrc`, `.node-version`, `.tool-versions`, `engines`, `volta`, `packageManager`, lock files, `.python-version`, `requires-python`, `go.mod`, compose files) next to what's installed, with the command that switches or installs it.
+  - **Running in the background**: dev servers, watchers, AI tools and editor helpers, each with the child processes it started, its memory, CPU now, ports and project. Ones whose terminal is gone are marked **left behind**; ports other computers on your network can reach are marked **open to your network**. **Stop** asks first; dx's own servers are stopped from the Projects page.
+  - **Docker**: containers, and the space images, stopped containers and the build cache take, with **Clean up** for each. Volumes, which hold data, are never removed.
+  - **Services**: Postgres, MySQL, Redis, MongoDB and other services that start with the computer, with the commands to stop them or start them only when needed.
+
 ## 1.4.0 (2026-11-04)
 
 Keep secrets out of git with the new Env & secrets page, see your app's APIs, errors and console in their own views, and have it recorded at the address you always open, `localhost:<port>`, in any browser. Update with `npm install -g dx-devkit@latest`.

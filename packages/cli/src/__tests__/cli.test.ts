@@ -120,3 +120,21 @@ test("clone sets up a repository without opening it", () => {
   assert.ok(fs.existsSync(path.join(root, "api-gateway", ".env")));
   assert.equal(dx("clone", "not a url").code, 1);
 });
+
+test("machine: what a project needs, offline, and a PID it doesn't list is refused", () => {
+  const legacy = project("legacy-api", { ".nvmrc": "8\n" });
+  const r = dx("machine", "projects", "--offline", "--json");
+  assert.equal(r.code, 0, r.err);
+  const needs = JSON.parse(r.out).projects as { project: string; needs: { tool: string; ok: boolean; label: string }[] }[];
+  const node = needs.find((p) => p.project === "legacy-api")?.needs.find((n) => n.tool === "node");
+  assert.equal(node?.label, "Node 8");
+  assert.equal(node?.ok, false, "Node 8 isn't what runs these tests");
+  assert.equal(needs[0].project, "legacy-api", "projects with problems first");
+  fs.rmSync(legacy, { recursive: true, force: true });
+
+  const text = dx("machine", "projects", "--offline");
+  assert.equal(text.code, 0, text.err);
+  assert.match(text.out, /Your projects/);
+  assert.equal(dx("machine", "--stop", "abc").code, 2, "a usage error");
+  assert.equal(dx("machine", "nonsense").code, 2);
+});

@@ -252,3 +252,48 @@ test("runs a dev server, streams its output, notices the URL it prints, and stop
   assert.equal((await api("/api/dev/clear", { method: "POST", body: { dir: app } })).status, 200);
   assert.equal((await api("/api/dev")).json.length, 0);
 });
+
+test("machine: lists tools, needs and background processes, and acts only on what it listed", async () => {
+  // The release list comes from the cache, so the test doesn't reach the network.
+  fs.mkdirSync(path.join(home, "cache"), { recursive: true });
+  fs.writeFileSync(path.join(home, "cache", "latest-versions.json"), JSON.stringify({ at: Date.now(), cycles: {}, npm: {}, github: {} }));
+
+  const tools = (await api("/api/machine/tools")).json;
+  const node = tools.find((t: { id: string }) => t.id === "node");
+  assert.equal(node.installed, true);
+  assert.equal(node.version, process.versions.node);
+
+  const needs = (await api("/api/machine/projects")).json;
+  const tiny = needs.find((p: { project: string }) => p.project === "tiny-app");
+  assert.ok(tiny.needs.some((n: { tool: string; ok: boolean }) => n.tool === "node" && n.ok), "tiny-app needs Node, and has it");
+
+  // A process this dashboard started counts as dx's: it's listed, with its project, but not stopped here.
+  const worker = path.join(app, "worker.cjs");
+  fs.writeFileSync(worker, "setInterval(() => {}, 1000);");
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, [worker], { stdio: "ignore" });
+  try {
+    let listed: { pid: number; project?: string; runByDx: boolean } | undefined;
+    for (let i = 0; i < 20 && !listed; i++) {
+      listed = (await api("/api/machine/processes")).json.find((p: { pid: number }) => p.pid === child.pid);
+      if (!listed) await new Promise((r) => setTimeout(r, 300));
+    }
+    assert.ok(listed, "the worker is listed");
+    assert.equal(listed.project, "tiny-app");
+    assert.equal(listed.runByDx, true);
+    const refused = await api("/api/machine/stop", { method: "POST", body: { pid: child.pid } });
+    assert.equal(refused.status, 400);
+    assert.match(refused.json.error, /Projects page/);
+  } finally {
+    child.kill();
+  }
+
+  assert.equal((await api("/api/machine/stop", { method: "POST", body: { pid: "1; rm -rf /" } })).status, 400);
+  assert.equal((await api("/api/machine/stop", { method: "POST", body: { pid: process.pid } })).status, 400, "never dx itself");
+  assert.equal((await api("/api/machine/docker/prune", { method: "POST", body: { what: "volumes" } })).status, 400, "volumes hold data");
+  assert.equal((await api("/api/machine/docker/stop", { method: "POST", body: { id: "--all" } })).status, 400);
+  assert.equal((await api("/api/machine/run", { method: "POST", body: { tool: "node && calc" } })).status, 400, "a known tool only");
+  assert.equal((await api("/api/machine/run", { method: "POST", body: { tool: "node", dir: os.tmpdir() } })).status, 404, "a known project only");
+  const upToDate = await api("/api/machine/run", { method: "POST", body: { tool: "node", dir: app } });
+  assert.equal(upToDate.status, 400, "nothing to fix: no terminal is opened");
+});

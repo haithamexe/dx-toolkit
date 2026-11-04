@@ -79,6 +79,7 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 | **Activity** | Everything that happened in your apps, live, in four views: **Sessions** (each visit's steps: clicks, routes, requests, errors), **APIs** (each endpoint with its calls, payloads, responses, average and slowest time), **Errors** (grouped, with how often and where) and **Console**. Each project's visits, API calls and problems at the top. Every request, error and console line opens **Visual** (status and timing at a glance, JSON as a colour-coded tree that folds, stacks as frames that open your editor) or **Raw** (the exact text). Search payloads and messages, open an error at its line in your editor, **Copy as bug report** on any error, **Replay** a visit in a headless browser. See [The activity history](#the-activity-history) |
 | **Env & secrets** | Every project's `.env` files (subfolders included): see them with values hidden until you ask, edit and save them, or open them in your editor. Warnings for `.env` files git would commit or already has, projects with no `.gitignore`, and keys in committed files; what `.gitignore` is missing to keep secrets out of git (OWASP), with a button that adds it |
 | **Ports** | See what's listening and stop it (it asks first, naming the process) |
+| **Machine** | **Tools**: Node, npm, pnpm, yarn, bun, deno, git, gh, docker, Python, Go, Java and Rust, each with its version, the newest one, and whether yours still gets security fixes ("Node 18 stopped getting security fixes on 30 Apr 2025"); **Update** opens the right command for how it was installed (nvm, fnm, volta, winget, Homebrew, npm…) in a terminal you can see. **Your projects**: what each project asks for (`.nvmrc`, `engines`, `packageManager`, lock files, `.python-version`, `go.mod`, compose files) next to what's installed, with the command that fixes it. **Running in the background**: dev servers, watchers, AI tools and editor helpers with their memory, CPU and ports, marked **left behind** when the terminal that started them is gone, or **open to your network** when they listen beyond this computer; **Stop** one (it asks first). **Docker**: containers, and the space images, stopped containers and the build cache take, with **Clean up** (never volumes). **Services**: databases that start with the computer, with the commands that stop them |
 | **Journal** | Add what you did, read back 7, 30 or 90 days |
 | **Summary** | Your week: commits, pull requests, journal, where the time went, uncommitted work; copy it as markdown or save it. **This year** gives the year in review |
 | **Cleanup** | See which `node_modules` and build folders can go, pick them, delete them (it asks first) |
@@ -181,6 +182,7 @@ dx up shop
 | `dx traffic todo-app -f` | The requests the app made through its `.localhost` address, live; `--bodies` for what was sent and returned (passwords, tokens and cookies masked), `--failed` for 4xx/5xx only |
 | `dx activity` | What happened in your apps today, in order: requests and responses, routes, clicks, console, errors. `dx activity todo-app -f` follows it live, `--problems` shows only what went wrong, `-q checkout` searches, `-b` adds payloads and stacks, `--since 2h` goes back further |
 | `dx terminal todo-app` | Open the project in a new terminal window. `dx terminal --list` shows the terminals on this computer, `dx terminal --use git-bash` picks the one projects open in (the dashboard uses it too) |
+| `dx machine` | Tools to update or no longer supported, projects that don't match this computer, and processes left behind. `dx machine tools`, `projects`, `processes` or `docker` for one part in full; `dx machine --stop <pid>` stops a process from the list (it asks first); `--offline` skips looking up the newest versions |
 | `dx setup` | Connect dx to your AI tools (it does this by itself; `--list` shows them, `--undo` removes dx from them) |
 | `dx go todo-app` | Open the project in your editor, start its dev server here (its whole stack, if it has one), open the browser when it's ready |
 | `dx go todo-app -w` | Same, but the dev server runs in a new terminal window |
@@ -426,6 +428,7 @@ The servers run in the dx dashboard, not inside the AI tool, so they keep runnin
 
 - `list_projects`, `open_project`
 - `list_ports`, `kill_port`
+- `machine_info`: the tools installed and their versions (with whether a newer one is out or support has ended), what each project needs from this computer, and what's running in the background, so the agent's commands fit your computer
 - `add_log_entry`, `read_log`
 - `work_summary`: your commits, pull requests and journal for the last few days
 - `find_cleanup`: which folders `dx clean` would delete and how much space that frees (it never deletes)

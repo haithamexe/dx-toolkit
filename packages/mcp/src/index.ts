@@ -33,6 +33,13 @@ import {
   checkEnv,
   cloneProject,
   fixDependencies,
+  checkProjectNeeds,
+  checkTools,
+  dockerInfo,
+  installedTools,
+  latestVersions,
+  listDevProcesses,
+  supportedNodeLines,
   type DepsReport,
   findUnsavedWork,
   leaveNote,
@@ -153,6 +160,55 @@ server.registerTool(
       let entries = await listListeningPorts(port);
       if (port === undefined && !include_system) entries = entries.filter((e) => e.port >= 1024 && !e.system);
       return text(entries.length ? entries : port ? `Nothing is listening on port ${port}.` : "No listening ports.");
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "machine_info",
+  {
+    title: "This computer's developer tools",
+    description:
+      "What's installed on this computer and what runs in the background, so commands you suggest fit it. " +
+      "tools: Node, npm, pnpm, yarn, bun, deno, git, gh, docker, python, go, java, rust with their versions, the newest version, whether that version still gets security fixes, and the update command. " +
+      "projects: what each project asks for (.nvmrc, engines, packageManager, lock files, go.mod) next to what's installed, with the fix. " +
+      "processes: dev servers, watchers and tools running, with memory, CPU, ports, and which were left behind by a closed terminal. " +
+      "Read-only. Suggest updates and stops to the user; the dashboard's Machine page runs them.",
+    inputSchema: {
+      part: z.enum(["all", "tools", "projects", "processes", "docker"]).optional().describe("Which part (default: all but docker)"),
+      project: z.string().optional().describe("Only this project's needs, by name"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ part = "all", project }) => {
+    try {
+      const want = (p: string) => part === p || (part === "all" && p !== "docker");
+      let projects = scanProjects(loadConfig());
+      if (project) {
+        const found = findProjects(project, projects);
+        const match = found.match ?? (found.candidates.length === 1 ? found.candidates[0] : undefined);
+        if (!match) return failure(found.candidates.length ? `Several projects match "${project}": ${found.candidates.map((p) => p.name).join(", ")}` : `No project matches "${project}".`);
+        projects = [match];
+      }
+      const [tools, latest] = await Promise.all([want("tools") ? checkTools() : undefined, want("projects") ? latestVersions().catch(() => undefined) : undefined]);
+      const out: Record<string, unknown> = {};
+      if (tools) out.tools = tools.filter((t) => t.installed).map(({ path: _path, ...t }) => t);
+      if (tools) out.notInstalled = tools.filter((t) => !t.installed).map((t) => t.id);
+      if (want("projects")) {
+        const needs = checkProjectNeeds(projects, await installedTools(), { nodeLines: supportedNodeLines(latest) });
+        out.projects = project ? needs : needs.filter((p) => p.problems > 0);
+        if (!project) out.projectsChecked = needs.length;
+      }
+      if (want("processes")) {
+        const dashboard = await findDashboard();
+        const servers = dashboard ? ((await dashboard.get("/api/dev").catch(() => [])) as Array<{ pid?: number; services?: Array<{ pid?: number }> }>) : [];
+        const owners = [process.pid, ...(dashboard ? [dashboard.info.pid] : []), ...servers.flatMap((s) => [s, ...(s.services ?? [])]).flatMap((x) => (x.pid ? [x.pid] : []))];
+        out.processes = (await listDevProcesses({ projects: scanProjects(loadConfig()), ownerPids: owners })).map(({ command: _c, ...p }) => ({ ...p, memory: formatBytes(p.memory) }));
+      }
+      if (want("docker")) out.docker = await dockerInfo();
+      return text(out);
     } catch (err) {
       return failure((err as Error).message);
     }

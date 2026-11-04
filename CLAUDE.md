@@ -10,7 +10,7 @@ Guidance for Claude Code when working in this repository. What the project is fo
 
 | Package | What it is | Built by `npm run build` |
 |---|---|---|
-| `packages/core` | The tools: projects, ports, launch, journal, summary, github, cleanup, deps, scaffold, doctor. Plain Node, no runtime dependencies | yes |
+| `packages/core` | The tools: projects, ports, launch, journal, summary, github, cleanup, deps, scaffold, doctor, machine. Plain Node, no runtime dependencies | yes |
 | `packages/web` | The dashboard (`dx ui`): a `node:http` server plus a vanilla-JS page in `public/` | yes |
 | `packages/cli` | The `dx` command | yes |
 | `packages/mcp` | The MCP server (stdio) for Claude and other AI tools | yes |
@@ -55,6 +55,7 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - The activity recorder (`recorder.ts`): the proxy answers `/__dx/` paths itself and never forwards them. `POST /__dx/events` takes events only when `Origin` is the page's own origin, at most 512 KB and 200 events, known types and fields only, clipped and masked (`maskBody`). Nothing is ever read back from it. The script tag goes only into 2xx HTML answers to GET, uncompressed, and not when the page's CSP wouldn't run a `'self'` script or `activity` is off. History files are mode 0600 under `~/.dx/activity`; `GET /api/activity`, `GET /api/activity/report` and `POST /api/activity/clear` take a known project's `dir`. `POST /api/activity/replay` takes a known project's `dir` and a visit id; the steps come only from the recorded history, never from the request, and the page must be on loopback (`isLoopbackUrl`), as for `/api/check`.
 - **.env files** (`envaudit.ts`, `/api/env/*`): reading and saving take a known project's `dir` and a file name that must look like a `.env` file, sit inside the project (links resolved, no `..`, not under `node_modules` and similar), and be a plain file, not a link. Saves are whole, at most 256 KB, through a temp file and a rename. Values travel only in `GET`/`POST /api/env/file`, never in the list (`/api/env/all`), a URL, a log line or `runs.jsonl`. `.gitignore` gets only rules from `GITIGNORE_RULES`, appended, never rewritten.
 - **The localhost door** (`frontdoor.ts`): for a dev server dx starts and knows how to move (`moveDevPort`), dx listens on the app's usual port on loopback only and forwards only to that server's own port, through the same `relay` as the proxy (recording, recorder script, `/__dx/` answered by dx). It's opened only when the port is free and closed when the server stops or doesn't take the port it was given.
+- **The Machine page** (`/api/machine/*`): `POST /api/machine/stop` takes a PID and stops it only if a fresh list has it, and never dx itself or a server dx runs. `POST /api/machine/run` takes a tool id (and a known project's `dir`) and opens the command it works out again in a terminal; a command never comes from the request. Docker actions take a container id from a fresh `docker ps`, or one of three fixed clean-ups, never volumes. Services are only shown, with commands to copy.
 - `server.test.ts`, `stack.test.ts`, `activity.test.ts` and `frontdoor.test.ts` cover all of this. Run them after touching these files.
 
 ## No setup

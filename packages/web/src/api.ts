@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   addJournalEntry,
@@ -62,6 +63,20 @@ import {
   listTerminals,
   parseSince,
   terminalIds,
+  checkProjectNeeds,
+  checkTools,
+  dockerInfo,
+  dockerPrune,
+  dockerStop,
+  installedTools,
+  latestVersions,
+  listDevProcesses,
+  listServices,
+  stopDevProcess,
+  supportedNodeLines,
+  TOOL_IDS,
+  type DockerPrune,
+  type ToolId,
   type ActivityType,
   type AiToolId,
   type DepsReport,
@@ -373,6 +388,64 @@ const routes: Record<string, Handler> = {
   "GET /api/dev/logs": (req) => devLogs(String(req.query.get("dir") ?? ""), Number(req.query.get("after") ?? 0)),
 
   // ------------------------------------------------------------ ports
+  // The Machine page: the tools on this computer, what each project needs, and what runs in the background.
+  "GET /api/machine/tools": (req) => checkTools({ refresh: req.query.get("refresh") === "1" }),
+  "GET /api/machine/projects": async () => projectNeeds(),
+  "GET /api/machine/processes": () => listDevProcesses({ projects: scanProjects(loadConfig()), ownerPids: dxOwnedPids() }),
+  "POST /api/machine/stop": async (req) => {
+    const pid = Number(req.body.pid);
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw new HttpError(400, "Which process? Give its PID.");
+    // Found again in a fresh list: only a developer process dx lists, never dx or a server dx runs.
+    const r = await stopDevProcess(pid, { projects: scanProjects(loadConfig()), ownerPids: dxOwnedPids() });
+    recordRun("machine", r.ok, `stop ${r.label ?? "process"} (PID ${pid}): ${r.message}`, "web");
+    if (!r.ok) throw new HttpError(400, r.message);
+    return r;
+  },
+  "GET /api/machine/docker": () => dockerInfo(),
+  "POST /api/machine/docker/stop": async (req) => {
+    const id = String(req.body.id ?? "");
+    if (!/^[0-9a-f]{12,64}$/.test(id)) throw new HttpError(400, "Which container? Give its id.");
+    const r = await dockerStop(id);
+    recordRun("machine", r.ok, `docker: ${r.message}`, "web");
+    if (!r.ok) throw new HttpError(400, r.message);
+    return r;
+  },
+  "POST /api/machine/docker/prune": async (req) => {
+    const what = String(req.body.what ?? "");
+    if (!["containers", "images", "build-cache"].includes(what)) throw new HttpError(400, "Pick stopped containers, unused images or the build cache.");
+    const r = await dockerPrune(what as DockerPrune);
+    recordRun("machine", r.ok, `docker ${what}: ${r.message}`, "web");
+    if (!r.ok) throw new HttpError(500, r.message);
+    return r;
+  },
+  "GET /api/machine/services": () => listServices(),
+  "POST /api/machine/run": async (req) => {
+    // Opens the fix in a terminal the user can see. The command is worked out here again, from
+    // the tool (and project) named: never taken from the request.
+    const tool = String(req.body.tool ?? "") as ToolId;
+    if (!TOOL_IDS.includes(tool)) throw new HttpError(400, "Which tool?");
+    let command: string | undefined;
+    let dir: string;
+    let title: string;
+    if (req.body.dir !== undefined) {
+      const project = knownProject(req.body.dir);
+      const need = (await projectNeeds([project]))[0]?.needs.find((n) => n.tool === tool && !n.ok);
+      if (!need) throw new HttpError(400, `${project.name} already has what it needs from ${tool}. Check again.`);
+      command = need.runnable ? need.fix : undefined;
+      dir = project.dir;
+      title = project.name;
+    } else {
+      const t = (await checkTools()).find((x) => x.id === tool);
+      if (!t || t.status === "ok") throw new HttpError(400, `${t?.name ?? tool} is up to date. Check again.`);
+      command = t.runnable ? t.fix : undefined;
+      dir = os.homedir();
+      title = `Update ${t.name}`;
+    }
+    if (!command) throw new HttpError(400, "There's no command for this one: follow the advice on the page.");
+    const used = await openTerminal(dir, command, title);
+    recordRun("machine", true, `${title}: ${command} in ${used}`, "web");
+    return { ok: true, command, terminal: used };
+  },
   "GET /api/ports": async (req) => {
     const all = req.query.get("all") === "1";
     const entries = await listListeningPorts();
@@ -589,6 +662,21 @@ function knownProject(dir: unknown): Project {
   const project = scanProjects(loadConfig()).find((p) => p.dir.toLowerCase() === wanted);
   if (!project) throw new HttpError(404, "That project isn't in your projects folders any more. Refresh the list.");
   return project;
+}
+
+/** Each project's needs next to the installed tools; the Node lines come from the release list when it's at hand. */
+async function projectNeeds(projects: Project[] = scanProjects(loadConfig())) {
+  const [installed, latest] = await Promise.all([installedTools(), latestVersions().catch(() => undefined)]);
+  return checkProjectNeeds(projects, installed, { nodeLines: supportedNodeLines(latest) });
+}
+
+/** The dashboard and the dev servers it runs: the Machine page doesn't offer to stop those. */
+function dxOwnedPids(): number[] {
+  const pids = [process.pid];
+  for (const s of listDevServers()) {
+    for (const x of [s, ...(s.services ?? [])]) if (x.pid) pids.push(x.pid);
+  }
+  return pids;
 }
 
 function startedBy(raw: unknown): StartedBy {

@@ -1125,6 +1125,59 @@ summary.traffic-row {
   overflow-wrap: anywhere;
 }
 
+/* ------------------------------------------------------------ machine */
+.machine-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  margin-top: var(--s1);
+}
+.machine-badges:empty {
+  display: none;
+}
+.machine-fix {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+.machine-actions {
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+.machine-code {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.machine-version {
+  white-space: nowrap;
+}
+.machine-path {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-xs);
+}
+.machine-foot {
+  padding: var(--s3) var(--s4);
+  border-top: 1px solid var(--border);
+}
+.machine-group > .machine-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s3) var(--s5);
+  cursor: pointer;
+}
+.machine-group[open] > .machine-group-head {
+  border-bottom: 1px solid var(--border);
+}
+
 /* ------------------------------------------------------------ env & secrets */
 .env-project > .env-head {
   display: flex;

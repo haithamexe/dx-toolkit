@@ -51,6 +51,7 @@ const ICONS = {
   projects: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
   new: "M12 5v14M5 12h14",
   ports: "M7 3v5M17 3v5M5 8h14v3a7 7 0 0 1-14 0zM12 18v3",
+  machine: "M3 5h18v11H3zM8 20h8M12 16v4",
   journal: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6",
   summary: "M4 19V9M10 19V5M16 19v-7M22 19H2",
   cleanup: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
@@ -629,6 +630,7 @@ const pages = [
   { id: "projects", label: "Projects", icon: "projects", render: projectsPage },
   { id: "new", label: "New project", icon: "new", render: newProjectPage },
   { id: "ports", label: "Ports", icon: "ports", render: portsPage },
+  { id: "machine", label: "Machine", icon: "machine", render: machinePage },
   { id: "activity", label: "Activity", icon: "activity", render: activityPage },
   { id: "env", label: "Env & secrets", icon: "key", render: envPage },
   { id: "journal", label: "Journal", icon: "journal", render: journalPage },
@@ -1599,6 +1601,560 @@ function portsPage(root) {
     });
   }
   load();
+}
+
+// ------------------------------------------------------------------ Machine
+
+const TOOL_BADGES = {
+  ok: ["badge-ok", "Up to date"],
+  update: ["badge-warn", "Update available"],
+  ending: ["badge-warn", "Support ends soon"],
+  unsupported: ["badge-danger", "No longer supported"],
+  unknown: ["", "Not checked"],
+};
+const TOOL_ORDER = { unsupported: 0, ending: 1, update: 2, unknown: 3, ok: 4 };
+
+const PROCESS_GROUPS = [
+  ["server", "Dev servers"],
+  ["watcher", "Watchers and test runners"],
+  ["other", "Other processes"],
+  ["tool", "AI tools and editor helpers"],
+  ["dx", "dx"],
+];
+
+const DOCKER_PRUNE = {
+  containers: ["stopped containers", "Containers that aren't running are removed. Their images stay."],
+  images: ["unused images", "Images no container uses are removed, stopped containers' images stay. A project whose images go pulls or builds them again when it next starts, which takes longer once."],
+  "build-cache": ["the build cache", "Docker's next build of each project starts from scratch, which takes longer once."],
+};
+
+function machinePage(root) {
+  let projectsShow = pref("machineProjects", "problems");
+  let tools = null;
+  let needs = null;
+  let processes = null;
+  let docker = null;
+  const openRows = new Set(); // process PIDs whose details are open
+  const stats = h("div", { class: "stats", "aria-live": "polite" });
+  const toolsHolder = h("div", { class: "card" }, loadingView("Checking the tools on this computer…"));
+  const needsHolder = h("div", { class: "card" }, loadingView("Reading what your projects need…"));
+  const processHolder = h("div", { class: "section" }, h("div", { class: "card" }, loadingView("Looking at what's running…")));
+  const dockerHolder = h("div", { class: "section" }, h("div", { class: "card" }, loadingView("Asking Docker…")));
+  const servicesHolder = h("div", { class: "card" }, loadingView("Looking for database services…"));
+  const th = (text, cls) => h("th", { scope: "col", class: cls }, text);
+  const hiddenTh = (text) => h("th", { scope: "col" }, h("span", { class: "visually-hidden" }, text));
+
+  append(
+    root,
+    pageHead(
+      "Machine",
+      "The tools on this computer, what your projects need from them, and what's running in the background.",
+      btn("Check again", (ev) => busy(ev.currentTarget, "Checking…", () => loadAll(true)), { iconName: "refresh", kind: "ghost" }),
+    ),
+    stats,
+    section("machine-tools", "Tools", "Each tool's version, the newest one, and whether yours still gets security fixes. Updates open in a terminal, so you see what runs.", toolsHolder),
+    section(
+      "machine-projects",
+      "Your projects",
+      "What each project asks for (.nvmrc, engines, packageManager, lock files, go.mod…) next to what's installed.",
+      needsHolder,
+      segmented("Show", [["problems", "Needs attention"], ["all", "All projects"]], projectsShow, (v) => {
+        projectsShow = v;
+        setPref("machineProjects", v);
+        if (needs) drawNeeds();
+      }),
+    ),
+    section(
+      "machine-processes",
+      "Running in the background",
+      "Dev servers, watchers and tools that were started on this computer, with the memory and CPU they use now.",
+      processHolder,
+      btn("Refresh", (ev) => busy(ev.currentTarget, "Refreshing…", loadProcesses), { iconName: "refresh", kind: "ghost", small: true }),
+    ),
+    section("machine-docker", "Docker", "Containers, and the space Docker keeps on disk.", dockerHolder),
+    section("machine-services", "Services", "Databases and Docker installed as services can start with the computer and use memory when no project needs them.", servicesHolder),
+  );
+
+  function section(id, title, sub, body, ...actions) {
+    return h(
+      "section",
+      { class: "section", "aria-labelledby": id },
+      h("div", { class: "section-head" }, h("div", null, h("h2", { class: "section-title", id }, title), h("p", { class: "dim" }, sub)), actions.length ? h("div", { class: "toolbar" }, actions) : null),
+      body,
+    );
+  }
+
+  function stat(value, label, sub) {
+    return h("div", { class: "card stat" }, h("div", { class: "stat-value" }, value), h("div", { class: "stat-label" }, label), sub ? h("div", { class: "stat-label" }, sub) : null);
+  }
+
+  function drawStats() {
+    const out = [];
+    if (tools) {
+      const todo = tools.filter((t) => t.installed && TOOL_ORDER[t.status] < 3);
+      const unsupported = tools.filter((t) => t.status === "unsupported").length;
+      out.push(stat(todo.length, todo.length === 1 ? "tool to update" : "tools to update", unsupported ? `${unsupported} no longer supported` : `of ${tools.filter((t) => t.installed).length} installed`));
+    }
+    if (needs) {
+      const off = needs.filter((p) => p.problems > 0).length;
+      out.push(stat(off, off === 1 ? "project that doesn't match" : "projects that don't match", `of ${needs.length}`));
+    }
+    if (processes) {
+      const mine = processes.filter((p) => p.kind !== "dx");
+      const left = mine.filter((p) => p.leftBehind).length;
+      out.push(stat(left, left === 1 ? "process left behind" : "processes left behind", `${formatBytes(mine.reduce((n, p) => n + p.memory, 0))} used by ${plural(mine.length, "process", "processes")}`));
+    }
+    if (docker?.running) {
+      const free = docker.disk.filter((d) => d.prune).reduce((n, d) => n + d.reclaimableBytes, 0);
+      out.push(stat(formatBytes(free), "Docker can free", `${plural(docker.containers.filter((c) => c.state === "running").length, "container")} running`));
+    }
+    stats.replaceChildren(...out);
+  }
+
+  /** A fix: a button that opens it in a terminal, and Copy; advice that isn't a command is only shown. */
+  function fixActions(fix, runnable, body, label) {
+    if (!fix) return null;
+    if (!runnable) return null;
+    return h(
+      "div",
+      { class: "toolbar machine-actions" },
+      btn(label.startsWith("Move") || label.startsWith("Update") ? "Update" : "Fix", (ev) => runFix(ev.currentTarget, label, fix, body), { small: true, iconName: "terminal", title: `${label}: ${fix}` }),
+      copyButton(fix),
+    );
+  }
+
+  async function runFix(button, label, fix, body) {
+    const yes = await confirmDialog({
+      title: `${label}?`,
+      text: ["dx opens a terminal and runs:", h("p", { class: "mono" }, fix), "It may ask for your password or for a yes; you answer it there."],
+      confirm: "Open terminal",
+      danger: false,
+    });
+    if (!yes) return;
+    await busy(button, "Opening…", async () => {
+      const r = await api("/api/machine/run", { method: "POST", body });
+      toast(`Running in ${r.terminal}. Press Check again when it's done.`);
+    });
+  }
+
+  // ---- tools
+
+  async function loadTools(refresh) {
+    try {
+      tools = await api(`/api/machine/tools${refresh ? "?refresh=1" : ""}`);
+      drawTools();
+    } catch (err) {
+      toolsHolder.replaceChildren(errorView(err, () => loadTools(true)));
+    }
+    drawStats();
+  }
+
+  function drawTools() {
+    const installed = tools.filter((t) => t.installed).sort((a, b) => TOOL_ORDER[a.status] - TOOL_ORDER[b.status]);
+    const missing = tools.filter((t) => !t.installed);
+    toolsHolder.replaceChildren(
+      h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "table" },
+          h("thead", null, h("tr", null, th("Tool"), th("Version"), th("Status"), hiddenTh("Actions"))),
+          h("tbody", null, installed.map(toolRow)),
+        ),
+      ),
+      missing.length ? h("p", { class: "dim machine-foot" }, `Not installed: ${missing.map((t) => t.name).join(", ")}. A project that needs one says so under Your projects.`) : null,
+    );
+  }
+
+  function toolRow(t) {
+    const [cls, text] = TOOL_BADGES[t.status] ?? TOOL_BADGES.unknown;
+    // "24.22.2 is out" repeats the Version column; what's said after it still matters.
+    const detail = (t.detail ?? "").replace(/^up to date;?\s*/, "").replace(/^\S+ is out\s*/, "").replace(/^\((.*)\)$/, "$1");
+    const label = t.status === "unsupported" && t.newestLine ? `Move ${t.name} to ${t.newestLine}` : `Update ${t.name}`;
+    return h(
+      "tr",
+      null,
+      h("td", null, h("strong", null, t.name), t.path ? h("div", { class: "dim mono machine-path", title: t.path }, tildify(t.path)) : null),
+      h(
+        "td",
+        { class: "mono machine-version" },
+        t.version,
+        t.latest && t.latest !== t.version ? h("span", { class: "dim" }, " → ") : null,
+        t.latest && t.latest !== t.version ? h("span", { "aria-label": `newest ${t.latest}` }, t.latest) : null,
+      ),
+      h(
+        "td",
+        null,
+        h("span", { class: `badge ${cls}` }, text),
+        detail ? h("div", { class: "dim" }, detail) : null,
+        t.status !== "ok" && t.fix ? h("div", { class: "machine-code" }, t.fix) : null,
+      ),
+      h("td", { class: "actions" }, t.status !== "ok" ? fixActions(t.fix, t.runnable, { tool: t.id }, label) : null),
+    );
+  }
+
+  // ---- projects
+
+  async function loadNeeds() {
+    try {
+      needs = await api("/api/machine/projects");
+      drawNeeds();
+    } catch (err) {
+      needsHolder.replaceChildren(errorView(err, loadNeeds));
+    }
+    drawStats();
+  }
+
+  function drawNeeds() {
+    if (!needs.length) {
+      needsHolder.replaceChildren(stateView("No projects found", "dx looks for projects in your projects folders.", h("a", { class: "btn", href: "#/health" }, "Add a projects folder")));
+      return;
+    }
+    const shown = needs.filter((p) => projectsShow === "all" || p.problems > 0);
+    if (!shown.length) {
+      needsHolder.replaceChildren(stateView("Every project matches this computer", `${plural(needs.length, "project")} checked: each one finds the tools and versions it asks for. Pick All projects to see them.`));
+      return;
+    }
+    needsHolder.replaceChildren(
+      h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "table" },
+          h("thead", null, h("tr", null, th("Project"), th("Needs"))),
+          h(
+            "tbody",
+            null,
+            shown.map((p) =>
+              h(
+                "tr",
+                null,
+                h("td", null, h("strong", null, p.project), h("div", { class: "dim mono machine-path", title: p.dir }, tildify(p.dir))),
+                h(
+                  "td",
+                  null,
+                  h(
+                    "div",
+                    { class: "machine-badges" },
+                    p.needs.length ? [...p.needs].sort((a, b) => Number(a.ok) - Number(b.ok)).map((n) => h("span", { class: `badge ${n.ok ? "" : n.problem === "missing" ? "badge-danger" : "badge-warn"}`, title: `From ${n.source}${n.installed ? `; you have ${n.installed}` : ""}` }, n.label)) : h("span", { class: "dim" }, "Nothing it names"),
+                  ),
+                  p.needs.filter((n) => !n.ok).map((n) =>
+                    h(
+                      "div",
+                      { class: "machine-fix" },
+                      h("span", null, n.problem === "missing" ? `${n.label} isn't installed` : `${n.label}, you have ${n.installed}`, h("span", { class: "dim" }, ` (${n.source})`)),
+                      n.fix && !n.runnable ? h("span", { class: "dim" }, n.fix) : null,
+                      n.fix && n.runnable ? h("span", { class: "machine-code" }, n.fix) : null,
+                      fixActions(n.fix, n.runnable, { tool: n.tool, dir: p.dir }, `${n.problem === "missing" ? "Install" : "Switch to"} ${n.label} for ${p.project}`),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- processes
+
+  async function loadProcesses() {
+    try {
+      processes = await api("/api/machine/processes");
+      drawProcesses();
+    } catch (err) {
+      processHolder.replaceChildren(h("div", { class: "card" }, errorView(err, loadProcesses)));
+    }
+    drawStats();
+  }
+
+  function drawProcesses() {
+    const groups = PROCESS_GROUPS.map(([kind, title]) => [kind, title, processes.filter((p) => p.kind === kind)]).filter(([, , list]) => list.length);
+    if (!groups.length) {
+      processHolder.replaceChildren(h("div", { class: "card" }, stateView("Nothing running", "No dev servers, watchers or developer tools are running.")));
+      return;
+    }
+    processHolder.replaceChildren(
+      ...groups.map(([kind, title, list]) => {
+        const memory = list.reduce((n, p) => n + p.memory, 0);
+        const left = list.filter((p) => p.leftBehind).length;
+        return h(
+          "details",
+          { class: "card machine-group", open: kind === "server" || kind === "watcher" || left > 0 || undefined },
+          h(
+            "summary",
+            { class: "machine-group-head" },
+            h("strong", null, title),
+            h("span", { class: "badge" }, String(list.length)),
+            left ? h("span", { class: "badge badge-warn" }, `${left} left behind`) : null,
+            h("span", { class: "dim" }, formatBytes(memory)),
+          ),
+          h(
+            "div",
+            { class: "table-wrap" },
+            h(
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null, th("Process"), th("Project"), th("Started", "num"), th("Memory", "num"), th("CPU", "num"), hiddenTh("Actions"))),
+              h("tbody", null, list.flatMap(processRows)),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  function processRows(p) {
+    const open = openRows.has(p.pid);
+    const toggle = () => {
+      if (open) openRows.delete(p.pid);
+      else openRows.add(p.pid);
+      drawProcesses();
+    };
+    const exposed = p.ports.filter((x) => x.network);
+    const main = h(
+      "tr",
+      null,
+      h(
+        "td",
+        null,
+        h("strong", null, p.label),
+        p.children.length ? h("span", { class: "dim" }, ` +${plural(p.children.length, "child", "children")}`) : null,
+        h(
+          "div",
+          { class: "machine-badges" },
+          p.leftBehind ? h("span", { class: "badge badge-warn", title: "The terminal or program that started it isn't running any more" }, "Left behind") : null,
+          p.runByDx ? h("span", { class: "badge badge-accent" }, "Run by dx") : null,
+          p.ports.map((x) => h("span", { class: `badge ${x.network ? "badge-warn" : ""}`, title: x.network ? `Listens on ${x.addresses.join(", ")}: other computers on your network can reach it` : `Listens on ${x.addresses.join(", ")}` }, `:${x.port}${x.network ? " open to your network" : ""}`)),
+        ),
+        h("div", { class: "dim" }, `PID ${p.pid}${p.startedBy ? ` · started by ${p.startedBy}` : ""}`),
+      ),
+      h("td", null, p.project ?? h("span", { class: "dim" }, "—")),
+      h("td", { class: "num" }, p.startedAt ? relativeTime(p.startedAt) : "—"),
+      h("td", { class: "num" }, formatBytes(p.memory)),
+      h("td", { class: "num" }, p.cpu === undefined || p.cpu === null ? "—" : `${p.cpu}%`),
+      h(
+        "td",
+        { class: "actions" },
+        btn(open ? "Hide" : "Details", toggle, { small: true, kind: "ghost", title: `The command line of ${p.label}` }),
+        p.kind === "dx"
+          ? null
+          : p.runByDx
+            ? h("a", { class: "btn btn-sm btn-ghost", href: "#/projects" }, "Projects page")
+            : btn("Stop", (ev) => stop(ev.currentTarget, p), { kind: "danger-ghost", small: true, iconName: "stop" }),
+      ),
+    );
+    if (!open) return [main];
+    return [
+      main,
+      h(
+        "tr",
+        { class: "row-detail" },
+        h(
+          "td",
+          { colspan: "6" },
+          h(
+            "div",
+            { class: "section" },
+            exposed.length
+              ? h(
+                  "div",
+                  { class: "note note-warn" },
+                  icon("warn"),
+                  h("p", null, `Other computers on your network can open ${exposed.map((x) => `port ${x.port}`).join(" and ")}. To keep it on this computer, start it listening on 127.0.0.1 only (Vite: leave out --host; Next.js: next dev -H 127.0.0.1).`),
+                )
+              : null,
+            h("section", { class: "detail-section" }, h("div", { class: "detail-head" }, h("strong", null, "Command line"), copyButton(p.command)), h("pre", { class: "log-snippet raw-text" }, p.command || "—")),
+            p.children.length ? h("p", { class: "dim" }, `Child processes: ${p.children.join(", ")}`) : null,
+          ),
+        ),
+      ),
+    ];
+  }
+
+  async function stop(button, p) {
+    const yes = await confirmDialog({
+      title: `Stop ${p.label}${p.project ? ` in ${p.project}` : ""}?`,
+      text: [
+        `PID ${p.pid}${p.children.length ? ` and its ${plural(p.children.length, "child process", "child processes")}` : ""} will be stopped. Anything it hasn't saved is lost.`,
+        p.command ? h("p", { class: "mono" }, p.command) : null,
+      ].filter(Boolean),
+      confirm: "Stop it",
+    });
+    if (!yes) return;
+    await busy(button, "Stopping…", async () => {
+      const r = await api("/api/machine/stop", { method: "POST", body: { pid: p.pid } });
+      toast(r.message);
+      openRows.delete(p.pid);
+      await loadProcesses();
+    });
+  }
+
+  // ---- Docker
+
+  async function loadDocker() {
+    try {
+      docker = await api("/api/machine/docker");
+      drawDocker();
+    } catch (err) {
+      dockerHolder.replaceChildren(h("div", { class: "card" }, errorView(err, loadDocker)));
+    }
+    drawStats();
+  }
+
+  function drawDocker() {
+    if (!docker.installed) {
+      dockerHolder.replaceChildren(h("div", { class: "card" }, stateView("Docker isn't installed", "A project with a compose file says so under Your projects.")));
+      return;
+    }
+    if (!docker.running) {
+      dockerHolder.replaceChildren(h("div", { class: "card" }, stateView("Docker isn't running", docker.error ?? "Start Docker Desktop, or the docker service, to see its containers and the space it uses.", btn("Check again", (ev) => busy(ev.currentTarget, "Checking…", loadDocker), { small: true, iconName: "refresh" }))));
+      return;
+    }
+    const running = docker.containers.filter((c) => c.state === "running");
+    const stopped = docker.containers.filter((c) => c.state !== "running");
+    const containerTable = (list) =>
+      h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "table" },
+          h("thead", null, h("tr", null, th("Container"), th("Image"), th("State"), th("Memory", "num"), th("CPU", "num"), hiddenTh("Actions"))),
+          h(
+            "tbody",
+            null,
+            list.map((c) =>
+                  h(
+                    "tr",
+                    null,
+                    h("td", null, h("strong", null, c.name), c.composeProject ? h("div", { class: "dim" }, `compose: ${c.composeProject}`) : null, c.ports ? h("div", { class: "dim mono machine-path" }, c.ports) : null),
+                    h("td", { class: "mono" }, c.image),
+                    h("td", null, h("span", { class: `badge ${c.state === "running" ? "badge-ok" : ""}` }, c.state === "running" ? "Running" : c.state === "exited" ? "Stopped" : c.state), h("div", { class: "dim" }, c.status)),
+                    h("td", { class: "num" }, c.memory ?? "—"),
+                    h("td", { class: "num" }, c.cpu ?? "—"),
+                    h("td", { class: "actions" }, c.state === "running" ? btn("Stop", (ev) => stopContainer(ev.currentTarget, c), { kind: "danger-ghost", small: true, iconName: "stop" }) : null),
+                  ),
+                ),
+              ),
+            ),
+          );
+    dockerHolder.replaceChildren(
+      h(
+        "div",
+        { class: "card" },
+        running.length ? containerTable(running) : stateView("No containers running", stopped.length ? `${plural(stopped.length, "stopped container")} below.` : "Docker has no containers."),
+      ),
+      stopped.length
+        ? h(
+            "details",
+            { class: "card machine-group" },
+            h("summary", { class: "machine-group-head" }, h("strong", null, "Stopped containers"), h("span", { class: "badge" }, String(stopped.length)), h("span", { class: "dim" }, "Clean up removes them; their images stay.")),
+            containerTable(stopped),
+          )
+        : null,
+      h(
+        "div",
+        { class: "card table-wrap" },
+        h(
+          "table",
+          { class: "table" },
+          h("thead", null, h("tr", null, th("On disk"), th("Size", "num"), th("Can free", "num"), hiddenTh("Actions"))),
+          h(
+            "tbody",
+            null,
+            docker.disk.map((d) =>
+              h(
+                "tr",
+                null,
+                h("td", null, h("strong", null, d.type), h("span", { class: "dim" }, ` ${d.count}`), !d.prune && d.type.toLowerCase().includes("volume") ? h("div", { class: "dim" }, "Volumes hold your databases' data: dx never removes them.") : null),
+                h("td", { class: "num" }, d.size),
+                h("td", { class: "num" }, d.reclaimable),
+                h("td", { class: "actions" }, d.prune && d.reclaimableBytes > 0 ? btn("Clean up", (ev) => prune(ev.currentTarget, d), { kind: "danger-ghost", small: true, iconName: "cleanup" }) : null),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  async function stopContainer(button, c) {
+    const yes = await confirmDialog({ title: `Stop ${c.name}?`, text: [`The container stops; its data stays. ${c.composeProject ? `Start it again with docker compose up in ${c.composeProject}, or from the Projects page.` : "Start it again with docker start."}`], confirm: "Stop it" });
+    if (!yes) return;
+    await busy(button, "Stopping…", async () => {
+      const r = await api("/api/machine/docker/stop", { method: "POST", body: { id: c.id } });
+      toast(r.message);
+      await loadDocker();
+    });
+  }
+
+  async function prune(button, d) {
+    const [what, explain] = DOCKER_PRUNE[d.prune];
+    const yes = await confirmDialog({ title: `Remove ${what}?`, text: [`Docker frees about ${d.reclaimable}. ${explain}`, "Volumes, which hold your databases' data, aren't touched."], confirm: "Clean up" });
+    if (!yes) return;
+    await busy(button, "Cleaning up…", async () => {
+      const r = await api("/api/machine/docker/prune", { method: "POST", body: { what: d.prune } });
+      toast(r.message);
+      await loadDocker();
+    });
+  }
+
+  // ---- services
+
+  async function loadServices() {
+    try {
+      const list = await api("/api/machine/services");
+      if (!list.length) {
+        servicesHolder.replaceChildren(stateView("No database services", "No Postgres, MySQL, Redis, MongoDB or similar is installed as a service on this computer."));
+        return;
+      }
+      const note = list.find((s) => s.note)?.note;
+      servicesHolder.replaceChildren(
+        h(
+          "div",
+          { class: "table-wrap" },
+          h(
+            "table",
+            { class: "table" },
+            h("thead", null, h("tr", null, th("Service"), th("State"), th("Starts with the computer"), th("Memory", "num"), th("Commands"))),
+            h(
+              "tbody",
+              null,
+              list.map((s) =>
+                h(
+                  "tr",
+                  null,
+                  h("td", null, h("strong", null, s.display), s.display !== s.name ? h("div", { class: "dim mono" }, s.name) : null),
+                  h("td", null, h("span", { class: `badge ${s.running ? "badge-ok" : ""}` }, s.running ? "Running" : "Stopped")),
+                  h("td", null, s.atStartup ? h("span", { class: "badge badge-warn" }, "Yes") : h("span", { class: "dim" }, "No")),
+                  h("td", { class: "num" }, s.memory ? formatBytes(s.memory) : "—"),
+                  h(
+                    "td",
+                    null,
+                    s.running ? h("div", { class: "machine-fix" }, h("span", { class: "machine-code" }, s.stop), copyButton(s.stop)) : null,
+                    s.atStartup ? h("div", { class: "machine-fix" }, h("span", { class: "machine-code" }, s.manual), copyButton(s.manual)) : null,
+                    !s.running && !s.atStartup ? h("span", { class: "dim" }, "Nothing to do") : null,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        h("p", { class: "dim machine-foot" }, `Stopping a service or changing when it starts needs admin rights, so dx gives you the command to run yourself${note ? `, ${note}` : ""}.`),
+      );
+    } catch (err) {
+      servicesHolder.replaceChildren(errorView(err, loadServices));
+    }
+  }
+
+  function loadAll(refresh) {
+    return Promise.all([loadTools(refresh), loadNeeds(), loadProcesses(), loadDocker(), loadServices()]);
+  }
+  loadAll(false);
 }
 
 // ------------------------------------------------------------------ Journal

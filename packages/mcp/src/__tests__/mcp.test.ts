@@ -65,7 +65,7 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<{
 test("lists the running-app tools next to the others", async () => {
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name);
-  for (const name of ["start_dev_server", "stop_dev_server", "restart_dev_server", "dev_servers", "dev_logs", "dev_errors", "wait_for_rebuild", "check_url", "dx_setup_check", "list_projects", "run_tests", "network_log", "db_query", "activity_log", "replay_visit"]) {
+  for (const name of ["start_dev_server", "stop_dev_server", "restart_dev_server", "dev_servers", "dev_logs", "dev_errors", "wait_for_rebuild", "check_url", "dx_setup_check", "list_projects", "run_tests", "network_log", "db_query", "activity_log", "replay_visit", "machine_info"]) {
     assert.ok(names.includes(name), name);
   }
 });
@@ -190,4 +190,15 @@ test("clear answers for unknown projects and outside addresses", async () => {
   const outside = await call("check_url", { url: "https://example.com/" });
   assert.equal(outside.isError, true);
   assert.match(outside.text, /Only http:\/\/localhost/);
+});
+
+test("machine_info: an agent sees what a project needs from this computer", async () => {
+  fs.mkdirSync(path.join(home, "cache"), { recursive: true });
+  fs.writeFileSync(path.join(home, "cache", "latest-versions.json"), JSON.stringify({ at: Date.now(), cycles: {}, npm: {}, github: {} }));
+  const r = await call("machine_info", { part: "projects", project: "tiny-shop" });
+  assert.equal(r.isError, false, r.text);
+  const out = JSON.parse(r.text);
+  assert.equal(out.projects[0].project, "tiny-shop");
+  assert.ok(out.projects[0].needs.some((n: { tool: string; ok: boolean }) => n.tool === "node" && n.ok));
+  assert.equal((await call("machine_info", { project: "no-such-project" })).isError, true);
 });
