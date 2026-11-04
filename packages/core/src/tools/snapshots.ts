@@ -461,7 +461,8 @@ async function preparePackages(snap: Snapshot, projectDir: string, options: Snap
 
 /** The lock file at the commit is byte for byte the one in the project now (line endings aside). */
 async function sameLock(snap: Snapshot, projectDir: string, lock: string): Promise<boolean> {
-  const rel = path.relative(snap.repo, path.join(projectDir, lock)).split(path.sep).join("/");
+  // Real paths: git names the repository the long way (C:\Users\runneradmin, /private/var), the project may not.
+  const rel = path.relative(realPath(snap.repo), path.join(realPath(projectDir), lock)).split(path.sep).join("/");
   const [then, now] = await Promise.all([
     gitRun(snap.repo, ["rev-parse", "--verify", "-q", `${snap.hash}:${rel}`]),
     gitRun(snap.repo, ["hash-object", "--", path.join(projectDir, lock)]),
