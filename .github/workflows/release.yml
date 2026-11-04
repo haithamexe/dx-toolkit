@@ -1,0 +1,83 @@
+name: Release
+
+# Pushing a tag vX.Y.Z publishes dx-devkit X.Y.Z to npm and creates the GitHub release.
+# npm trusts this workflow directly (trusted publishing): there's no npm token in the
+# repository, and the package carries provenance saying which commit and workflow built it.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # the GitHub release
+  id-token: write # npm trusted publishing and provenance
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - name: The tag matches the version and the changelog
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME but package.json says $version."
+            exit 1
+          fi
+          for f in packages/*/package.json; do
+            case "$f" in packages/raycast/*) continue ;; esac
+            v=$(node -p "require('./$f').version")
+            if [ "$v" != "$version" ]; then echo "::error::$f is $v, not $version."; exit 1; fi
+          done
+          node scripts/release-notes.mjs "$version" > "$RUNNER_TEMP/notes.md"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - run: npm test
+
+      - name: Build and test-install the package
+        run: |
+          npm run release
+          node scripts/smoke-package.mjs
+
+      - name: Publish to npm
+        run: |
+          if npm view "dx-devkit@$VERSION" version --prefer-online >/dev/null 2>&1; then
+            echo "dx-devkit@$VERSION is already on npm."
+          else
+            npm publish ./release --provenance --access public
+          fi
+
+      - name: Install it from npm and run it
+        run: |
+          for i in $(seq 1 30); do
+            npm view "dx-devkit@$VERSION" version --prefer-online >/dev/null 2>&1 && break
+            sleep 10
+          done
+          npm_config_prefer_online=true node scripts/smoke-package.mjs --from-npm
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME" --title "dx $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag --latest
+          fi

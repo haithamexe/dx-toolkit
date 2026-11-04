@@ -17,7 +17,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.3.0. Under *Unreleased*: Env & secrets, recording at `localhost:<port>`, the Activity views.
+- **Latest release**: 1.4.0. Nothing under *Unreleased* yet.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -31,6 +31,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
+  - **1.4.0** adds the Env & secrets page, recording at `localhost:<port>` (the localhost door), and the Activity views.
   - **1.3.0** adds the activity history (with Replay and bug reports), opening projects in a terminal you pick, `dx test`, the network log, browser flows, `dx db` and the year in review.
   - **1.2.0** adds browser errors, `dx clone`, resume and notes, `dx status`, `dx env`, `dx https` and `dx deps --fix`.
   - **1.1.0** is the first on npm, as `dx-devkit`. npm refused `dxkit` as too close to existing names (degit, pdfkit). A free name (`npm view <name>` gives E404) can still be refused: the look-alike check only runs on a real publish, and short names fail it most.
@@ -40,10 +41,10 @@ What was decided while building dx, and why, so the next session doesn't relearn
     2. bump every `package.json` (and the lockfile), and move *Unreleased* to a dated `## X.Y.Z` section with a one-line intro;
     3. `npm run release`, then `node scripts/smoke-package.mjs`;
     4. commit "Release X.Y.Z", tag `vX.Y.Z`, push both;
-    5. `npm publish ./release`, then confirm the version is on the registry (`https://registry.npmjs.org/dx-devkit`) and run `node scripts/smoke-package.mjs --from-npm`;
-    6. `gh release create vX.Y.Z` with notes from that changelog section, and the title naming the release's main feature.
+    5. **`.github/workflows/release.yml` does the rest on the tag**: checks the tag against every `package.json` and the changelog, runs the tests, builds and test-installs, `npm publish ./release --provenance`, installs it back from npm (`smoke-package.mjs --from-npm`), and `gh release create` with that changelog section (`scripts/release-notes.mjs`) titled "dx X.Y.Z". Re-running skips what's done;
+    6. the agent watches that run and confirms the version on the registry (`https://registry.npmjs.org/dx-devkit`) and the GitHub release.
 
-    Publishing uses the maintainer's own npm and `gh` logins on their machine; the agent never logs in or handles a token itself. If `npm whoami` or `gh auth status` fails, it asks the maintainer to sign in (`npm login`, `gh auth login`) and carries on after. npm answers a publish without a login with **404 Not Found**, not 401.
+    **npm trusted publishing** (OIDC) means no npm token anywhere: npmjs.com's package settings name this repository and `release.yml`, set up once by the maintainer. The workflow upgrades npm (trusted publishing needs npm 11.5.1+). By hand, as a fallback, uses the maintainer's own logins on their machine; the agent never logs in or handles a token itself. npm answers a publish without a login with **404 Not Found**, not 401; so does a publish from CI before trusted publishing is set up.
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions

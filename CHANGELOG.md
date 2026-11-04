@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.4.0 (2026-11-04)
+
+Keep secrets out of git with the new Env & secrets page, see your app's APIs, errors and console in their own views, and have it recorded at the address you always open, `localhost:<port>`, in any browser. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **Env & secrets page**: every project's `.env` files, subfolders included. See one with its values hidden until you ask, edit and save it, or open it in your editor. Warnings for `.env` files git would commit or already has, projects with no `.gitignore`, `.env.example` ignored by mistake, and keys in committed files. What `.gitignore` is missing to keep secrets out of git, following OWASP (`.env`, `.env.*`, private keys, certificates, keystores, SSH keys), with an **Add to .gitignore** button. `dx env --gitignore` does the same from the terminal, and `check_env` tells AI agents.
@@ -12,6 +16,7 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ### Changed
 
+- **Releases are published by GitHub Actions** when a version tag is pushed, with npm trusted publishing: the package now carries provenance (the commit and workflow that built it).
 - The dev server's own console chatter (`[vite] connected.`, `[HMR]` and the like) isn't recorded; its warnings and errors still are.
 - A missing `/favicon.ico` (404) isn't counted as a failed request any more.
 
