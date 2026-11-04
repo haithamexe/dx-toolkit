@@ -63,8 +63,8 @@ jobs:
             echo "dx-devkit@$VERSION is already on npm."
           elif ! npm publish ./release --provenance --access public 2>&1 | tee "$RUNNER_TEMP/publish.log"; then
             # npm's own error lines on the run's summary page, readable without opening the log.
-            reason=$(grep -iE "npm (error|err!)|E40[0-9]|OIDC|trusted|provenance" "$RUNNER_TEMP/publish.log" | tail -10 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            echo "::error title=npm publish failed::${reason:-see the step's log}"
+            reason=$(grep -iE "npm (error|err!)|E40[0-9]|OIDC|trusted|provenance" "$RUNNER_TEMP/publish.log" | tail -10 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' || true)
+            echo "::error title=npm publish failed::${reason:-npm printed no error line; see the log of this step}"
             exit 1
           fi
 
