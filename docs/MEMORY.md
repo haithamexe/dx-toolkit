@@ -34,7 +34,15 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - **1.3.0** adds the activity history (with Replay and bug reports), opening projects in a terminal you pick, `dx test`, the network log, browser flows, `dx db` and the year in review.
   - **1.2.0** adds browser errors, `dx clone`, resume and notes, `dx status`, `dx env`, `dx https` and `dx deps --fix`.
   - **1.1.0** is the first on npm, as `dx-devkit`. npm refused `dxkit` as too close to existing names (degit, pdfkit). A free name (`npm view <name>` gives E404) can still be refused: the look-alike check only runs on a real publish, and short names fail it most.
-  - **To release**: add each change to `CHANGELOG.md` under *Unreleased*; at release time, bump every `package.json`, run `npm run release` and `node scripts/smoke-package.mjs`, tag `vX.Y.Z`, then `npm publish ./release` (needs the maintainer's npm login) and, once npm has processed it, `node scripts/smoke-package.mjs --from-npm`.
+  - **To release**: add each change to `CHANGELOG.md` under *Unreleased*. When a release is asked for, the agent doing it carries it through, publishing included:
+    1. wait for CI to be green on the last commit;
+    2. bump every `package.json` (and the lockfile), and move *Unreleased* to a dated `## X.Y.Z` section with a one-line intro;
+    3. `npm run release`, then `node scripts/smoke-package.mjs`;
+    4. commit "Release X.Y.Z", tag `vX.Y.Z`, push both;
+    5. `npm publish ./release`, then confirm the version is on the registry (`https://registry.npmjs.org/dx-devkit`) and run `node scripts/smoke-package.mjs --from-npm`;
+    6. `gh release create vX.Y.Z` with notes from that changelog section, and the title naming the release's main feature.
+
+    Publishing uses the maintainer's own npm and `gh` logins on their machine; the agent never logs in or handles a token itself. If `npm whoami` or `gh auth status` fails, it asks the maintainer to sign in (`npm login`, `gh auth login`) and carries on after. npm answers a publish without a login with **404 Not Found**, not 401.
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
