@@ -61,7 +61,42 @@ import {
   reportContext,
   type Replay,
   listTerminals,
-  gitCommit,
+  gitCommitChanges,
+  gitSuggestMessage,
+  claudeCli,
+  gitRefs,
+  gitUndoList,
+  gitUndo,
+  gitMergePreview,
+  gitConflict,
+  gitRebasePlan,
+  gitRebaseRun,
+  gitResetTo,
+  gitRevert,
+  gitCherryPick,
+  gitCreateBranch,
+  gitSwitch,
+  gitRenameBranch,
+  gitDeleteBranch,
+  gitCreateTag,
+  gitDeleteTag,
+  gitMerge,
+  gitRebase,
+  gitContinue,
+  gitAbort,
+  gitResolve,
+  gitStashPush,
+  gitStashApply,
+  gitStashDrop,
+  gitDiscard,
+  gitFetch,
+  gitPull,
+  gitPush,
+  gitPushTags,
+  type ConflictChoice,
+  type GitActionResult,
+  type MergeMode,
+  type RebaseAction,
   gitCommitDetail,
   gitFileDiff,
   gitGraph,
@@ -350,12 +385,48 @@ const routes: Record<string, Handler> = {
   },
   "POST /api/git/commit": async (req) => {
     const project = gitProject(req.body.dir);
+    const amend = req.body.amend === true;
     try {
-      const c = await gitCall(() => gitCommit(project.dir, String(req.body.message ?? "")));
-      recordRun("git", true, `${project.name}: committed ${c.short} ${c.subject}`, "web", { project: project.name });
+      const c = await gitCall(() => gitCommitChanges(project.dir, String(req.body.message ?? ""), { amend }));
+      recordRun("git", true, `${project.name}: ${amend ? "amended" : "committed"} ${c.short} ${c.subject}`, "web", { project: project.name });
       return c;
     } catch (err) {
-      recordRun("git", false, `${project.name}: commit failed`, "web", { project: project.name });
+      recordRun("git", false, `${project.name}: ${amend ? "amend" : "commit"} failed`, "web", { project: project.name });
+      throw err;
+    }
+  },
+  // A commit message from Claude Code: only on the page's button, from the server's own prompt and
+  // staged diff (nothing from the request but the project), and it only fills the message box.
+  "GET /api/git/ai": async () => ({ claude: !!(await claudeCli()) }),
+  "POST /api/git/suggest": async (req) => {
+    const project = gitProject(req.body.dir);
+    const r = await gitCall(() => gitSuggestMessage(project.dir));
+    recordRun("git", true, `${project.name}: Claude Code wrote a commit message`, "web", { project: project.name });
+    return r;
+  },
+  // Branches, tags, the shelf, and what can be undone.
+  "GET /api/git/refs": (req) => gitCall(() => gitRefs(gitProject(req.query.get("dir")).dir)),
+  "GET /api/git/undo": (req) => gitCall(() => gitUndoList(gitProject(req.query.get("dir")).dir)),
+  "GET /api/git/preview": (req) => gitCall(() => gitMergePreview(gitProject(req.query.get("dir")).dir, String(req.query.get("branch") ?? ""))),
+  "GET /api/git/conflict": (req) => gitCall(() => gitConflict(gitProject(req.query.get("dir")).dir, String(req.query.get("path") ?? ""))),
+  "GET /api/git/rebase-plan": (req) => gitCall(() => gitRebasePlan(gitProject(req.query.get("dir")).dir, String(req.query.get("from") ?? ""))),
+  /**
+   * Every other git operation, by name. Each one checks its own arguments against a fresh listing
+   * (gitops.ts); nothing here builds a git command from the request.
+   */
+  "POST /api/git/action": async (req) => {
+    const project = gitProject(req.body.dir);
+    const action = String(req.body.action ?? "");
+    const run = GIT_ACTIONS[action];
+    if (!run) throw new HttpError(400, `Unknown git action: ${action}`);
+    const b = req.body;
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    try {
+      const r = await gitCall(() => run(project.dir, b, str));
+      recordRun("git", r.ok, `${project.name}: ${action}${r.ok ? "" : " stopped on conflicts"} — ${r.message}`, "web", { project: project.name });
+      return r;
+    } catch (err) {
+      recordRun("git", false, `${project.name}: ${action} failed`, "web", { project: project.name });
       throw err;
     }
   },
@@ -730,6 +801,49 @@ function dxOwnedPids(): number[] {
   }
   return pids;
 }
+
+type GitActionFn = (dir: string, body: Record<string, unknown>, str: (v: unknown) => string) => Promise<GitActionResult>;
+const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+const MERGE_MODES: MergeMode[] = ["merge", "squash", "fast-forward"];
+
+/** The git operations the page can ask for, each with its arguments taken one by one. */
+const GIT_ACTIONS: Record<string, GitActionFn> = {
+  undo: (d, b, s) => gitUndo(d, s(b.id)),
+  "reset-to": (d, b, s) => gitResetTo(d, s(b.hash)),
+  revert: (d, b, s) => gitRevert(d, s(b.hash)),
+  "cherry-pick": (d, b, s) => gitCherryPick(d, s(b.hash)),
+  "branch-create": (d, b, s) => gitCreateBranch(d, s(b.name), { at: s(b.at) || undefined, switchTo: b.switchTo === true }),
+  switch: (d, b, s) => gitSwitch(d, s(b.name), { shelve: b.shelve === true }),
+  "branch-rename": (d, b, s) => gitRenameBranch(d, s(b.name), s(b.to)),
+  "branch-delete": (d, b, s) => gitDeleteBranch(d, s(b.name)),
+  "tag-create": (d, b, s) => gitCreateTag(d, s(b.name), { at: s(b.at) || undefined, message: s(b.message) }),
+  "tag-delete": (d, b, s) => gitDeleteTag(d, s(b.name)),
+  merge: (d, b, s) => gitMerge(d, s(b.branch), MERGE_MODES.includes(s(b.mode) as MergeMode) ? (s(b.mode) as MergeMode) : "merge"),
+  rebase: (d, b, s) => gitRebase(d, s(b.onto)),
+  continue: (d) => gitContinue(d),
+  abort: (d) => gitAbort(d),
+  resolve: (d, b, s) =>
+    gitResolve(d, s(b.path), { hash: s(b.hash), choices: Array.isArray(b.choices) ? (strings(b.choices) as ConflictChoice[]) : undefined, side: b.side === "ours" || b.side === "theirs" ? b.side : undefined }),
+  "stash-push": (d, b, s) => gitStashPush(d, { paths: Array.isArray(b.paths) ? strings(b.paths) : undefined, message: s(b.message) }),
+  "stash-apply": (d, b, s) => gitStashApply(d, s(b.oid), { pop: b.pop === true }),
+  "stash-drop": (d, b, s) => gitStashDrop(d, s(b.oid)),
+  discard: (d, b) => gitDiscard(d, strings(b.paths)),
+  fetch: (d) => gitFetch(d),
+  pull: (d) => gitPull(d),
+  push: (d, b) => gitPush(d, { force: b.force === true }),
+  "push-tags": (d, b, s) => gitPushTags(d, { name: s(b.name) || undefined, all: b.all === true }),
+  "rebase-run": (d, b, s) =>
+    gitRebaseRun(
+      d,
+      s(b.from),
+      Array.isArray(b.steps)
+        ? b.steps.slice(0, 200).map((x: unknown) => {
+            const o = (x && typeof x === "object" ? x : {}) as Record<string, unknown>;
+            return { hash: s(o.hash), action: s(o.action) as RebaseAction, message: s(o.message) };
+          })
+        : [],
+    ),
+};
 
 function gitProject(dir: unknown): Project {
   const project = knownProject(dir);

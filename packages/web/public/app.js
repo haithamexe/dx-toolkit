@@ -79,6 +79,8 @@ const ICONS = {
   right: "M5 12h14M13 6l6 6-6 6",
   left: "M19 12H5M11 6l-6 6 6 6",
   tag: "M3 12V4h8l10 10-8 8zM7.5 7.5h.01",
+  up: "M12 19V5M6 11l6-6 6 6",
+  down: "M12 5v14M6 13l6 6 6-6",
 };
 
 function icon(name) {
@@ -2698,7 +2700,8 @@ function envPage(root) {
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const LANE_COLOURS = 6;
-const MAX_LANES = 12;
+const MAX_LANES = 10;
+const LANE_W = 20;
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const GIT_CODES = { M: "Modified", A: "Added", D: "Deleted", R: "Renamed", C: "Copied", T: "Type changed", U: "Conflict", N: "New file" };
 
@@ -2708,40 +2711,59 @@ function svgEl(tag, attrs = {}) {
   return el;
 }
 
+/** "Octo Cat" → "OC", "octocat" → "OC": what goes in a commit's dot. */
+function initials(name) {
+  const parts = String(name ?? "").trim().split(/[\s._@-]+/).filter(Boolean);
+  if (!parts.length) return "?";
+  return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].slice(0, 2)).toUpperCase();
+}
+
 /**
- * One commit's slice of the graph, in a 16 × 32 grid per lane: lines from its children above, to
- * its parents below, and the lanes passing by. The SVG scales with the row's height in CSS.
+ * One commit's slice of the graph, in a 20 × 32 grid per lane: lines from its children above, to
+ * its parents below, and the lanes passing by. Every line has pathLength 1, so the stylesheet can
+ * draw it in, and data-lane, so hovering can light up a branch's path.
  */
-function graphCell(row, lanes, merge) {
-  const w = lanes * 16;
+function graphCell(row, lanes, { merge = false, author = "", head = false } = {}) {
+  const w = lanes * LANE_W;
   const svg = svgEl("svg", { class: "graph-cell", viewBox: `0 0 ${w} 32`, width: w, height: 32, "aria-hidden": "true" });
-  const x = (lane) => lane * 16 + 8;
-  const path = (d, lane) => svg.append(svgEl("path", { d, class: `graph-line lane-${lane % LANE_COLOURS}` }));
-  const curve = (x1, y1, x2, y2) => (x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}C${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`);
+  const x = (lane) => lane * LANE_W + LANE_W / 2;
+  const path = (d, lane) => svg.append(svgEl("path", { d, pathLength: 1, class: `graph-line lane-${lane % LANE_COLOURS}`, "data-lane": lane }));
+  const curve = (x1, y1, x2, y2) => (x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}C${x1} ${y1 + (y2 - y1) * 0.75} ${x2} ${y2 - (y2 - y1) * 0.75} ${x2} ${y2}`);
   for (const l of row.through) if (l < lanes) path(`M${x(l)} 0V32`, l);
   // A branch joining the line on its left: straight down to the dot's height, then across.
-  for (const [from, to] of row.moves ?? []) if (from < lanes && to < lanes) path(`M${x(from)} 0V16C${x(from)} 26 ${x(to)} 24 ${x(to)} 32`, from);
+  for (const [from, to] of row.moves ?? []) if (from < lanes && to < lanes) path(`M${x(from)} 0V14C${x(from)} 26 ${x(to)} 22 ${x(to)} 32`, from);
   for (const l of row.up) if (l < lanes) path(curve(x(l), 0, x(row.lane), 16), l);
   for (const l of row.down) if (l < lanes) path(curve(x(row.lane), 16, x(l), 32), l);
-  if (row.lane < lanes) svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: merge ? 4 : 4.5, class: `graph-dot lane-${row.lane % LANE_COLOURS}${merge ? " graph-dot-merge" : ""}` }));
+  if (row.lane < lanes) {
+    const lane = `lane-${row.lane % LANE_COLOURS}`;
+    if (head) svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: 9, class: `graph-pulse ${lane}` }));
+    if (merge) svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: 5, class: `graph-dot graph-dot-merge ${lane}`, "data-lane": row.lane }));
+    else {
+      svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: 8.5, class: `graph-dot ${lane}`, "data-lane": row.lane }));
+      const t = svgEl("text", { x: x(row.lane), y: 16.5, class: "graph-initials", "text-anchor": "middle", "dominant-baseline": "central" });
+      t.textContent = initials(author);
+      svg.append(t);
+    }
+  }
   return svg;
 }
 
 /** The lanes that go on past a commit, drawn down the side of its open detail so the graph doesn't break. */
 function laneStrip(row, lanes) {
-  const w = lanes * 16;
+  const w = lanes * LANE_W;
   const svg = svgEl("svg", { class: "graph-strip", viewBox: `0 0 ${w} 32`, width: w, preserveAspectRatio: "none", "aria-hidden": "true" });
   for (const l of new Set([...row.through, ...row.down])) {
-    if (l < lanes) svg.append(svgEl("path", { d: `M${l * 16 + 8} 0V32`, class: `graph-line lane-${l % LANE_COLOURS}`, "vector-effect": "non-scaling-stroke" }));
+    if (l < lanes) svg.append(svgEl("path", { d: `M${l * LANE_W + LANE_W / 2} 0V32`, class: `graph-line lane-${l % LANE_COLOURS}`, "vector-effect": "non-scaling-stroke" }));
   }
   return svg;
 }
 
-function refBadge(ref) {
+/** A branch or tag on a commit, in the colour of the commit's lane. */
+function refBadge(ref, lane = 0) {
   const kind = ref.current ? "current" : ref.kind;
   const label = ref.kind === "head" ? "HEAD" : ref.name;
   const title = { current: "The branch you're on", branch: "Branch", remote: "Branch on the remote", tag: "Tag", head: "HEAD is here, on no branch" }[kind];
-  return h("span", { class: `graph-ref graph-ref-${kind}`, title }, ref.kind === "tag" ? icon("tag") : ref.current ? icon("git") : null, label);
+  return h("span", { class: `graph-ref graph-ref-${kind} lane-${lane % LANE_COLOURS}`, title }, ref.kind === "tag" ? icon("tag") : ref.current ? icon("git") : null, label);
 }
 
 /** FLIP: where each keyed element is now, so after the DOM changes it can slide from there. */
@@ -2756,7 +2778,8 @@ function slideFromPlaces(container, places) {
   if (reducedMotion.matches || !places.size) return;
   for (const el of container.querySelectorAll("[data-key]")) {
     const [col, ...rest] = el.dataset.key.split(":");
-    const was = places.get(el.dataset.key) ?? places.get(`${col === "changes" ? "staged" : "changes"}:${rest.join(":")}`);
+    const other = { changes: "staged", staged: "changes" }[col];
+    const was = places.get(el.dataset.key) ?? (other ? places.get(`${other}:${rest.join(":")}`) : undefined);
     const now = el.getBoundingClientRect();
     if (!was) {
       el.animate([{ opacity: 0, transform: "scale(0.96)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "ease-out" });
@@ -2767,6 +2790,62 @@ function slideFromPlaces(container, places) {
     if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
     el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 280, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
   }
+}
+
+/**
+ * A dialog with fields and several answers. Resolves to { choice, values } or null when cancelled.
+ * `choices[0]` is the main answer: Enter picks it.
+ */
+function askDialog({ title, text = [], fields = [], choices = [{ value: "ok", label: "OK", kind: "primary" }], cancel = "Cancel" }) {
+  return new Promise((resolve) => {
+    const inputs = fields.map((f) =>
+      f.multiline
+        ? h("textarea", { class: "input git-dialog-text", rows: 3, placeholder: f.placeholder ?? "" })
+        : h("input", { class: "input", type: "text", placeholder: f.placeholder ?? "", autocomplete: "off", spellcheck: "false" }),
+    );
+    inputs.forEach((el, i) => (el.value = fields[i].value ?? ""));
+    let answer = null;
+    const dialog = h("dialog", { class: "dialog" });
+    const done = (choice) => {
+      answer = choice === null ? null : { choice, values: Object.fromEntries(fields.map((f, i) => [f.name, inputs[i].value])) };
+      dialog.close();
+    };
+    dialog.append(
+      h(
+        "form",
+        { class: "dialog-body", onsubmit: (e) => (e.preventDefault(), done(choices[0].value)) },
+        h("h2", { class: "dialog-title" }, title),
+        h("div", { class: "dialog-text" }, (Array.isArray(text) ? text : [text]).filter(Boolean).map((t) => (t instanceof Node ? t : h("p", null, t)))),
+        fields.map((f, i) => h("label", { class: "field" }, h("span", { class: "field-label" }, f.label), inputs[i], f.hint ? h("span", { class: "field-hint" }, f.hint) : null)),
+        h(
+          "div",
+          { class: "dialog-actions" },
+          btn(cancel, () => done(null)),
+          [...choices].reverse().map((c) => btn(c.label, () => done(c.value), { kind: c.kind ?? "" })),
+        ),
+      ),
+    );
+    dialog.addEventListener("close", () => (dialog.remove(), resolve(answer)), { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+    (inputs[0] ?? dialog.querySelector(".btn-primary, .btn-danger"))?.focus();
+  });
+}
+
+/** A "More" menu: a button that opens a list of actions. */
+function actionMenu(label, items, { name } = {}) {
+  const details = h("details", { class: "menu" });
+  const close = () => details.removeAttribute("open");
+  append(
+    details,
+    h("summary", { class: "btn btn-sm btn-ghost", "aria-label": name ?? label }, icon("more"), label),
+    h(
+      "div",
+      { class: "menu-list" },
+      items.filter(Boolean).map(([text, iconName, fn, disabled]) => h("button", { type: "button", disabled: !!disabled, onclick: () => (close(), fn()) }, icon(iconName), text)),
+    ),
+  );
+  return details;
 }
 
 /** Commit messages being written, per project, kept while you visit other pages. */
@@ -2780,15 +2859,23 @@ function gitPage(root) {
   let statusSig = "";
   let graph = null;
   let graphHead;
+  let refs = null;
+  let undo = null;
   let limit = 200;
-  let drag = null; // { from: "changes" | "staged", paths, hunk? }
+  /**
+   * What's being dragged: { kind: "file", from, paths } | { kind: "hunk", from, path, hunk }
+   * | { kind: "stash", oid } | { kind: "branch", name } | { kind: "commit", hash, subject } | { kind: "step", index }.
+   */
+  let drag = null;
   let working = 0; // actions on their way: polling waits for them
   let selected = new Set(); // "changes:path" / "staged:path"
   let lastClicked = null;
-  let openFile = null; // { path, staged }
+  let openFile = null; // { path, staged, conflict }
   let openCommit = null; // hash
   let newCommit = null; // the hash just committed, to animate in
+  let drawIn = true; // the graph draws itself in once per project
   let historyList = null;
+  let rebase = null; // the history being edited: { from, steps }
   let stopped = false;
   const drafts = gitDrafts;
 
@@ -2804,10 +2891,18 @@ function gitPage(root) {
     },
   });
   const headInfo = h("div", { class: "card card-pad git-branch", "aria-live": "polite" }, loadingView("Reading the repository…"));
+  const opBanner = h("div", { class: "git-op", "aria-live": "polite" });
   const filePanel = h("div", { class: "git-file-panel" });
+  const rebasePanel = h("div", { class: "git-file-panel" });
+  const branchesBody = h("div", { class: "git-branches" });
   const history = h("div", { class: "card graph-card" }, loadingView("Reading the history…"));
+  const undoBody = h("div", { class: "git-undo-body" });
 
   const columns = { changes: makeColumn("changes"), staged: makeColumn("staged") };
+  const bin = h("div", { class: "git-bin", "aria-hidden": "true" }, icon("cleanup"), "Drop here to discard the changes");
+  columns.changes.col.append(bin);
+  dropTarget(bin, (d) => d.kind === "file" && d.from === "changes", (d) => discard(d.paths));
+
   const message = h("textarea", {
     class: "input git-message",
     rows: 4,
@@ -2821,31 +2916,76 @@ function gitPage(root) {
       }
     },
   });
+  const amendBox = h("input", { type: "checkbox", id: "git-amend", onchange: () => amendChanged() });
   const commitSummary = h("p", { class: "dim git-commit-summary" });
+  // Claude Code writes the message: only on this click, since it sends the staged diff to your Claude account.
+  const writeButton = btn("Write message", (ev) => writeMessage(ev.currentTarget), {
+    small: true,
+    kind: "ghost",
+    iconName: "journal",
+    title: "Claude Code (claude -p) writes a message from the staged changes, in this repository's style, for you to edit. This sends the staged diff to your Claude account, and only when you click.",
+  });
+  writeButton.hidden = true;
+  api("/api/git/ai").then((r) => (writeButton.hidden = !r.claude), () => {});
   const commitButton = btn("Commit", (ev) => commit(ev.currentTarget), { kind: "primary", iconName: "check" });
   const commitBox = h(
     "section",
     { class: "card git-col git-commit", "aria-labelledby": "git-commit-title" },
-    h("div", { class: "git-col-head" }, h("h2", { class: "git-col-title", id: "git-commit-title" }, "Commit")),
+    h("div", { class: "git-col-head" }, h("h2", { class: "git-col-title", id: "git-commit-title" }, "Commit"), writeButton),
     message,
+    h("label", { class: "check", for: "git-amend" }, amendBox, "Amend the last commit"),
     commitSummary,
     h("div", { class: "toolbar" }, commitButton, h("span", { class: "dim git-hint" }, h("kbd", null, "Ctrl"), "+", h("kbd", null, "Enter"))),
   );
-  dropZone(commitBox, "staged");
-  const board = h("div", { class: "git-board" }, columns.changes.col, columns.staged.col, commitBox);
+  dropTarget(commitBox, (d) => (d.kind === "file" || d.kind === "hunk") && d.from === "changes", (d) => (d.kind === "hunk" ? moveHunk(d) : move("changes", d.paths)));
+
+  const shelf = makeShelf();
+  const board = h("div", { class: "git-board" }, columns.changes.col, columns.staged.col, commitBox, shelf.col);
+
+  // The drop targets for a commit dragged out of the graph.
+  const dock = h("div", { class: "git-dock", hidden: true, role: "group", "aria-label": "Drop a commit here" });
+  const dockZone = (label, iconName, hint, fn) => {
+    const el = h("div", { class: "git-dock-zone", title: hint }, icon(iconName), h("span", null, label));
+    dropTarget(el, (d) => d.kind === "commit", (d) => fn(d));
+    return el;
+  };
+  append(
+    dock,
+    dockZone("Revert", "refresh", "A new commit that undoes this one", (d) => act("revert", { hash: d.hash })),
+    dockZone("Copy onto this branch", "copy", "Cherry-pick it onto the branch you're on", (d) => act("cherry-pick", { hash: d.hash })),
+    dockZone("New branch here", "git", "Start a branch at this commit", (d) => newBranchAt(d.hash)),
+    dockZone("Tag here", "tag", "Mark this commit, for a release say", (d) => newTagAt(d.hash)),
+    dockZone("Edit history from here", "log", "Reorder, reword, squash or drop this commit and the ones after it", (d) => openRebase(d.hash)),
+    dockZone("Go back here", "left", "Move the branch back to this commit, keeping uncommitted changes", (d) => goBackTo(d.hash, d.subject)),
+  );
 
   append(
     root,
     pageHead(
       "Git",
-      "Drag your changes into the next commit, and see every branch's history as a graph.",
+      "Drag your changes into the next commit, branches onto branches to merge them, and commits onto actions. Every step can be undone.",
       h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
       btn("Refresh", () => load({ keep: true }), { iconName: "refresh", kind: "ghost" }),
     ),
     headInfo,
+    opBanner,
     board,
     filePanel,
-    h("section", { class: "section", "aria-labelledby": "git-history-title" }, h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-history-title" }, "History")), history),
+    h("section", { class: "section", "aria-labelledby": "git-branches-title" }, h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-branches-title" }, "Branches"), h("p", { class: "dim git-section-hint" }, "Drag a branch onto the one you're on to merge it; drag yours onto another to rebase.")), branchesBody),
+    rebasePanel,
+    h(
+      "section",
+      { class: "section", "aria-labelledby": "git-history-title" },
+      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-history-title" }, "History"), h("p", { class: "dim git-section-hint" }, "Drag a commit to revert, copy, branch, tag, edit or go back to it.")),
+      history,
+    ),
+    h(
+      "details",
+      { class: "card git-undo", open: pref("gitUndoOpen", "0") === "1" || undefined, ontoggle: (e) => setPref("gitUndoOpen", e.target.open ? "1" : "0") },
+      h("summary", { class: "git-undo-head" }, icon("refresh"), h("span", null, "Undo history"), h("span", { class: "dim" }, "what you did here, and git's own record")),
+      undoBody,
+    ),
+    dock,
     live,
   );
 
@@ -2855,12 +2995,55 @@ function gitPage(root) {
     append(el, ...children);
   }
 
+  // ---------------------------------------------------------------- drag and drop
+
+  /** Something that takes what's dragged when `accepts(drag)` says so, and lights up while it's over it. */
+  function dropTarget(el, accepts, onDrop) {
+    el.addEventListener("dragover", (e) => {
+      if (!drag || !accepts(drag)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      el.classList.add("drop-target");
+    });
+    el.addEventListener("dragleave", (e) => {
+      if (!el.contains(e.relatedTarget)) el.classList.remove("drop-target");
+    });
+    el.addEventListener("drop", (e) => {
+      if (!drag || !accepts(drag)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.classList.remove("drop-target");
+      const d = drag;
+      endDrag();
+      onDrop(d, e);
+    });
+  }
+
+  function startDrag(e, what, label) {
+    drag = what;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", label);
+    root.classList.add(`dragging-${what.kind}`);
+    if (what.kind === "file" && what.from === "changes") root.classList.add("dragging-changes");
+    if (what.kind === "commit") dock.hidden = false;
+  }
+
+  function endDrag() {
+    drag = null;
+    dock.hidden = true;
+    root.classList.remove("dragging-file", "dragging-hunk", "dragging-stash", "dragging-branch", "dragging-commit", "dragging-step", "dragging-tag", "dragging-changes");
+    for (const el of root.querySelectorAll(".dragging, .drop-target")) el.classList.remove("dragging", "drop-target");
+  }
+
+  // ---------------------------------------------------------------- the board
+
   function makeColumn(kind) {
     const title = kind === "changes" ? "Changes" : "Staged";
     const count = h("span", { class: "badge" }, "0");
     const all = btn(kind === "changes" ? "Stage all" : "Unstage all", () => {
       const keys = [...selected].filter((k) => k.startsWith(`${kind}:`));
-      const paths = keys.length ? keys.map((k) => k.slice(kind.length + 1)) : filesIn(kind).map((f) => f.path);
+      const paths = keys.length ? keys.map((k) => k.slice(kind.length + 1)) : filesIn(kind).filter((f) => !f.conflicted || kind === "changes").map((f) => f.path);
       move(kind, paths);
     }, { small: true, kind: "ghost", iconName: kind === "changes" ? "right" : "left" });
     const list = h("ul", { class: "git-cards", "aria-label": `${title} files` });
@@ -2872,30 +3055,13 @@ function gitPage(root) {
       list,
       empty,
     );
-    dropZone(col, kind);
+    const other = kind === "changes" ? "staged" : "changes";
+    dropTarget(
+      col,
+      (d) => ((d.kind === "file" || d.kind === "hunk") && d.from === other) || (kind === "changes" && d.kind === "stash"),
+      (d) => (d.kind === "stash" ? act("stash-apply", { oid: d.oid, pop: true }) : d.kind === "hunk" ? moveHunk(d) : move(other, d.paths)),
+    );
     return { col, list, count, all, empty };
-  }
-
-  /** A column (or the commit box) that takes cards and blocks dragged from the other column. */
-  function dropZone(el, target) {
-    el.addEventListener("dragover", (e) => {
-      if (!drag || drag.from === target) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      el.classList.add("drop-target");
-    });
-    el.addEventListener("dragleave", (e) => {
-      if (!el.contains(e.relatedTarget)) el.classList.remove("drop-target");
-    });
-    el.addEventListener("drop", (e) => {
-      e.preventDefault();
-      el.classList.remove("drop-target");
-      const d = drag;
-      drag = null;
-      if (!d || d.from === target) return;
-      if (d.hunk) moveHunk(d);
-      else move(d.from, d.paths);
-    });
   }
 
   const filesIn = (kind) => (status?.files ?? []).filter((f) => (kind === "changes" ? f.unstaged : f.staged));
@@ -2907,18 +3073,33 @@ function gitPage(root) {
     const isOpen = openFile?.path === f.path && openFile.staged === (kind === "staged");
     const li = h(
       "li",
-      { class: `git-card${selected.has(key) ? " selected" : ""}${isOpen ? " open" : ""}`, draggable: "true", dataset: { key } },
+      { class: `git-card${selected.has(key) ? " selected" : ""}${isOpen ? " open" : ""}${f.conflicted ? " git-card-conflict" : ""}`, draggable: "true", dataset: { key } },
       h("span", { class: `git-code git-code-${code}`, title: GIT_CODES[code] ?? code }, code),
       h(
         "button",
-        { type: "button", class: "git-card-main", title: "Show the changes. Ctrl+click or Shift+click to select several.", "aria-pressed": String(selected.has(key)), onclick: (e) => cardClick(e, f, kind) },
+        {
+          type: "button",
+          class: "git-card-main",
+          title: f.conflicted ? "Resolve the conflict" : "Show the changes. Ctrl+click or Shift+click to select several.",
+          "aria-pressed": String(selected.has(key)),
+          onclick: (e) => cardClick(e, f, kind),
+        },
         h("span", { class: "git-name" }, f.path.slice(slash + 1)),
         slash >= 0 ? h("span", { class: "git-folder" }, f.path.slice(0, slash + 1)) : null,
         f.from ? h("span", { class: "git-folder" }, `from ${f.from}`) : null,
       ),
       f.staged && f.unstaged && !f.conflicted ? h("span", { class: "badge", title: "Part of this file is staged, part isn't" }, "partly") : null,
       f.conflicted ? h("span", { class: "badge badge-danger" }, "conflict") : null,
-      btn(null, () => move(kind, [f.path]), { small: true, kind: "ghost", iconName: kind === "changes" ? "right" : "left", title: kind === "changes" ? "Stage" : "Unstage", name: `${kind === "changes" ? "Stage" : "Unstage"} ${f.path}` }),
+      kind === "changes" && !f.conflicted
+        ? btn(null, () => discard([f.path]), { small: true, kind: "danger-ghost", iconName: "cleanup", title: "Discard the changes", name: `Discard the changes to ${f.path}` })
+        : null,
+      btn(null, () => move(kind, [f.path]), {
+        small: true,
+        kind: "ghost",
+        iconName: kind === "changes" ? "right" : "left",
+        title: kind === "changes" ? (f.conflicted ? "Mark as resolved" : "Stage") : "Unstage",
+        name: `${kind === "changes" ? "Stage" : "Unstage"} ${f.path}`,
+      }),
     );
     li.addEventListener("dragstart", (e) => {
       if (!selected.has(key)) {
@@ -2926,18 +3107,11 @@ function gitPage(root) {
         markSelected();
       }
       const paths = [...selected].filter((k) => k.startsWith(`${kind}:`)).map((k) => k.slice(kind.length + 1));
-      drag = { from: kind, paths };
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", paths.join("\n"));
+      startDrag(e, { kind: "file", from: kind, paths }, paths.join("\n"));
       requestAnimationFrame(() => board.querySelectorAll(".git-card.selected").forEach((c) => c.classList.add("dragging")));
     });
     li.addEventListener("dragend", endDrag);
     return li;
-  }
-
-  function endDrag() {
-    drag = null;
-    for (const el of root.querySelectorAll(".dragging, .drop-target")) el.classList.remove("dragging", "drop-target");
   }
 
   function cardClick(e, f, kind) {
@@ -2960,7 +3134,8 @@ function gitPage(root) {
     selected.clear();
     lastClicked = key;
     markSelected();
-    openDiff(f.path, kind === "staged");
+    if (f.conflicted) openConflict(f.path);
+    else openDiff(f.path, kind === "staged");
   }
 
   function markSelected() {
@@ -2998,49 +3173,293 @@ function gitPage(root) {
 
   function updateCommitBox() {
     const staged = filesIn("staged");
-    commitSummary.textContent = staged.length ? `${plural(staged.length, "file")} go${staged.length === 1 ? "es" : ""} in this commit.` : "Stage some changes first.";
-    commitButton.disabled = !staged.length || !message.value.trim() || working > 0 || staged.some((f) => f.conflicted) || (status?.files ?? []).some((f) => f.conflicted);
+    const amend = amendBox.checked;
+    const conflicted = (status?.files ?? []).some((f) => f.conflicted);
+    commitSummary.textContent = amend
+      ? staged.length ? `${plural(staged.length, "file")} go${staged.length === 1 ? "es" : ""} into the last commit too.` : "Only the message changes."
+      : staged.length ? `${plural(staged.length, "file")} go${staged.length === 1 ? "es" : ""} in this commit.` : status?.operation === "merge" ? "Finish the merge with Continue above." : "Stage some changes first.";
+    commitButton.replaceChildren(icon("check"), amend ? "Amend" : "Commit");
+    commitButton.disabled = working > 0 || conflicted || (amend ? !status?.hasCommits : !staged.length || !message.value.trim());
   }
+
+  async function writeMessage(button) {
+    if (!filesIn("staged").length) return toast("Stage the changes first: the message is written from what's staged.", "error");
+    if (message.value.trim()) {
+      const yes = await confirmDialog({ title: "Replace your message?", text: "Claude Code's message takes the place of what's in the box now.", confirm: "Replace it", danger: false });
+      if (!yes) return;
+    }
+    const r = await busy(button, "Writing…", () => api("/api/git/suggest", { method: "POST", body: { dir } }));
+    if (!r) return;
+    message.value = r.message;
+    message.focus();
+    updateCommitBox();
+    say("Claude Code wrote a message. Edit it, then commit.");
+  }
+
+  async function amendChanged() {
+    if (amendBox.checked && !message.value.trim() && status?.head) {
+      try {
+        const d = await api(`/api/git/commit?dir=${encodeURIComponent(dir)}&hash=${status.head}`);
+        if (amendBox.checked && !message.value.trim()) message.value = d.message;
+      } catch {
+        // the message can still be typed
+      }
+    }
+    updateCommitBox();
+  }
+
+  // ---------------------------------------------------------------- the shelf (stash)
+
+  function makeShelf() {
+    const count = h("span", { class: "badge" }, "0");
+    const all = btn("Shelve all", (ev) => act("stash-push", {}, { button: ev.currentTarget, busyText: "Shelving…" }), { small: true, kind: "ghost", iconName: "save" });
+    const list = h("ul", { class: "git-cards", "aria-label": "On the shelf" });
+    const empty = h("p", { class: "git-empty dim" }, "Drag files here to put them aside without committing. Drag them back to Changes when you want them again.");
+    const col = h(
+      "section",
+      { class: "card git-col git-shelf", "aria-labelledby": "git-shelf-title" },
+      h("div", { class: "git-col-head" }, h("h2", { class: "git-col-title", id: "git-shelf-title" }, "Shelf"), count, all),
+      list,
+      empty,
+    );
+    dropTarget(col, (d) => d.kind === "file", (d) => act("stash-push", { paths: d.paths }));
+    return { col, list, count, all, empty };
+  }
+
+  function renderShelf() {
+    const stashes = refs?.stashes ?? [];
+    const places = rememberPlaces(shelf.list);
+    shelf.count.textContent = String(stashes.length);
+    shelf.all.disabled = !(status?.files.length);
+    shelf.empty.hidden = stashes.length > 0;
+    shelf.list.replaceChildren(
+      ...stashes.map((s) => {
+        const li = h(
+          "li",
+          { class: "git-card git-stash", draggable: "true", dataset: { key: `stash:${s.oid}` }, title: "Drag to Changes to take it back" },
+          h("span", { class: "git-code git-code-S", "aria-hidden": "true" }, icon("save")),
+          h("span", { class: "git-card-main git-stash-text" }, h("span", { class: "git-name" }, s.message.replace(/^(On|WIP on) [^:]+: /, "")), h("span", { class: "git-folder" }, relativeTime(s.at))),
+          btn(null, () => act("stash-apply", { oid: s.oid, pop: true }), { small: true, kind: "ghost", iconName: "left", title: "Take it back", name: `Take back ${s.message}` }),
+          actionMenu("", [
+            ["Apply a copy (keep it on the shelf)", "copy", () => act("stash-apply", { oid: s.oid })],
+            ["Throw away…", "cleanup", () => dropStash(s)],
+          ], { name: `More for ${s.message}` }),
+        );
+        li.addEventListener("dragstart", (e) => startDrag(e, { kind: "stash", oid: s.oid }, s.message));
+        li.addEventListener("dragend", endDrag);
+        return li;
+      }),
+    );
+    slideFromPlaces(shelf.list, places);
+  }
+
+  async function dropStash(s) {
+    const yes = await confirmDialog({ title: "Throw it away?", text: `"${s.message}" leaves the shelf. Undo can still bring it back.`, confirm: "Throw away" });
+    if (yes) act("stash-drop", { oid: s.oid });
+  }
+
+  // ---------------------------------------------------------------- head, sync, undo, operation in progress
 
   function renderHead() {
     const s = status;
+    const branch = refs?.branches.find((b) => b.current);
     const sync = !s.upstream
-      ? h("span", { class: "dim" }, s.hasCommits ? "Not pushed anywhere yet: this branch has no upstream." : "No commits yet.")
+      ? h("span", { class: "dim" }, s.hasCommits ? "Not pushed anywhere yet." : "No commits yet.")
       : s.ahead || s.behind
         ? [
-            s.ahead ? h("span", { class: "badge badge-warn" }, `${s.ahead} to push`) : null,
-            s.behind ? h("span", { class: "badge badge-accent" }, `${s.behind} to pull`) : null,
+            s.ahead ? h("span", { class: "badge badge-warn" }, `↑ ${s.ahead} to push`) : null,
+            s.behind ? h("span", { class: "badge badge-accent" }, `↓ ${s.behind} to pull`) : null,
             h("span", { class: "dim" }, `compared with ${s.upstream}`),
           ]
         : h("span", { class: "dim" }, `Up to date with ${s.upstream}.`);
-    put(headInfo,
-      h("span", { class: "graph-ref graph-ref-current git-branch-name" }, icon("git"), s.detached ? "No branch (detached HEAD)" : (s.branch ?? "No branch")),
+    const onBranch = !!s.branch && !s.detached;
+    const latest = undo?.entries.find((e) => !e.undone);
+    put(
+      headInfo,
+      h("span", { class: "graph-ref graph-ref-current lane-0 git-branch-name" }, icon("git"), s.detached ? "No branch (detached HEAD)" : (s.branch ?? "No branch")),
       sync,
+      branch?.gone ? h("span", { class: "badge badge-danger" }, "its upstream was deleted") : null,
       s.truncated ? h("span", { class: "badge badge-warn" }, "Only the first 1000 changed files are listed") : null,
+      h(
+        "div",
+        { class: "toolbar git-sync" },
+        btn("Fetch", (ev) => act("fetch", {}, { button: ev.currentTarget, busyText: "Fetching…" }), { small: true, kind: "ghost", iconName: "refresh", disabled: !refs?.remotes.length }),
+        btn(`Pull${s.behind ? ` ${s.behind}` : ""}`, (ev) => act("pull", {}, { button: ev.currentTarget, busyText: "Pulling…" }), { small: true, iconName: "left", disabled: !onBranch || !s.upstream }),
+        btn(`Push${s.ahead ? ` ${s.ahead}` : ""}`, (ev) => act("push", {}, { button: ev.currentTarget, busyText: "Pushing…" }), { small: true, kind: s.ahead || !s.upstream ? "primary" : "", iconName: "right", disabled: !onBranch || !refs?.remotes.length }),
+        actionMenu("", [["Force push (with lease)…", "warn", () => forcePush(), !onBranch || !s.upstream]], { name: "More push options" }),
+        latest?.undo ? btn(`Undo: ${latest.label}`, (ev) => act("undo", { id: latest.id }, { button: ev.currentTarget, busyText: "Undoing…" }), { small: true, kind: "ghost", iconName: "refresh", title: "Undo the last thing you did here" }) : null,
+      ),
     );
   }
 
-  function setStatus(fresh) {
-    status = fresh;
-    statusSig = JSON.stringify(fresh);
-    renderHead();
-    renderBoard();
-    if (graph && fresh.head !== graphHead) loadGraph();
+  async function forcePush() {
+    const yes = await confirmDialog({
+      title: `Force push ${status.branch}?`,
+      text: [
+        `The remote's ${status.upstream} is replaced with your ${status.branch}: commits only the remote has are dropped there.`,
+        "It's done with --force-with-lease, so if someone pushed since you last fetched, nothing is overwritten and you're told instead. It can't be undone from here.",
+      ],
+      confirm: "Force push",
+    });
+    if (yes) act("push", { force: true });
   }
 
-  async function loadStatus({ quiet = false } = {}) {
-    const forDir = dir;
-    try {
-      const fresh = await api(`/api/git/status?dir=${encodeURIComponent(dir)}`);
-      if (forDir !== dir || stopped) return;
-      if (JSON.stringify(fresh) === statusSig) return;
-      setStatus(fresh);
-      if (openFile && quiet) refreshOpenFile();
-    } catch (err) {
-      if (quiet) return;
-      headInfo.replaceChildren(errorView(err, () => load()));
-    }
+  function renderOperation() {
+    const op = status?.operation;
+    if (!op) return opBanner.replaceChildren();
+    const conflicts = status.files.filter((f) => f.conflicted).length;
+    const what = { merge: "A merge", rebase: "A rebase", "cherry-pick": "A cherry-pick", revert: "A revert" }[op];
+    put(
+      opBanner,
+      h(
+        "div",
+        { class: `note ${conflicts ? "note-warn" : ""} git-op-note`, role: "status" },
+        icon("warn"),
+        h(
+          "div",
+          { class: "git-op-text" },
+          h("p", null, h("strong", null, `${what} is waiting for you. `), conflicts ? `${plural(conflicts, "file")} still ${conflicts === 1 ? "has" : "have"} conflicts: open each in Changes, pick a side, and it's staged.` : "Every conflict is resolved: Continue finishes it."),
+          h(
+            "div",
+            { class: "toolbar" },
+            btn("Continue", (ev) => act("continue", {}, { button: ev.currentTarget, busyText: "Continuing…" }), { small: true, kind: "primary", iconName: "check", disabled: conflicts > 0 }),
+            btn("Abort", async (ev) => {
+              const button = ev.currentTarget;
+              const yes = await confirmDialog({ title: `Abort the ${op}?`, text: `Everything goes back to how it was before the ${op} started, conflicts and their resolutions included.`, confirm: "Abort" });
+              if (yes) act("abort", {}, { button, busyText: "Aborting…" });
+            }, { small: true, kind: "danger-ghost", iconName: "x" }),
+          ),
+        ),
+      ),
+    );
   }
+
+  function renderUndo() {
+    if (!undo) return put(undoBody, loadingView("Reading…"));
+    const latest = undo.entries.find((e) => !e.undone);
+    put(
+      undoBody,
+      undo.entries.length
+        ? h(
+            "ol",
+            { class: "git-undo-list" },
+            undo.entries.slice(0, 30).map((e) =>
+              h(
+                "li",
+                { class: `git-undo-item${e.undone ? " undone" : ""}` },
+                h("span", { class: "git-undo-label" }, e.label),
+                h("span", { class: "dim git-undo-time" }, relativeTime(e.at)),
+                e.undone
+                  ? h("span", { class: "badge" }, "undone")
+                  : e === latest && e.undo
+                    ? btn("Undo", (ev) => act("undo", { id: e.id }, { button: ev.currentTarget, busyText: "Undoing…" }), { small: true, iconName: "refresh" })
+                    : !e.undo
+                      ? h("span", { class: "dim git-undo-note" }, e.note ?? "can't be undone")
+                      : null,
+              ),
+            ),
+          )
+        : h("p", { class: "dim" }, "Nothing done from here yet. Everything you do on this page shows up here, with Undo."),
+      undo.reflog.length > 1
+        ? h(
+            "div",
+            { class: "git-reflog" },
+            h("h3", { class: "git-subtitle" }, "Where the branch was, from git's reflog"),
+            h(
+              "ol",
+              { class: "git-undo-list" },
+              undo.reflog.slice(1, 25).map((r) =>
+                h(
+                  "li",
+                  { class: "git-undo-item" },
+                  h("span", { class: "mono dim" }, r.oid.slice(0, 7)),
+                  h("span", { class: "git-undo-label" }, r.message),
+                  h("span", { class: "dim git-undo-time" }, relativeTime(r.at)),
+                  btn("Go back here", () => goBackTo(r.oid, r.message), { small: true, kind: "ghost", iconName: "left" }),
+                ),
+              ),
+            ),
+          )
+        : null,
+    );
+  }
+
+  // ---------------------------------------------------------------- running an action
+
+  /** Runs a git action: a toast with what happened, then everything is read again. */
+  async function act(action, body = {}, { button, busyText = "Working…" } = {}) {
+    working++;
+    updateCommitBox();
+    let r;
+    try {
+      const run = () => api("/api/git/action", { method: "POST", body: { dir, action, ...body } });
+      if (button) r = await busy(button, busyText, run);
+      else {
+        try {
+          r = await run();
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      }
+      if (r) {
+        toast(r.message, r.ok ? "ok" : "error");
+        say(r.message);
+      }
+    } finally {
+      working--;
+      await refreshAll();
+    }
+    return r;
+  }
+
+  async function refreshAll() {
+    statusSig = "";
+    await Promise.all([loadStatus(), loadRefs(), loadGraph(), loadUndo()]);
+    refreshOpenFile();
+  }
+
+  async function discard(paths) {
+    if (!paths.length) return;
+    const yes = await confirmDialog({
+      title: paths.length === 1 ? `Discard the changes to ${paths[0]}?` : `Discard the changes to ${plural(paths.length, "file")}?`,
+      text: ["The file goes back to how it was at the last commit (a new file is deleted).", "dx keeps a copy first, so Undo brings the changes back."],
+      confirm: "Discard",
+    });
+    if (yes) act("discard", { paths });
+  }
+
+  async function goBackTo(hash, subject) {
+    const yes = await confirmDialog({
+      title: `Move ${status?.branch ?? "HEAD"} back to ${hash.slice(0, 7)}?`,
+      text: [subject ? `"${subject}" becomes the latest commit on the branch.` : "", "Uncommitted changes are kept. The commits after it stay in the reflog, and Undo moves the branch forward again."],
+      confirm: "Go back here",
+      danger: false,
+    });
+    if (yes) act("reset-to", { hash });
+  }
+
+  async function newBranchAt(hash) {
+    const a = await askDialog({
+      title: hash ? `New branch at ${hash.slice(0, 7)}` : "New branch",
+      fields: [{ name: "name", label: "Name", placeholder: "feature/checkout" }],
+      choices: [{ value: "switch", label: "Create and switch", kind: "primary" }, { value: "create", label: "Create" }],
+    });
+    if (a?.values.name.trim()) act("branch-create", { name: a.values.name.trim(), at: hash, switchTo: a.choice === "switch" });
+  }
+
+  async function newTagAt(hash) {
+    const a = await askDialog({
+      title: `Tag ${hash ? hash.slice(0, 7) : "this commit"}`,
+      fields: [
+        { name: "name", label: "Name", placeholder: "v1.2.0" },
+        { name: "message", label: "Message (optional)", placeholder: "What's in this release", multiline: true, hint: "With a message it's an annotated tag." },
+      ],
+      choices: [{ value: "ok", label: "Create tag", kind: "primary" }],
+    });
+    if (a?.values.name.trim()) act("tag-create", { name: a.values.name.trim(), at: hash, message: a.values.message });
+  }
+
+  // ---------------------------------------------------------------- staging
 
   /** What the board will look like once git has done it: shown at once, replaced by git's answer. */
   function expected(paths, stage) {
@@ -3049,7 +3468,7 @@ function gitPage(root) {
       ...status,
       files: status.files.map((f) => {
         if (!set.has(f.path)) return f;
-        if (stage) return { ...f, staged: true, unstaged: false, untracked: false, index: f.untracked ? "A" : f.index === "." ? f.worktree : f.index, worktree: "." };
+        if (stage) return { ...f, staged: true, unstaged: false, untracked: false, conflicted: false, index: f.untracked ? "A" : f.index === "." ? f.worktree : f.index, worktree: "." };
         return { ...f, staged: false, unstaged: true, untracked: f.index === "A", index: ".", worktree: f.index === "A" ? "?" : f.worktree === "." ? f.index : f.worktree };
       }),
     };
@@ -3093,11 +3512,12 @@ function gitPage(root) {
     refreshOpenFile();
   }
 
-  // ---------------------------------------------------------------- one file's changes
+  // ---------------------------------------------------------------- one file: its changes, or its conflicts
 
   function refreshOpenFile() {
     if (!openFile || !status) return;
     const f = status.files.find((x) => x.path === openFile.path);
+    if (openFile.conflict) return void (f?.conflicted ? openConflict(f.path, { quiet: true }) : f ? openDiff(f.path, f.staged && !f.unstaged, { quiet: true }) : closeFile());
     if (f && (openFile.staged ? f.staged : f.unstaged)) return void openDiff(openFile.path, openFile.staged, { quiet: true });
     // Staged whole (or unstaged): follow the file to the column it's in now.
     if (f) return void openDiff(f.path, f.staged && !f.unstaged, { quiet: true });
@@ -3110,18 +3530,35 @@ function gitPage(root) {
     for (const el of board.querySelectorAll(".git-card.open")) el.classList.remove("open");
   }
 
+  function markOpen(key) {
+    for (const el of board.querySelectorAll(".git-card")) el.classList.toggle("open", el.dataset.key === key);
+  }
+
   async function openDiff(file, staged, { quiet = false } = {}) {
     openFile = { path: file, staged };
-    for (const el of board.querySelectorAll(".git-card")) el.classList.toggle("open", el.dataset.key === `${staged ? "staged" : "changes"}:${file}`);
+    markOpen(`${staged ? "staged" : "changes"}:${file}`);
     if (!quiet) filePanel.replaceChildren(h("div", { class: "card card-pad" }, loadingView(`Reading ${file}…`)));
     try {
       const d = await api(`/api/git/diff?dir=${encodeURIComponent(dir)}&path=${encodeURIComponent(file)}&staged=${staged}`);
-      if (openFile?.path !== file || openFile.staged !== staged) return;
+      if (openFile?.path !== file || openFile.staged !== staged || openFile.conflict) return;
       renderFile(d);
       if (!quiet) filePanel.scrollIntoView({ block: "nearest", behavior: reducedMotion.matches ? "auto" : "smooth" });
     } catch (err) {
       if (openFile?.path === file) filePanel.replaceChildren(h("div", { class: "card card-pad" }, errorView(err)));
     }
+  }
+
+  function fileHead(title, badge, ...actions) {
+    return h(
+      "div",
+      { class: "section-head" },
+      h("div", { class: "git-file-title" }, h("h2", { class: "section-title mono", id: "git-file-title" }, title), badge),
+      h("div", { class: "toolbar" }, ...actions, btn(null, () => closeFile(), { small: true, kind: "ghost", iconName: "x", name: "Close", title: "Close" })),
+    );
+  }
+
+  function openInEditor(file, line) {
+    return btn("Open in editor", (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file, line } })).message)), { small: true, kind: "ghost", iconName: "code" });
   }
 
   function renderFile(d) {
@@ -3145,9 +3582,7 @@ function gitPage(root) {
           head.draggable = true;
           head.title = `Drag to ${d.staged ? "Changes" : "Staged"}`;
           head.addEventListener("dragstart", (e) => {
-            drag = { from, path: d.path, hunk: hk.id };
-            e.dataTransfer.effectAllowed = "move";
-            e.dataTransfer.setData("text/plain", hk.header);
+            startDrag(e, { kind: "hunk", from, path: d.path, hunk: hk.id }, hk.header);
             el.classList.add("dragging");
           });
           head.addEventListener("dragend", endDrag);
@@ -3155,21 +3590,17 @@ function gitPage(root) {
         return el;
       });
     });
-    filePanel.replaceChildren(
+    put(
+      filePanel,
       h(
         "section",
         { class: "card card-pad section git-file", "aria-labelledby": "git-file-title" },
-        h(
-          "div",
-          { class: "section-head" },
-          h("div", { class: "git-file-title" }, h("h2", { class: "section-title mono", id: "git-file-title" }, d.path), h("span", { class: "badge" }, d.staged ? "Staged" : d.untracked ? "New file" : "Not staged")),
-          h(
-            "div",
-            { class: "toolbar" },
-            btn(d.staged ? "Unstage file" : "Stage file", () => move(from, [d.path]), { small: true, iconName: d.staged ? "left" : "right" }),
-            btn("Open in editor", (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file: d.path, line: firstLine } })).message)), { small: true, kind: "ghost", iconName: "code" }),
-            btn(null, () => closeFile(), { small: true, kind: "ghost", iconName: "x", name: "Close the changes", title: "Close" }),
-          ),
+        fileHead(
+          d.path,
+          h("span", { class: "badge" }, d.staged ? "Staged" : d.untracked ? "New file" : "Not staged"),
+          btn(d.staged ? "Unstage file" : "Stage file", () => move(from, [d.path]), { small: true, iconName: d.staged ? "left" : "right" }),
+          !d.staged ? btn("Discard…", () => discard([d.path]), { small: true, kind: "danger-ghost", iconName: "cleanup" }) : null,
+          openInEditor(d.path, firstLine),
         ),
         d.truncated ? h("p", { class: "dim" }, "This file's changes are cut at 512 KB, so it can only be staged whole.") : null,
         !d.stageable && d.hunks.length && !d.truncated ? h("p", { class: "dim" }, "New, deleted and renamed files go whole: stage or unstage the file.") : null,
@@ -3178,24 +3609,89 @@ function gitPage(root) {
     );
   }
 
+  /** A conflicted file: each clash side by side, and Mine, Theirs or Both for each. */
+  async function openConflict(file, { quiet = false } = {}) {
+    openFile = { path: file, staged: false, conflict: true };
+    markOpen(`changes:${file}`);
+    if (!quiet) filePanel.replaceChildren(h("div", { class: "card card-pad" }, loadingView(`Reading ${file}…`)));
+    let c;
+    try {
+      c = await api(`/api/git/conflict?dir=${encodeURIComponent(dir)}&path=${encodeURIComponent(file)}`);
+    } catch (err) {
+      if (openFile?.path === file) filePanel.replaceChildren(h("div", { class: "card card-pad" }, errorView(err)));
+      return;
+    }
+    if (openFile?.path !== file) return;
+    const rebasing = status?.operation === "rebase";
+    // In a rebase, "ours" is the branch being rebased onto and "theirs" is your commit being replayed.
+    const names = rebasing ? ["Upstream", "Your commit"] : ["Yours", "Incoming"];
+    const blocks = c.parts.filter((p) => p.kind === "conflict");
+    const choices = blocks.map(() => null);
+    const resolveBtn = btn("Resolve and stage", (ev) => act("resolve", { path: file, hash: c.hash, choices }, { button: ev.currentTarget, busyText: "Resolving…" }), { small: true, kind: "primary", iconName: "check", disabled: true });
+    const whole = (side) => btn(`Take ${side === "ours" ? names[0].toLowerCase() : names[1].toLowerCase()} (whole file)`, (ev) => act("resolve", { path: file, side }, { button: ev.currentTarget }), { small: true, kind: "ghost" });
+    let n = 0;
+    const view = c.binary
+      ? [h("p", { class: "dim" }, "A binary file: take one side whole.")]
+      : c.parts.map((p) => {
+          if (p.kind === "text") {
+            const lines = p.lines;
+            const shown = lines.length > 6 ? [...lines.slice(0, 3), null, ...lines.slice(-3)] : lines;
+            return h("pre", { class: "git-conflict-text" }, shown.map((l) => (l === null ? h("span", { class: "dim" }, `  … ${lines.length - 6} lines …\n`) : `${l.replace(/\r$/, "")}\n`)));
+          }
+          const i = n++;
+          const sides = h(
+            "div",
+            { class: "git-conflict-sides" },
+            h("div", { class: "git-conflict-side git-conflict-ours" }, h("div", { class: "git-conflict-label" }, names[0], h("span", { class: "dim mono" }, ` ${p.oursLabel}`)), h("pre", null, p.ours.map((l) => `${l.replace(/\r$/, "")}\n`))),
+            h("div", { class: "git-conflict-side git-conflict-theirs" }, h("div", { class: "git-conflict-label" }, names[1], h("span", { class: "dim mono" }, ` ${p.theirsLabel}`)), h("pre", null, p.theirs.map((l) => `${l.replace(/\r$/, "")}\n`))),
+          );
+          const pick = segmented(`Conflict ${i + 1}`, [["ours", `Keep ${names[0].toLowerCase()}`], ["theirs", `Keep ${names[1].toLowerCase()}`], ["both", "Keep both"]], null, (v) => {
+            choices[i] = v;
+            el.classList.toggle("picked", true);
+            el.dataset.pick = v;
+            resolveBtn.disabled = choices.some((x) => !x);
+          });
+          const el = h("div", { class: "git-conflict" }, h("div", { class: "git-conflict-head" }, h("strong", null, `Conflict ${i + 1} of ${blocks.length}`), pick), sides);
+          return el;
+        });
+    put(
+      filePanel,
+      h(
+        "section",
+        { class: "card card-pad section git-file", "aria-labelledby": "git-file-title" },
+        fileHead(file, h("span", { class: "badge badge-danger" }, plural(blocks.length || 1, "conflict")), resolveBtn, whole("ours"), whole("theirs"), openInEditor(file)),
+        h("p", { class: "dim" }, rebasing ? "While rebasing, your commit is being replayed on top of the upstream: pick what each block keeps." : "Pick what each block keeps. The file is rebuilt from its own text and staged."),
+        view,
+      ),
+    );
+    if (!quiet) filePanel.scrollIntoView({ block: "nearest", behavior: reducedMotion.matches ? "auto" : "smooth" });
+  }
+
   // ---------------------------------------------------------------- commit
 
   async function commit(button) {
     const text = message.value;
+    const amend = amendBox.checked;
+    if (amend && status?.upstream && status.ahead === 0 && status.hasCommits) {
+      const yes = await confirmDialog({ title: "Amend a pushed commit?", text: ["The last commit is already on the remote. Amending it rewrites it, so you'd have to force push afterwards."], confirm: "Amend anyway", danger: false });
+      if (!yes) return;
+    }
     const flying = [...columns.staged.list.children];
     working++;
     updateCommitBox();
-    const r = await busy(button, "Committing…", () => api("/api/git/commit", { method: "POST", body: { dir, message: text } }));
+    const r = await busy(button, amend ? "Amending…" : "Committing…", () => api("/api/git/commit", { method: "POST", body: { dir, message: text, amend } }));
     working--;
     if (!r) return updateCommitBox();
     message.value = "";
+    amendBox.checked = false;
     drafts.delete(dir);
     newCommit = r.hash;
-    say(`Committed ${r.short}: ${r.subject}`);
-    toast(`Committed ${r.short}: ${r.subject}`);
+    say(`${amend ? "Amended" : "Committed"} ${r.short}: ${r.subject}`);
+    // A commit stays on this computer: pushing is a separate step, at the top or by dragging the branch.
+    toast(`${amend ? "Amended" : "Committed"} ${r.short}: ${r.subject}.${refs?.remotes.length ? " It's only on this computer until you push." : ""}`);
     await flyToHistory(flying);
     closeFile();
-    await Promise.all([loadStatus(), loadGraph()]);
+    await refreshAll();
   }
 
   /** The committed cards fly into the top of the history, where the new commit appears. */
@@ -3212,6 +3708,355 @@ function gitPage(root) {
           .finished.catch(() => {});
       }),
     );
+  }
+
+  // ---------------------------------------------------------------- branches and tags
+
+  function renderBranches() {
+    if (!refs) return put(branchesBody, h("div", { class: "card card-pad" }, loadingView("Reading the branches…")));
+    const current = refs.current;
+    const local = [...refs.branches].sort((a, b) => Number(b.current) - Number(a.current) || b.at - a.at);
+    const nameInput = h("input", { class: "input", type: "text", placeholder: "New branch, e.g. feature/checkout", "aria-label": "New branch name", autocomplete: "off", spellcheck: "false" });
+    const switchToo = h("input", { type: "checkbox", id: "git-new-switch", checked: true });
+    const form = h(
+      "form",
+      {
+        class: "git-new-branch",
+        onsubmit: (e) => {
+          e.preventDefault();
+          const name = nameInput.value.trim();
+          if (name) act("branch-create", { name, switchTo: switchToo.checked }, { button: form.querySelector("button[type=submit]") });
+        },
+      },
+      nameInput,
+      h("label", { class: "check", for: "git-new-switch" }, switchToo, "Switch to it"),
+      btn("Create branch", null, { small: true, iconName: "new", type: "submit" }),
+    );
+    const places = rememberPlaces(branchesBody);
+    put(
+      branchesBody,
+      h("ul", { class: "git-branch-list", "aria-label": "Branches on this computer" }, local.map((b) => branchCard(b, current))),
+      h("div", { class: "card card-pad git-branch-extra" }, form, remoteAndTags()),
+    );
+    slideFromPlaces(branchesBody, places);
+  }
+
+  function branchCard(b, current) {
+    const li = h(
+      "li",
+      { class: `card git-branch-card${b.current ? " current" : ""}`, draggable: "true", dataset: { key: `branch:${b.name}` }, title: b.current ? "Drop a branch here to merge it in, or a commit to copy it here" : `Drag onto ${current ?? "your branch"} to merge, or drop ${current ?? "your branch"} here to rebase onto it` },
+      h(
+        "div",
+        { class: "git-branch-top" },
+        h("span", { class: `graph-ref ${b.current ? "graph-ref-current" : "graph-ref-branch"} lane-${branchLane(b.name) % LANE_COLOURS}` }, icon("git"), b.name),
+        b.current ? h("span", { class: "badge badge-accent" }, "you're here") : null,
+        b.ahead ? h("span", { class: "badge badge-warn", title: `Commits not on ${b.upstream}` }, `↑${b.ahead}`) : null,
+        b.behind ? h("span", { class: "badge badge-accent", title: `Commits on ${b.upstream} you don't have` }, `↓${b.behind}`) : null,
+        b.gone ? h("span", { class: "badge badge-danger", title: "Its upstream branch was deleted on the remote" }, "gone") : null,
+        !b.current && b.merged ? h("span", { class: "badge badge-ok", title: `Everything on it is in ${current}` }, "merged") : null,
+      ),
+      h("p", { class: "git-branch-sub" }, h("span", { class: "git-branch-subject" }, b.subject), h("span", { class: "dim" }, ` · ${relativeTime(b.at)}`)),
+      h(
+        "div",
+        { class: "toolbar git-branch-actions" },
+        !b.current ? btn("Switch", (ev) => switchTo(b.name, ev.currentTarget), { small: true, iconName: "right" }) : null,
+        actionMenu("", [
+          !b.current && current ? [`Merge into ${current}…`, "git", () => mergeFlow(b.name)] : null,
+          !b.current && current ? [`Rebase ${current} onto this…`, "log", () => rebaseFlow(b.name)] : null,
+          ["Rename…", "journal", () => renameBranch(b.name)],
+          !b.current ? ["Delete…", "cleanup", () => deleteBranch(b)] : null,
+        ], { name: `More for ${b.name}` }),
+      ),
+    );
+    li.addEventListener("dragstart", (e) => startDrag(e, { kind: "branch", name: b.name }, b.name));
+    li.addEventListener("dragend", endDrag);
+    dropTarget(li, (d) => acceptsOnBranch(d, b.name, b.current), (d) => dropOnBranch(d, b.name, b.current));
+    return li;
+  }
+
+  /** A lane colour for a branch, the one its tip has in the graph when it's shown. */
+  function branchLane(name) {
+    const c = graph?.commits.find((x) => x.refs.some((r) => r.kind === "branch" && r.name === name));
+    return c ? c.row.lane : [...name].reduce((n, ch) => n + ch.charCodeAt(0), 0);
+  }
+
+  function acceptsOnBranch(d, name, isCurrent) {
+    if (d.kind === "commit") return isCurrent;
+    if (d.kind !== "branch" || d.name === name) return false;
+    return isCurrent || d.name === refs?.current;
+  }
+
+  function dropOnBranch(d, name, isCurrent) {
+    if (d.kind === "commit") return act("cherry-pick", { hash: d.hash });
+    if (isCurrent) return mergeFlow(d.name);
+    if (d.name === refs?.current) return rebaseFlow(name);
+  }
+
+  function remoteAndTags() {
+    const remotes = refs.remoteBranches;
+    const tags = refs.tags;
+    // Pushing is its own step: drop your branch here (or use Push at the top), never part of a commit.
+    const pushZone = refs.remotes.length && refs.current
+      ? h("div", { class: "git-push-zone", title: `Drop ${refs.current} here to push it` }, icon("right"), `Drop ${refs.current} (or a tag) here to push it to ${refs.remotes.includes("origin") ? "origin" : refs.remotes[0]}`)
+      : null;
+    if (pushZone) dropTarget(pushZone, (d) => (d.kind === "branch" && d.name === refs.current) || d.kind === "tag", (d) => (d.kind === "tag" ? act("push-tags", { name: d.name }) : act("push")));
+    return [
+      remotes.length || pushZone
+        ? h(
+            "div",
+            { class: "git-chips-group" },
+            h("h3", { class: "git-subtitle" }, "On the remote"),
+            pushZone,
+            h(
+              "ul",
+              { class: "git-chips" },
+              remotes.slice(0, 60).map((r) => {
+                const local = refs.branches.some((b) => b.name === r.branch);
+                const li = h(
+                  "li",
+                  { class: "git-chip", draggable: "true", title: `Drag onto ${refs.current ?? "your branch"} to merge ${r.name} into it` },
+                  h("span", { class: `graph-ref graph-ref-remote lane-${branchLane(r.branch) % LANE_COLOURS}` }, r.name),
+                  !local ? btn("Check out", (ev) => switchTo(r.name, ev.currentTarget), { small: true, kind: "ghost", title: `A local ${r.branch} that tracks ${r.name}` }) : null,
+                );
+                li.addEventListener("dragstart", (e) => startDrag(e, { kind: "branch", name: r.name }, r.name));
+                li.addEventListener("dragend", endDrag);
+                return li;
+              }),
+            ),
+          )
+        : refs.remotes.length
+          ? null
+          : h("p", { class: "dim" }, "No remote: this repository lives only on this computer."),
+      tags.length
+        ? h(
+            "div",
+            { class: "git-chips-group" },
+            h(
+              "div",
+              { class: "git-subtitle-row" },
+              h("h3", { class: "git-subtitle" }, "Tags"),
+              refs.remotes.length ? btn("Push all tags", (ev) => act("push-tags", { all: true }, { button: ev.currentTarget, busyText: "Pushing…" }), { small: true, kind: "ghost", iconName: "right" }) : null,
+            ),
+            h(
+              "ul",
+              { class: "git-chips" },
+              tags.slice(0, 60).map((t) => {
+                const li = h(
+                  "li",
+                  { class: "git-chip", draggable: refs.remotes.length ? "true" : undefined, title: refs.remotes.length ? "Drag onto the push box to push this tag" : undefined },
+                  h("span", { class: "graph-ref graph-ref-tag", title: t.annotated ? "Annotated tag" : "Tag" }, icon("tag"), t.name),
+                  refs.remotes.length ? btn(null, (ev) => act("push-tags", { name: t.name }, { button: ev.currentTarget, busyText: "…" }), { small: true, kind: "ghost", iconName: "right", name: `Push the tag ${t.name}`, title: "Push the tag" }) : null,
+                  btn(null, () => deleteTag(t.name), { small: true, kind: "ghost", iconName: "x", name: `Delete the tag ${t.name}`, title: "Delete the tag (here only)" }),
+                );
+                li.addEventListener("dragstart", (e) => startDrag(e, { kind: "tag", name: t.name }, t.name));
+                li.addEventListener("dragend", endDrag);
+                return li;
+              }),
+            ),
+          )
+        : null,
+    ];
+  }
+
+  async function switchTo(name, button) {
+    const dirty = (status?.files ?? []).length > 0;
+    let shelve = false;
+    if (dirty) {
+      const a = await askDialog({
+        title: `Switch to ${name}?`,
+        text: [`You have ${plural(status.files.length, "changed file")}. Git carries them along if they don't clash with ${name}; or put them on the shelf first and take them back later.`],
+        choices: [{ value: "carry", label: "Switch, carry my changes", kind: "primary" }, { value: "shelve", label: "Shelve them and switch" }],
+      });
+      if (!a) return;
+      shelve = a.choice === "shelve";
+    }
+    const r = await act("switch", { name, shelve }, { button, busyText: "Switching…" });
+    if (!r && dirty && !shelve) {
+      const again = await confirmDialog({ title: "Shelve and switch?", text: `Your changes would clash with ${name}. Put them on the shelf and switch?`, confirm: "Shelve and switch", danger: false });
+      if (again) act("switch", { name, shelve: true });
+    }
+  }
+
+  async function renameBranch(name) {
+    const a = await askDialog({ title: `Rename ${name}`, fields: [{ name: "to", label: "New name", value: name }], choices: [{ value: "ok", label: "Rename", kind: "primary" }] });
+    if (a && a.values.to.trim() && a.values.to.trim() !== name) act("branch-rename", { name, to: a.values.to.trim() });
+  }
+
+  async function deleteBranch(b) {
+    const yes = await confirmDialog({
+      title: `Delete ${b.name}?`,
+      text: [b.merged ? `Everything on it is already in ${refs.current}, so nothing is lost.` : `It has commits that aren't in ${refs.current} (the latest: "${b.subject}").`, "Undo brings it back, at the same commit."],
+      confirm: "Delete branch",
+    });
+    if (yes) act("branch-delete", { name: b.name });
+  }
+
+  async function deleteTag(name) {
+    const yes = await confirmDialog({ title: `Delete the tag ${name}?`, text: "Only here: a tag already pushed stays on the remote. Undo brings it back.", confirm: "Delete tag" });
+    if (yes) act("tag-delete", { name });
+  }
+
+  function commitList(list, count) {
+    return h("ul", { class: "git-preview-list" }, list.slice(0, 6).map((c) => h("li", null, h("span", { class: "mono dim" }, c.hash.slice(0, 7)), " ", c.subject)), count > 6 ? h("li", { class: "dim" }, `and ${count - 6} more`) : null);
+  }
+
+  function conflictNote(p) {
+    if (!p.conflicts) return h("p", { class: "dim" }, "git here is too old to tell conflicts in advance (it needs 2.38).");
+    if (!p.conflicts.length) return h("p", { class: "git-preview-ok" }, icon("check"), " No conflicts.");
+    return h("p", { class: "git-preview-warn" }, icon("warn"), ` It will conflict in ${p.conflicts.slice(0, 5).join(", ")}${p.conflicts.length > 5 ? ` and ${p.conflicts.length - 5} more` : ""}: you'll pick a side for each block.`);
+  }
+
+  async function mergeFlow(name) {
+    let p;
+    try {
+      p = await api(`/api/git/preview?dir=${encodeURIComponent(dir)}&branch=${encodeURIComponent(name)}`);
+    } catch (err) {
+      return toast(err.message, "error");
+    }
+    if (p.upToDate) return toast(`${p.current} already has everything from ${name}.`);
+    const a = await askDialog({
+      title: `Merge ${name} into ${p.current}?`,
+      text: [h("p", null, `${plural(p.incomingCount, "commit")} from ${name} come${p.incomingCount === 1 ? "s" : ""} in:`), commitList(p.incoming, p.incomingCount), conflictNote(p)],
+      choices: [
+        { value: "merge", label: "Merge", kind: "primary" },
+        { value: "squash", label: "Squash into one commit" },
+        p.fastForward ? { value: "fast-forward", label: "Fast-forward" } : null,
+      ].filter(Boolean),
+    });
+    if (a) act("merge", { branch: name, mode: a.choice });
+  }
+
+  async function rebaseFlow(onto) {
+    let p;
+    try {
+      p = await api(`/api/git/preview?dir=${encodeURIComponent(dir)}&branch=${encodeURIComponent(onto)}`);
+    } catch (err) {
+      return toast(err.message, "error");
+    }
+    if (p.upToDate) return toast(`${p.current} already sits on top of ${onto}.`);
+    const pushed = refs.branches.find((b) => b.current)?.upstream;
+    const a = await askDialog({
+      title: `Rebase ${p.current} onto ${onto}?`,
+      text: [
+        h("p", null, `Your ${plural(p.outgoingCount, "commit")} on ${p.current} are replayed on top of ${onto}, which has ${plural(p.incomingCount, "new commit")}:`),
+        commitList(p.outgoing, p.outgoingCount),
+        conflictNote(p),
+        pushed ? h("p", { class: "dim" }, `${p.current} is pushed: after a rebase you'd force push it.`) : null,
+      ],
+      choices: [{ value: "rebase", label: "Rebase", kind: "primary" }],
+    });
+    if (a) act("rebase", { onto });
+  }
+
+  // ---------------------------------------------------------------- editing history
+
+  async function openRebase(hash) {
+    if ((status?.files ?? []).some((f) => !f.untracked)) return toast("Commit, shelve or discard your changes before editing history.", "error");
+    let plan;
+    try {
+      plan = await api(`/api/git/rebase-plan?dir=${encodeURIComponent(dir)}&from=${hash}`);
+    } catch (err) {
+      return toast(err.message, "error");
+    }
+    rebase = { from: hash, steps: plan.commits.map((c) => ({ ...c, action: "pick", message: c.subject })) };
+    renderRebase();
+    rebasePanel.scrollIntoView({ block: "start", behavior: reducedMotion.matches ? "auto" : "smooth" });
+  }
+
+  function renderRebase() {
+    if (!rebase) return rebasePanel.replaceChildren();
+    const places = rememberPlaces(rebasePanel);
+    const actions = [["pick", "Keep"], ["reword", "Reword"], ["squash", "Squash into the one above"], ["fixup", "Fold into the one above (drop its message)"], ["drop", "Drop"]];
+    const list = h(
+      "ol",
+      { class: "git-steps" },
+      rebase.steps.map((s, i) => {
+        const select = h(
+          "select",
+          { "aria-label": `What happens to ${s.short}`, onchange: (e) => ((s.action = e.target.value), renderRebase()) },
+          actions.map(([v, label]) => h("option", { value: v, selected: v === s.action, disabled: i === 0 && (v === "squash" || v === "fixup") }, label)),
+        );
+        const li = h(
+          "li",
+          { class: `git-step git-step-${s.action}`, draggable: "true", dataset: { key: `step:${s.hash}` } },
+          h("span", { class: "git-step-grip", "aria-hidden": "true" }, "⋮⋮"),
+          h("span", { class: "mono dim" }, s.short),
+          s.action === "reword"
+            ? h("input", { class: "input git-step-message", type: "text", value: s.message, "aria-label": `New message for ${s.short}`, oninput: (e) => (s.message = e.target.value) })
+            : h("span", { class: "git-step-subject" }, s.subject),
+          h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Action"), select),
+          h(
+            "span",
+            { class: "git-step-move" },
+            btn(null, () => moveStep(i, i - 1), { small: true, kind: "ghost", iconName: "up", name: `Move ${s.short} earlier`, title: "Earlier", disabled: i === 0 }),
+            btn(null, () => moveStep(i, i + 1), { small: true, kind: "ghost", iconName: "down", name: `Move ${s.short} later`, title: "Later", disabled: i === rebase.steps.length - 1 }),
+          ),
+        );
+        li.addEventListener("dragstart", (e) => startDrag(e, { kind: "step", index: i }, s.short));
+        li.addEventListener("dragend", endDrag);
+        dropTarget(li, (d) => d.kind === "step" && d.index !== i, (d, e) => {
+          const box = li.getBoundingClientRect();
+          moveStep(d.index, e.clientY < box.top + box.height / 2 ? (d.index < i ? i - 1 : i) : d.index < i ? i : i + 1);
+        });
+        return li;
+      }),
+    );
+    const kept = rebase.steps.filter((s) => s.action !== "drop").length;
+    const first = rebase.steps.find((s) => s.action !== "drop");
+    const invalid = !kept || first.action === "squash" || first.action === "fixup";
+    put(
+      rebasePanel,
+      h(
+        "section",
+        { class: "card card-pad section git-file", "aria-labelledby": "git-rebase-title" },
+        h(
+          "div",
+          { class: "section-head" },
+          h("div", { class: "git-file-title" }, h("h2", { class: "section-title", id: "git-rebase-title" }, `Edit history from ${rebase.from.slice(0, 7)}`), h("span", { class: "badge" }, plural(rebase.steps.length, "commit"))),
+          h(
+            "div",
+            { class: "toolbar" },
+            btn("Rewrite history", (ev) => runRebase(ev.currentTarget), { small: true, kind: "primary", iconName: "check", disabled: invalid }),
+            btn("Cancel", () => ((rebase = null), renderRebase()), { small: true, kind: "ghost", iconName: "x" }),
+          ),
+        ),
+        h("p", { class: "dim" }, "Oldest first, the order git replays them in. Drag a commit (or use the arrows) to move it; pick what happens to each. Undo puts everything back."),
+        invalid ? h("p", { class: "git-preview-warn" }, icon("warn"), kept ? " The first commit kept can't be squashed: there's nothing above it." : " That drops every commit: use Go back here instead.") : null,
+        list,
+      ),
+    );
+    slideFromPlaces(rebasePanel, places);
+  }
+
+  function moveStep(from, to) {
+    if (!rebase || to < 0 || to >= rebase.steps.length || from === to) return;
+    const [s] = rebase.steps.splice(from, 1);
+    rebase.steps.splice(to, 0, s);
+    if (rebase.steps[0].action === "squash" || rebase.steps[0].action === "fixup") rebase.steps[0].action = "pick";
+    renderRebase();
+  }
+
+  async function runRebase(button) {
+    const pushed = refs?.branches.find((b) => b.current)?.upstream;
+    const yes = await confirmDialog({
+      title: "Rewrite this history?",
+      text: [
+        `${plural(rebase.steps.length, "commit")} are replayed in the new order, with your changes to each. Undo puts the branch back as it was.`,
+        pushed ? `If these commits are already on ${pushed}, you'd force push afterwards.` : "",
+      ].filter(Boolean),
+      confirm: "Rewrite history",
+      danger: false,
+    });
+    if (!yes) return;
+    const r = await act(
+      "rebase-run",
+      { from: rebase.from, steps: rebase.steps.map((s) => ({ hash: s.hash, action: s.action, message: s.action === "reword" ? s.message : undefined })) },
+      { button, busyText: "Rewriting…" },
+    );
+    if (r) {
+      rebase = null;
+      renderRebase();
+    }
   }
 
   // ---------------------------------------------------------------- history
@@ -3237,8 +4082,17 @@ function gitPage(root) {
       return;
     }
     const lanes = Math.min(MAX_LANES, Math.max(1, graph.width));
-    historyList = h("ol", { class: "graph", "aria-label": "Commits, newest first" }, graph.commits.map((c) => graphRow(c, lanes)));
-    put(history,
+    historyList = h("ol", { class: `graph${drawIn && !reducedMotion.matches ? " graph-draw" : ""}`, "aria-label": "Commits, newest first" }, graph.commits.map((c, i) => graphRow(c, lanes, i)));
+    // Once drawn, rows redrawn later (opening a commit) don't draw themselves in again.
+    if (drawIn) setTimeout(() => historyList?.classList.remove("graph-draw"), 2000);
+    drawIn = false;
+    historyList.addEventListener("mouseover", (e) => {
+      const li = e.target.closest?.(".graph-item");
+      if (li && li.parentElement === historyList) glow([...historyList.children].indexOf(li));
+    });
+    historyList.addEventListener("mouseleave", clearGlow);
+    put(
+      history,
       historyList,
       graph.more
         ? h(
@@ -3253,22 +4107,67 @@ function gitPage(root) {
         : null,
     );
     newCommit = null;
+    renderBranches();
   }
 
-  function graphRow(c, lanes) {
+  /** Lights up the path of the hovered commit's branch: its lane, up and down for as long as it runs. */
+  function glow(index) {
+    clearGlow();
+    const rows = graph.commits.map((c) => c.row);
+    const lane = rows[index]?.lane;
+    if (lane === undefined || !historyList) return;
+    const below = (r) => r.down.includes(lane) || r.through.includes(lane) || (r.moves ?? []).some(([, to]) => to === lane);
+    const above = (r) => r.up.includes(lane) || r.through.includes(lane) || (r.moves ?? []).some(([from]) => from === lane);
+    let lo = index;
+    let hi = index;
+    while (hi + 1 < rows.length && below(rows[hi])) hi++;
+    while (lo > 0 && above(rows[lo])) lo--;
+    const items = historyList.children;
+    for (let i = lo; i <= hi; i++) for (const el of items[i]?.querySelectorAll(`.graph-cell [data-lane="${lane}"]`) ?? []) el.classList.add("hot");
+    historyList.classList.add("hovering");
+  }
+
+  function clearGlow() {
+    if (!historyList) return;
+    historyList.classList.remove("hovering");
+    for (const el of historyList.querySelectorAll(".hot")) el.classList.remove("hot");
+  }
+
+  function graphRow(c, lanes, index = 0) {
     const isOpen = openCommit === c.hash;
-    const li = h("li", { class: `graph-item${c.hash === newCommit ? " graph-new" : ""}${isOpen ? " open" : ""}`, dataset: { hash: c.hash } });
+    const isHead = c.hash === (status?.head ?? graphHead);
+    const li = h("li", { class: `graph-item${c.hash === newCommit ? " graph-new" : ""}${isOpen ? " open" : ""}${isHead ? " graph-head" : ""}`, dataset: { hash: c.hash }, draggable: "true" });
     li.style.setProperty("--lanes", String(lanes));
+    li.style.setProperty("--i", String(Math.min(index, 40)));
+    const pills = c.refs.map((r) => {
+      const pill = refBadge(r, c.row.lane);
+      if (r.kind === "branch" || r.kind === "remote") {
+        pill.draggable = true;
+        pill.addEventListener("dragstart", (e) => {
+          e.stopPropagation();
+          startDrag(e, { kind: "branch", name: r.name }, r.name);
+        });
+        pill.addEventListener("dragend", endDrag);
+        if (r.kind === "branch") dropTarget(pill, (d) => acceptsOnBranch(d, r.name, !!r.current), (d) => dropOnBranch(d, r.name, !!r.current));
+      }
+      return pill;
+    });
     const row = h(
       "button",
       { type: "button", class: "graph-row", "aria-expanded": String(isOpen), onclick: () => toggleCommit(c, lanes) },
-      graphCell(c.row, lanes, c.parents.length > 1),
-      h("span", { class: "graph-text" }, c.refs.length ? h("span", { class: "graph-refs" }, c.refs.map(refBadge)) : null, h("span", { class: "graph-subject" }, c.subject || "(no message)")),
+      graphCell(c.row, lanes, { merge: c.parents.length > 1, author: c.author, head: isHead }),
+      h("span", { class: "graph-text" }, pills.length ? h("span", { class: "graph-refs" }, pills) : null, h("span", { class: "graph-subject" }, c.subject || "(no message)")),
       h("span", { class: "graph-author" }, c.author),
       h("span", { class: "graph-hash mono" }, c.short),
       h("time", { class: "graph-time", datetime: new Date(c.at).toISOString(), title: new Date(c.at).toLocaleString() }, relativeTime(c.at)),
     );
     li.append(row);
+    li.addEventListener("dragstart", (e) => {
+      if (drag) return;
+      startDrag(e, { kind: "commit", hash: c.hash, subject: c.subject }, c.short);
+      li.classList.add("dragging");
+    });
+    li.addEventListener("dragend", endDrag);
     if (isOpen) li.append(commitDetail(c, lanes));
     return li;
   }
@@ -3278,8 +4177,8 @@ function gitPage(root) {
     openCommit = previous === c.hash ? null : c.hash;
     for (const hash of [previous, c.hash]) {
       const el = hash && historyList?.querySelector(`[data-hash="${hash}"]`);
-      const commitOf = hash && graph.commits.find((x) => x.hash === hash);
-      if (el && commitOf) el.replaceWith(graphRow(commitOf, lanes));
+      const index = hash ? graph.commits.findIndex((x) => x.hash === hash) : -1;
+      if (el && index >= 0) el.replaceWith(graphRow(graph.commits[index], lanes, index));
     }
     historyList?.querySelector(`[data-hash="${c.hash}"] .graph-row`)?.focus();
   }
@@ -3292,7 +4191,9 @@ function gitPage(root) {
         const d = await api(`/api/git/commit?dir=${encodeURIComponent(dir)}&hash=${c.hash}`);
         const [, ...rest] = d.message.split("\n");
         const more = rest.join("\n").trim();
-        put(body,
+        const onBranch = !!refs?.current;
+        put(
+          body,
           h("p", { class: "graph-detail-subject" }, d.subject),
           more ? h("p", { class: "graph-detail-message" }, more) : null,
           h(
@@ -3307,6 +4208,16 @@ function gitPage(root) {
             " ",
             copyButton(d.hash, "Copy hash"),
           ),
+          h(
+            "div",
+            { class: "toolbar git-commit-actions" },
+            btn("Revert", () => act("revert", { hash: d.hash }), { small: true, iconName: "refresh", title: "A new commit that undoes this one" }),
+            btn(`Copy onto ${refs?.current ?? "this branch"}`, () => act("cherry-pick", { hash: d.hash }), { small: true, iconName: "copy", disabled: !onBranch }),
+            btn("New branch here…", () => newBranchAt(d.hash), { small: true, kind: "ghost", iconName: "git" }),
+            btn("Tag…", () => newTagAt(d.hash), { small: true, kind: "ghost", iconName: "tag" }),
+            btn("Edit history from here…", () => openRebase(d.hash), { small: true, kind: "ghost", iconName: "log", disabled: !onBranch }),
+            btn("Go back here…", () => goBackTo(d.hash, d.subject), { small: true, kind: "ghost", iconName: "left" }),
+          ),
           d.files.length ? liveDetail(diffBlock(d.patch, { truncated: d.truncated })) : h("p", { class: "dim" }, "No file changes."),
         );
       } catch (err) {
@@ -3318,20 +4229,84 @@ function gitPage(root) {
 
   // ---------------------------------------------------------------- loading
 
+  function setStatus(fresh) {
+    const moved = !status || fresh.head !== status.head || fresh.branch !== status.branch || fresh.operation !== status.operation;
+    status = fresh;
+    statusSig = JSON.stringify(fresh);
+    renderHead();
+    renderOperation();
+    renderBoard();
+    if (graph && fresh.head !== graphHead) loadGraph();
+    if (moved && refs) {
+      loadRefs();
+      loadUndo();
+    }
+  }
+
+  async function loadStatus({ quiet = false } = {}) {
+    const forDir = dir;
+    try {
+      const fresh = await api(`/api/git/status?dir=${encodeURIComponent(dir)}`);
+      if (forDir !== dir || stopped) return;
+      if (JSON.stringify(fresh) === statusSig) return;
+      setStatus(fresh);
+      if (openFile && quiet) refreshOpenFile();
+    } catch (err) {
+      if (quiet) return;
+      headInfo.replaceChildren(errorView(err, () => load()));
+    }
+  }
+
+  async function loadRefs() {
+    const forDir = dir;
+    try {
+      const r = await api(`/api/git/refs?dir=${encodeURIComponent(dir)}`);
+      if (forDir !== dir || stopped) return;
+      refs = r;
+      renderBranches();
+      renderShelf();
+      if (status) renderHead();
+    } catch (err) {
+      put(branchesBody, h("div", { class: "card card-pad" }, errorView(err, () => loadRefs())));
+    }
+  }
+
+  async function loadUndo() {
+    const forDir = dir;
+    try {
+      const u = await api(`/api/git/undo?dir=${encodeURIComponent(dir)}`);
+      if (forDir !== dir || stopped) return;
+      undo = u;
+      renderUndo();
+      if (status) renderHead();
+    } catch {
+      // the undo list is a convenience: the rest of the page works without it
+    }
+  }
+
   async function load({ keep = false } = {}) {
     if (!keep) {
       message.value = drafts.get(dir) ?? "";
+      amendBox.checked = false;
       openFile = null;
       openCommit = null;
       selected.clear();
       filePanel.replaceChildren();
+      rebase = null;
+      rebasePanel.replaceChildren();
       status = null;
       statusSig = "";
       graph = null;
+      refs = null;
+      undo = null;
+      drawIn = true;
       limit = 200;
       history.replaceChildren(loadingView("Reading the history…"));
+      renderBranches();
+      renderUndo();
     }
-    await Promise.all([loadStatus(), loadGraph()]);
+    statusSig = "";
+    await Promise.all([loadStatus(), loadGraph(), loadRefs(), loadUndo()]);
     if (keep && openFile) refreshOpenFile();
   }
 
@@ -3345,7 +4320,7 @@ function gitPage(root) {
     if (!projects.length) {
       board.hidden = true;
       headInfo.replaceChildren(stateView("No git projects", "dx didn't find a project with git in your projects folders.", h("a", { class: "btn", href: "#/projects" }, "Go to projects")));
-      history.closest("section").hidden = true;
+      for (const el of root.querySelectorAll("section.section, details.git-undo")) el.hidden = true;
       return;
     }
     if (!projects.some((p) => p.dir.toLowerCase() === dir.toLowerCase())) dir = [...projects].sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0))[0].dir;
@@ -3360,7 +4335,7 @@ function gitPage(root) {
   const timer = setInterval(() => {
     if (!document.hidden && !drag && !working && status) loadStatus({ quiet: true });
   }, 4000);
-  const onFocus = () => !drag && !working && status && loadStatus({ quiet: true });
+  const onFocus = () => !drag && !working && status && (loadStatus({ quiet: true }), loadRefs());
   window.addEventListener("focus", onFocus);
   return () => {
     stopped = true;

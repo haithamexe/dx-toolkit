@@ -12,6 +12,17 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
   - **Commit** from the page, with Ctrl+Enter. The committed cards fly into the history, where the new commit appears.
   - **The history as a graph**: every branch, tag and remote branch in its own coloured lane. Open a commit for its message and its diff, Visual side by side or Raw.
   - Changes you make in your editor or a terminal show up by themselves.
+  - **Branches by dragging.** Drop a branch onto the one you're on to merge it, after a preview of the commits that come in and the files that would conflict (from `git merge-tree`, without touching any file). Choose Merge, Squash or Fast-forward. Drop yours onto another branch to rebase it. Create, switch, rename and delete branches; create, delete and push tags (one by its button or by dragging it onto the push box, or all of them).
+  - **Commits by dragging.** Drag a commit out of the graph onto **Revert**, **Copy onto this branch** (cherry-pick), **New branch here**, **Tag here**, **Edit history from here** or **Go back here**. Each one is also a button in the commit's detail.
+  - **Edit history** as cards: reorder commits by dragging them, and reword, squash, fold or drop each one (an interactive rebase).
+  - **A shelf** (git stash): drag changes onto it to put them aside, and back to Changes to take them back. Switching branch with changes in the way offers to shelve them.
+  - **Conflicts**, side by side, with Keep yours, Keep incoming or Keep both for each block (or one side for the whole file). Then Continue or Abort the merge, rebase, cherry-pick or revert.
+  - **Discard** changes, by the bin you drop cards on or a button. dx keeps a copy first, so Undo brings them back.
+  - **Amend** the last commit, with a warning when it's already pushed.
+  - **Write message**, when Claude Code is installed: it writes the commit message from the staged changes, in the style of the repository's recent commits, into the box for you to edit. It only runs when you click, since it sends the staged diff to your Claude account. Nothing is committed for you.
+  - **Fetch, Pull and Push**, with what's ahead and behind, separate from committing: push with the button or by dragging your branch onto the remote. Pull only fast-forwards. Force push is only ever `--force-with-lease`, after a confirm.
+  - **Undo for everything** done from the page: the Undo button, and an Undo history with git's reflog to go back further.
+  - **A livelier graph.** It draws itself in. A branch's path lights up under the mouse, the dots show each author's initials, branch pills take their lane's colour, and the commit you're on pulses.
 - **`dx git <project>`** prints the branch, what's staged and changed, and the recent history as a graph in the terminal. `--ui` opens the Git page.
 - **Machine page**, `dx machine` and the `machine_info` MCP tool: what this computer has, and what runs on it.
   - **Tools**: Node, npm, pnpm, yarn, bun, deno, git, gh, docker, Python, Go, Java and Rust, with the installed version, the newest one, and whether yours still gets security fixes (from endoflife.date, the npm registry and GitHub releases, kept for 12 hours). **Update** opens the command that fits how the tool was installed (nvm, fnm, volta, mise, asdf, winget, Homebrew, scoop, npm, corepack…) in a terminal you can watch.

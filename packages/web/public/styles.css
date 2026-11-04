@@ -1809,7 +1809,7 @@ summary.error-row {
 }
 .git-board {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
   gap: var(--s4);
   align-items: start;
 }
@@ -2129,7 +2129,7 @@ summary.error-row {
 }
 .graph-row {
   display: grid;
-  grid-template-columns: calc(var(--lanes, 1) * 16px) minmax(0, 1fr) minmax(0, 9em) 4.5em 5em;
+  grid-template-columns: calc(var(--lanes, 1) * 20px) minmax(0, 1fr) minmax(0, 9em) 4.5em 5em;
   align-items: center;
   gap: var(--s3);
   width: 100%;
@@ -2154,7 +2154,11 @@ summary.error-row {
 .graph-line {
   fill: none;
   stroke: var(--lane);
-  stroke-width: 2;
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  transition:
+    opacity 0.2s,
+    stroke-width 0.2s;
 }
 .graph-dot {
   fill: var(--lane);
@@ -2164,6 +2168,14 @@ summary.error-row {
 .graph-dot-merge {
   fill: var(--surface);
   stroke: var(--lane);
+  stroke-width: 2.5;
+}
+.graph-initials {
+  fill: var(--surface);
+  font: 700 7.5px var(--font);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  user-select: none;
 }
 .graph-text {
   display: flex;
@@ -2212,14 +2224,23 @@ summary.error-row {
   width: 12px;
   height: 12px;
 }
+/* Branch pills take the colour of their lane in the graph. */
+.graph-ref-branch,
+.graph-ref-current,
+.graph-ref-remote {
+  border-color: color-mix(in srgb, var(--lane, var(--accent)) 55%, transparent);
+  background: color-mix(in srgb, var(--lane, var(--accent)) 14%, transparent);
+  color: var(--lane, var(--accent));
+}
 .graph-ref-current {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
+  border-color: var(--lane, var(--accent));
+  background: var(--lane, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lane, var(--accent)) 22%, transparent);
+  color: var(--surface);
 }
 .graph-ref-remote {
   border-style: dashed;
-  color: var(--text-dim);
+  background: transparent;
 }
 .graph-ref-tag {
   border-color: transparent;
@@ -2233,13 +2254,13 @@ summary.error-row {
 }
 .graph-detail {
   display: grid;
-  grid-template-columns: calc(var(--lanes, 1) * 16px) minmax(0, 1fr);
+  grid-template-columns: calc(var(--lanes, 1) * 20px) minmax(0, 1fr);
   gap: var(--s3);
   padding: 0 var(--s4) 0 var(--s3);
 }
 .graph-strip {
   display: block;
-  width: calc(var(--lanes, 1) * 16px);
+  width: calc(var(--lanes, 1) * 20px);
   height: 100%;
 }
 .graph-detail-body {
@@ -2309,12 +2330,557 @@ summary.error-row {
     border-left: 0;
   }
   .graph-row {
-    grid-template-columns: calc(var(--lanes, 1) * 16px) minmax(0, 1fr) 4.5em;
+    grid-template-columns: calc(var(--lanes, 1) * 20px) minmax(0, 1fr) 4.5em;
     padding-right: var(--s3);
   }
   .graph-author,
   .graph-hash {
     display: none;
+  }
+}
+
+/* ------------------------------------------------------------ Git: the graph, livelier */
+.graph.hovering .graph-line:not(.hot) {
+  opacity: 0.3;
+}
+.graph-line.hot {
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 3px var(--lane));
+}
+.graph-dot.hot {
+  filter: drop-shadow(0 0 4px var(--lane));
+}
+/* The commit HEAD is on breathes. */
+.graph-pulse {
+  fill: var(--lane);
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: graph-pulse 2.4s ease-out infinite;
+}
+@keyframes graph-pulse {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(1.9);
+  }
+}
+/* On load the graph draws itself in, row by row. */
+.graph-draw .graph-line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: graph-draw 0.45s ease-out forwards;
+  animation-delay: calc(var(--i, 0) * 22ms);
+}
+.graph-draw .graph-dot,
+.graph-draw .graph-initials {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: graph-pop 0.35s cubic-bezier(0.3, 1.6, 0.5, 1) forwards;
+  animation-delay: calc(var(--i, 0) * 22ms + 120ms);
+}
+@keyframes graph-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes graph-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.graph-head > .graph-row .graph-subject {
+  font-weight: 650;
+}
+.graph-item.dragging {
+  opacity: 0.5;
+}
+.graph-ref[draggable="true"],
+.git-chip[draggable="true"] {
+  cursor: grab;
+}
+.graph-ref.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------ Git: shelf, bin, operation in progress */
+.git-shelf {
+  border-style: dashed;
+}
+.git-code-S {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.git-code .icon {
+  width: 12px;
+  height: 12px;
+}
+.git-stash-text {
+  cursor: grab;
+}
+.git-bin {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 2px dashed var(--danger);
+  border-radius: var(--r1);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+.dragging-changes .git-bin {
+  display: flex;
+}
+.git-bin.drop-target {
+  background: var(--danger);
+  color: var(--surface);
+}
+.git-card-conflict {
+  border-color: var(--danger);
+}
+.git-op:empty {
+  display: none;
+}
+.git-op-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.git-op-text p {
+  margin: 0;
+}
+.git-sync {
+  margin-left: auto;
+}
+.git-section-hint {
+  font-size: var(--t-sm);
+}
+
+/* ------------------------------------------------------------ Git: branches and tags */
+.git-branches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.git-branch-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--s3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.git-branch-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  cursor: grab;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    transform 0.15s,
+    background-color 0.15s;
+}
+.git-branch-card:hover {
+  border-color: var(--border-strong);
+}
+.git-branch-card.current {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.dragging-branch .git-branch-card.current,
+.dragging-commit .git-branch-card.current {
+  border-style: dashed;
+}
+.git-branch-card.drop-target {
+  background: var(--accent-soft);
+  transform: scale(1.02);
+}
+.git-branch-card.dragging {
+  opacity: 0.5;
+}
+.git-branch-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1) var(--s2);
+}
+.git-branch-sub {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--t-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-branch-subject {
+  color: var(--text);
+}
+.git-branch-actions {
+  margin-top: auto;
+}
+.git-branch-extra {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+.git-new-branch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+}
+.git-new-branch .input {
+  flex: 1;
+  min-width: 200px;
+}
+.git-subtitle {
+  margin: 0 0 var(--s2);
+  font-size: var(--t-sm);
+  font-weight: 650;
+}
+.git-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.git-push-zone {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: var(--s2);
+  padding: var(--s2) var(--s3);
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--r1);
+  color: var(--text-dim);
+  font-size: var(--t-sm);
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+.dragging-branch .git-push-zone,
+.dragging-tag .git-push-zone {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.git-push-zone.drop-target {
+  background: var(--accent-soft);
+}
+.git-subtitle-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: var(--s2);
+}
+.git-subtitle-row .git-subtitle {
+  margin: 0;
+}
+.git-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+/* ------------------------------------------------------------ Git: the dock a commit is dropped on */
+.git-dock {
+  position: fixed;
+  left: 50%;
+  bottom: var(--s4);
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s2);
+  max-width: calc(100vw - var(--s6));
+  padding: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--r3);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+  animation: dock-in 0.2s ease-out;
+}
+.git-dock[hidden] {
+  display: none;
+}
+.git-dock-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s1);
+  min-width: 96px;
+  padding: var(--s2) var(--s3);
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--r2);
+  color: var(--text-dim);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  text-align: center;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    transform 0.15s;
+}
+.git-dock-zone.drop-target {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  transform: translateY(-4px);
+}
+@keyframes dock-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%);
+  }
+}
+
+/* ------------------------------------------------------------ Git: conflicts */
+.git-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--danger);
+  border-radius: var(--r1);
+  transition: border-color 0.15s;
+}
+.git-conflict.picked {
+  border-color: var(--ok);
+}
+.git-conflict-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+.git-conflict-sides {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--s2);
+}
+.git-conflict-side {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+  transition: opacity 0.15s;
+}
+.git-conflict-label {
+  padding: var(--s1) var(--s2);
+  background: var(--surface-2);
+  font-size: var(--t-xs);
+  font-weight: 650;
+}
+.git-conflict-side pre,
+.git-conflict-text {
+  margin: 0;
+  padding: var(--s2);
+  font: var(--t-xs) / 1.6 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.git-conflict-ours pre {
+  background: var(--accent-soft);
+}
+.git-conflict-theirs pre {
+  background: var(--warn-soft);
+}
+.git-conflict[data-pick="ours"] .git-conflict-theirs,
+.git-conflict[data-pick="theirs"] .git-conflict-ours {
+  opacity: 0.4;
+}
+.git-conflict-text {
+  color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------ Git: editing history */
+.git-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.git-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--control);
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+  background: var(--surface);
+  cursor: grab;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s,
+    opacity 0.15s;
+}
+.git-step.drop-target {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.git-step.dragging {
+  opacity: 0.5;
+}
+.git-step-grip {
+  color: var(--text-dim);
+  letter-spacing: -2px;
+}
+.git-step-subject {
+  flex: 1;
+  min-width: 10em;
+  overflow-wrap: anywhere;
+}
+.git-step-message {
+  flex: 1;
+  min-width: 12em;
+}
+.git-step-move {
+  display: inline-flex;
+}
+.git-step-drop {
+  opacity: 0.55;
+}
+.git-step-drop .git-step-subject {
+  text-decoration: line-through;
+}
+.git-step-squash,
+.git-step-fixup {
+  margin-left: var(--s5);
+  border-left: 3px solid var(--accent);
+}
+.git-step-reword {
+  border-color: var(--warn);
+}
+
+/* ------------------------------------------------------------ Git: previews and undo */
+.git-preview-list {
+  margin: 0;
+  padding-left: var(--s4);
+  font-size: var(--t-sm);
+}
+.git-preview-ok,
+.git-preview-warn {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+.git-preview-ok {
+  color: var(--ok);
+}
+.git-preview-warn {
+  color: var(--warn);
+}
+.git-undo > .git-undo-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  font-weight: 650;
+  cursor: pointer;
+}
+.git-undo-head .dim {
+  font-size: var(--t-sm);
+  font-weight: 400;
+}
+.git-undo-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  padding: 0 var(--s4) var(--s4);
+}
+.git-undo-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.git-undo-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+  min-height: var(--control);
+  padding: var(--s1) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--t-sm);
+}
+.git-undo-item:last-child {
+  border-bottom: 0;
+}
+.git-undo-item.undone .git-undo-label {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+.git-undo-label {
+  flex: 1;
+  min-width: 12em;
+  overflow-wrap: anywhere;
+}
+.git-undo-time,
+.git-undo-note {
+  font-size: var(--t-xs);
+}
+.git-commit-actions {
+  padding-top: var(--s1);
+}
+.git-dialog-text {
+  width: 100%;
+  font: inherit;
+  resize: vertical;
+}
+@media (min-width: 861px) and (max-width: 1279px) {
+  .git-board {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+@media (max-width: 860px) {
+  .git-conflict-sides {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .git-dock-zone {
+    min-width: 72px;
+  }
+  .git-sync {
+    margin-left: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-pulse {
+    animation: none;
+    opacity: 0.25;
+  }
+  .git-dock {
+    animation: none;
   }
 }
 

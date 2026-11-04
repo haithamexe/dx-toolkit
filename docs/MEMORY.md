@@ -17,7 +17,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.4.0. Under *Unreleased*: the Git page (staging board and commit graph) and `dx git`; the Machine page, `dx machine` and `machine_info`.
+- **Latest release**: 1.4.0. Under *Unreleased*: the Git page (staging board, commit graph, and git operations by drag and drop with undo) and `dx git`; the Machine page, `dx machine` and `machine_info`.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -72,7 +72,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Docker Clean up uses what `docker system df` counts as reclaimable**: `container prune`, `image prune -a` (images no container uses; a stopped container keeps its image), `builder prune -a`. The button frees what the page says. Volumes are never removed: they hold databases' data.
 - **Services are only shown, with commands to copy**: stopping one or changing when it starts needs admin rights, so dx doesn't do it.
 
-### Git page (`core/src/tools/git.ts`, the Git page in `web/public/app.js`)
+### Git page (`core/src/tools/git.ts` and `gitops.ts`, the Git page in `web/public/app.js`)
 
 - **git itself, not a library**: every command runs from the repository's top folder (`rev-parse --show-toplevel`), with its arguments as an array, `--literal-pathspecs` (a file called `[ab].txt` is only that file), `GIT_TERMINAL_PROMPT=0` and, for reads, `GIT_OPTIONAL_LOCKS=0`, so polling status every 4 s never takes the index lock from git in a terminal. Long path lists go in on stdin (`--pathspec-from-file`), not the command line.
 - **Only what `git status` lists can be staged or unstaged**, checked on a fresh status for each request, like cleanup's fresh scan.
@@ -81,7 +81,18 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **A merge's diff is what it brought in** (`--diff-merges=first-parent`).
 - **The board is drawn optimistically**: a card moves at once and git's answer replaces it; on an error it moves back. Cards slide with FLIP through the Web Animations API (allowed by the CSP, unlike inline styles), skipped under `prefers-reduced-motion`. Polling never redraws during a drag, and the commit box is never rebuilt, so typing isn't lost.
 - **Drag and drop is the browser's own** (HTML5 drag events); every drag also has a button (the arrow on a card, Stage block), for the keyboard and touch.
-- **Not yet**: push, pull, branches, merging by dragging, undo, discarding changes. Those change more than the index and want their own safety (undo through the reflog first).
+- **The operations live in `gitops.ts`**, behind one `POST /api/git/action` that takes an action by name. Each one checks its own arguments: branch, tag and stash names against a fresh listing (`check-ref-format` for a new one), commits resolved to a commit, paths against a fresh status.
+- **An undo journal, not just the reflog**: `~/.dx/git-undo/<repo>-<hash>.json` (mode 0600, the last 50) records, before anything else, what each action needs to go back: a reset (`--soft` after a commit or amend, so the changes come back staged; `--keep` after a merge, revert, cherry-pick, rebase or pull, which refuses rather than overwrite uncommitted work), a branch or tag recreated at its old object, a stash stored again, discarded files written back from blobs dx put in git's store first. Only the newest entry can be undone, and a reset only when the branch is still where the action left it. Pushes are journaled as "can't be undone". The reflog covers the rest ("Go back here").
+- **Merge previews come from `git merge-tree --write-tree --name-only`** (git 2.38+), so conflicts are named before anything is touched. With an older git the preview says it can't tell.
+- **Pull is `--ff-only`**: when both sides moved, the page says to drag one branch onto the other, so merge-or-rebase is a visible choice.
+- **Merge and rebase use the short branch name** (it appears in conflict markers and the merge message), and the full ref only when a tag or another ref shares the name.
+- **Interactive rebase without an editor**: dx writes the todo from the plan's own hashes and sets `GIT_SEQUENCE_EDITOR` to a two-line script that copies it over git's. A reworded message goes in a file, picked up by an `exec git commit --amend -F <file>` line. A stretch with a merge in it is refused, since replaying it would flatten the merge.
+- **Conflicts are resolved from the file's own text**: the page sends a choice per block and the hash of the file it saw; the server rebuilds the file from its own blocks and stages it.
+- **`stash push -u` with no paths runs without `--literal-pathspecs`**: with it, git leaves new files behind (it matches its own internal pathspec literally).
+- **Committing never pushes**: Push is its own button and drop target (your branch onto the remote), and the commit toast says the commit is only local until then.
+- **Write message (`gitmessage.ts`) runs `claude -p --max-turns 1` only on its button**, since it sends the staged diff to the user's Claude account. `POST /api/git/suggest` takes a known project's `dir` and nothing else: the prompt (fixed text, the last 10 subjects for the style, `git diff --cached --stat` and the diff cut at 60 KB) is built on the server and goes in on stdin; the arguments are fixed. A `.cmd` shim (npm on Windows) runs through `cmd /d /s /c` with that fixed line. 60 s timeout; fences, quotes and Co-Authored-By/"Generated with"/sign-off lines are taken off the answer, which only fills the message box. The button shows only when `claude` is on PATH. Tests put a fake `claude` first on PATH and never run the real one.
+- **Tags are pushed by name, never forced**: a tag the remote has on another commit is reported, not moved.
+- **Not yet**: a three-way merge editor beyond picking sides, and `git bisect` with Replay.
 
 
 ### Activity history (`core/src/tools/activity.ts` and `activityReport.ts`, `web/src/activity.ts`, `web/src/recorder.ts`, `web/public/recorder.js`)

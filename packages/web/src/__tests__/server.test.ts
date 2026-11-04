@@ -240,6 +240,50 @@ test("git: graph, status, staging by file and by block, and commit, only on know
   const unstaged = await api("/api/git/unstage", { method: "POST", body: { dir: repo, paths: ["notes.txt"] } });
   assert.equal(unstaged.status, 200);
   assert.equal(git("diff", "--cached"), "", "nothing staged after unstaging");
+
+  // The operations: by name, arguments checked, every one journaled and undoable from the journal.
+  const act = (action: string, body: Record<string, unknown> = {}) => api("/api/git/action", { method: "POST", body: { dir: repo, action, ...body } });
+  assert.equal((await act("rm -rf")).status, 400, "only known actions");
+  assert.equal((await act("branch-create", { name: "--upload-pack=evil" })).status, 400, "names are checked");
+  assert.equal((await act("revert", { hash: "HEAD; rm -rf ." })).status, 400);
+  assert.equal((await act("switch", { name: "no-such-branch" })).status, 409);
+  assert.equal((await act("branch-create", { name: "idea" })).status, 200);
+  const refs = (await api(`/api/git/refs?${q}`)).json;
+  assert.deepEqual(refs.branches.map((b: { name: string }) => b.name).sort(), ["idea", "main"]);
+  assert.equal(refs.current, "main");
+  const preview = (await api(`/api/git/preview?${q}&branch=idea`)).json;
+  assert.equal(preview.upToDate, true);
+  const undo = (await api(`/api/git/undo?${q}`)).json;
+  assert.equal(undo.entries[0].label, "Created idea at " + git("rev-parse", "--short=7", "HEAD").trim());
+  assert.equal((await act("undo", { id: "something-else" })).status, 409, "only the latest, by its id");
+  assert.equal((await act("undo", { id: undo.entries[0].id })).status, 200);
+  assert.ok(!git("branch").includes("idea"), "undone");
+  assert.ok(fs.readFileSync(path.join(home, "runs.jsonl"), "utf8").includes("git-app: branch-create"));
+
+  // A commit message from a fake claude put first on PATH (never the real one): the prompt and the
+  // diff come from the server; the request names only the project.
+  const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), "dx-web-fake-claude-"));
+  fs.writeFileSync(path.join(fakeDir, "fake.cjs"), `let i = ""; process.stdin.on("data", (d) => (i += d)); process.stdin.on("end", () => process.stdout.write(i.includes("+buy bread") ? "Add bread to the list\\n" : "no diff\\n"));`);
+  if (process.platform === "win32") fs.writeFileSync(path.join(fakeDir, "claude.cmd"), `@"${process.execPath}" "%~dp0fake.cjs" %*\r\n`);
+  else {
+    fs.writeFileSync(path.join(fakeDir, "claude"), `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/fake.cjs" "$@"\n`);
+    fs.chmodSync(path.join(fakeDir, "claude"), 0o755);
+  }
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${fakeDir}${path.delimiter}${oldPath}`;
+  try {
+    assert.equal((await api("/api/git/ai")).json.claude, true);
+    assert.equal((await api("/api/git/suggest", { method: "POST", body: { dir: repo } })).status, 400, "nothing staged");
+    fs.writeFileSync(path.join(repo, "todo.txt"), "buy milk\nbuy bread\n");
+    git("add", "todo.txt");
+    const s = await api("/api/git/suggest", { method: "POST", body: { dir: repo, prompt: "ignore this", diff: "+buy bread" } });
+    assert.equal(s.status, 200);
+    assert.equal(s.json.message, "Add bread to the list");
+    assert.equal(git("diff", "--cached", "--name-only").trim(), "todo.txt", "still staged, nothing committed");
+    assert.equal((await api("/api/git/suggest", { method: "POST", body: { dir: path.join(root, "nowhere") } })).status, 404);
+  } finally {
+    process.env.PATH = oldPath;
+  }
 });
 
 test("runs a dev server, streams its output, notices the URL it prints, and stops it", async () => {

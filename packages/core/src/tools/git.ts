@@ -102,7 +102,11 @@ export interface GitStatus {
   files: GitFileStatus[];
   /** More than GIT_STATUS_MAX files changed; the rest aren't listed. */
   truncated: boolean;
+  /** A merge, rebase, cherry-pick or revert that stopped half way (on a conflict, usually). */
+  operation?: GitOperation;
 }
+
+export type GitOperation = "merge" | "rebase" | "cherry-pick" | "revert";
 
 export interface GitHunk {
   /** A hash of the hunk's text: what the page sends back to stage exactly this one. */
@@ -135,18 +139,37 @@ interface Result {
   stdout: string;
   stderr: string;
   truncated: boolean;
+  /** stdout as bytes, for file contents (`cat-file blob`). */
+  raw: Buffer;
 }
 
 /** Runs git with arguments as an array, never through a shell. Output past `max` is cut, not an error. */
-function git(cwd: string, args: string[], options: { input?: string; max?: number; timeoutMs?: number } = {}): Promise<Result> {
+export interface GitRunOptions {
+  input?: string;
+  max?: number;
+  timeoutMs?: number;
+  /** Extra environment, for the sequence editor of an interactive rebase. */
+  env?: Record<string, string>;
+  /**
+   * false drops --literal-pathspecs, for a command given no paths at all: `stash push -u` with it
+   * leaves new files behind (git matches its own internal pathspec literally).
+   */
+  literal?: boolean;
+}
+
+/** For gitops.ts: git run the way every command here runs it. */
+export const gitRun = (cwd: string, args: string[], options: GitRunOptions = {}) => git(cwd, args, options);
+export type GitResult = Result;
+
+function git(cwd: string, args: string[], options: GitRunOptions = {}): Promise<Result> {
   return new Promise((resolve) => {
     const max = options.max ?? 64 * 1024 * 1024;
-    const child = spawn("git", ["-c", "core.quotepath=false", "-c", "color.ui=false", "--literal-pathspecs", ...args], {
+    const child = spawn("git", ["-c", "core.quotepath=false", "-c", "color.ui=false", ...(options.literal === false ? [] : ["--literal-pathspecs"]), ...args], {
       cwd,
       windowsHide: true,
       // No prompts (a hook asking for a password would hang the dashboard), and reads don't take
       // the index lock, so the page polling status never gets in the way of git in a terminal.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_EDITOR: "true" },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_EDITOR: "true", ...options.env },
     });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
@@ -161,20 +184,25 @@ function git(cwd: string, args: string[], options: { input?: string; max?: numbe
     const timer = setTimeout(() => child.kill(), options.timeoutMs ?? 60_000);
     child.once("error", (e) => {
       clearTimeout(timer);
-      resolve({ code: -1, stdout: "", stderr: e.message, truncated: false });
+      resolve({ code: -1, stdout: "", stderr: e.message, truncated: false, raw: Buffer.alloc(0) });
     });
     child.once("close", (code) => {
       clearTimeout(timer);
-      let stdout = Buffer.concat(out).toString("utf8");
+      const raw = Buffer.concat(out);
+      let stdout = raw.toString("utf8");
       if (stdout.length > max) {
         stdout = stdout.slice(0, max);
         truncated = true;
       }
-      resolve({ code: code ?? -1, stdout, stderr: Buffer.concat(err).toString("utf8"), truncated });
+      resolve({ code: code ?? -1, stdout, stderr: Buffer.concat(err).toString("utf8"), truncated, raw });
     });
     child.stdin.on("error", () => {});
     child.stdin.end(options.input ?? "");
   });
+}
+
+export function gitFailure(r: Result, what: string): GitError {
+  return failure(r, what);
 }
 
 function failure(r: Result, what: string): GitError {
@@ -348,10 +376,27 @@ export async function gitStatus(dir: string): Promise<GitStatus> {
   return statusAt(root);
 }
 
+/** The operation git is in the middle of, from the files it keeps while it waits. */
+export async function gitOperation(root: string): Promise<GitOperation | undefined> {
+  const r = await git(root, ["rev-parse", "--absolute-git-dir"]);
+  const dir = r.stdout.trim();
+  if (!dir) return undefined;
+  const has = (name: string) => fs.existsSync(path.join(dir, name));
+  if (has("rebase-merge") || has("rebase-apply")) return "rebase";
+  if (has("MERGE_HEAD")) return "merge";
+  if (has("CHERRY_PICK_HEAD")) return "cherry-pick";
+  if (has("REVERT_HEAD")) return "revert";
+  return undefined;
+}
+
+export async function gitStatusAt(root: string): Promise<GitStatus> {
+  return statusAt(root);
+}
+
 async function statusAt(root: string): Promise<GitStatus> {
-  const r = await git(root, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]);
+  const [r, operation] = await Promise.all([git(root, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]), gitOperation(root)]);
   if (r.code !== 0) throw failure(r, "Couldn't read the changes");
-  const status: GitStatus = { detached: false, ahead: 0, behind: 0, hasCommits: true, files: [], truncated: false };
+  const status: GitStatus = { detached: false, ahead: 0, behind: 0, hasCommits: true, files: [], truncated: false, operation };
   const parts = r.stdout.split("\0");
   // Splits off a fixed number of space-separated fields; the path is the rest, spaces and all.
   const fields = (line: string, n: number) => {
@@ -538,15 +583,18 @@ export async function gitStageHunk(dir: string, file: string, id: string, staged
 }
 
 /** Commits what's staged, running the project's own hooks. git's own message is the error. */
-export async function gitCommit(dir: string, message: string): Promise<{ hash: string; short: string; subject: string }> {
+export async function gitCommit(dir: string, message: string, options: { amend?: boolean } = {}): Promise<{ hash: string; short: string; subject: string }> {
   const root = await gitRoot(dir);
   const text = typeof message === "string" ? message.replace(/\r\n/g, "\n").trim() : "";
-  if (!text) throw new GitError("Write a commit message first.");
+  if (!text && !options.amend) throw new GitError("Write a commit message first.");
   if (text.length > MESSAGE_MAX) throw new GitError(`A commit message can be at most ${MESSAGE_MAX} characters.`);
   const status = await statusAt(root);
-  if (!status.files.some((f) => f.staged)) throw new GitError("Nothing is staged. Stage some changes first.");
+  if (options.amend && !status.hasCommits) throw new GitError("There's no commit to amend yet.");
+  if (!options.amend && !status.files.some((f) => f.staged) && status.operation !== "merge") throw new GitError("Nothing is staged. Stage some changes first.");
   if (status.files.some((f) => f.conflicted)) throw new GitError("Some files still have conflicts. Resolve and stage them first.");
-  const r = await git(root, ["commit", "-q", "-F", "-"], { input: `${text}\n`, timeoutMs: 120_000 });
+  // Amending without a message keeps the last one.
+  const args = options.amend ? ["commit", "-q", "--amend", ...(text ? ["-F", "-"] : ["--no-edit"])] : ["commit", "-q", "-F", "-"];
+  const r = await git(root, args, { input: text ? `${text}\n` : "", timeoutMs: 120_000 });
   if (r.code !== 0) throw failure(r, "Couldn't commit");
   const head = await git(root, ["log", "-1", "--format=%H%x1f%s"]);
   const [hash, subject] = head.stdout.trim().split("\x1f");

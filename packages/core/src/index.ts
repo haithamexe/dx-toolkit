@@ -36,3 +36,5 @@ export * from "./tools/versions.js";
 export * from "./tools/machine.js";
 export * from "./tools/projectNeeds.js";
 export * from "./tools/background.js";
+export * from "./tools/gitops.js";
+export * from "./tools/gitmessage.js";
