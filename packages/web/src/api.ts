@@ -44,12 +44,19 @@ import {
   saveConfig,
   saveSummary,
   scanProjects,
+  ACTIVITY_TYPES,
+  clearActivity,
+  listTerminals,
+  parseSince,
+  terminalIds,
+  type ActivityType,
   type AiToolId,
   type DepsReport,
   type PageStep,
   type Project,
   type Source,
 } from "@dx/core";
+import { forgetActivitySettings, forgetRecentActivity, listActivity } from "./activity.js";
 import { checkUrl } from "./check.js";
 import { clearTraffic, listTraffic } from "./traffic.js";
 import {
@@ -132,12 +139,20 @@ const routes: Record<string, Handler> = {
     if (action === "terminal") {
       if (!project.devCommand) throw new HttpError(400, `${project.name} has no dev command.`);
       const command = (await commandExists("dx")) ? "dx go . --no-editor" : project.devCommand;
-      await openTerminal(project.dir, command, project.name);
+      const used = await openTerminal(project.dir, command, project.name);
       recordRun("go", true, project.name, "web", { project: project.name });
-      return { message: `Started ${project.devCommand} in a new terminal window` };
+      return { message: `Started ${project.devCommand} in a new ${used} window` };
+    }
+    if (action === "shell") {
+      // Just a terminal in the project's folder, in the terminal picked in settings (or this one).
+      const terminal = typeof req.body.terminal === "string" && terminalIds().includes(req.body.terminal) ? req.body.terminal : undefined;
+      const used = await openTerminal(project.dir, undefined, project.name, terminal);
+      recordRun("terminal", true, `${project.name} in ${used}`, "web", { project: project.name });
+      return { message: `Opened ${project.name} in ${used}` };
     }
     throw new HttpError(400, `Unknown action: ${action}`);
   },
+  "GET /api/terminals": () => listTerminals(),
 
   // ------------------------------------------------------------ dev servers
   "POST /api/note": (req) => {
@@ -161,6 +176,29 @@ const routes: Record<string, Handler> = {
   },
   "POST /api/traffic/clear": (req) => {
     clearTraffic(knownProject(req.body.dir).dir);
+    return { ok: true };
+  },
+  "GET /api/activity": (req) => {
+    const q = req.query;
+    const since = q.get("since") ? parseSince(q.get("since")!) : undefined;
+    if (q.get("since") && !since) throw new HttpError(400, "since takes 30m, 2h, 3d, today, yesterday or a date.");
+    return listActivity({
+      dir: q.get("dir") ? knownProject(q.get("dir")).dir : undefined,
+      types: (q.get("types") ?? "")
+        .split(",")
+        .filter((t): t is ActivityType => (ACTIVITY_TYPES as string[]).includes(t)),
+      problems: q.get("problems") === "1",
+      after: q.get("after") ? clampInt(q.get("after"), 0, Number.MAX_SAFE_INTEGER, 0) : undefined,
+      since,
+      search: q.get("q") || undefined,
+      limit: clampInt(q.get("limit"), 1, 2000, 200),
+    });
+  },
+  "POST /api/activity/clear": (req) => {
+    const dir = req.body.dir === undefined ? undefined : knownProject(req.body.dir).dir;
+    forgetRecentActivity(dir);
+    clearActivity(dir);
+    recordRun("activity", true, dir ? `${path.basename(dir)}: history cleared` : "all history cleared", "web");
     return { ok: true };
   },
   "POST /api/tests": (req) =>
@@ -427,7 +465,14 @@ const routes: Record<string, Handler> = {
       config.projectsRoots = config.projectsRoots.filter((r) => r !== req.body.removeRoot);
     }
     if (req.body.scanDepth !== undefined) config.scanDepth = clampInt(req.body.scanDepth, 1, 5, config.scanDepth);
+    if (typeof req.body.terminal === "string") {
+      if (req.body.terminal && !terminalIds().includes(req.body.terminal)) throw new HttpError(400, `Unknown terminal: ${req.body.terminal}.`);
+      config.terminal = req.body.terminal || undefined;
+    }
+    if (typeof req.body.activity === "boolean") config.activity = req.body.activity;
+    if (req.body.activityDays !== undefined) config.activityDays = clampInt(req.body.activityDays, 1, 365, config.activityDays ?? 7);
     saveConfig(config);
+    forgetActivitySettings();
     return config;
   },
 };

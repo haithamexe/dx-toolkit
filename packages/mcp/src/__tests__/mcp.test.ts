@@ -65,7 +65,7 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<{
 test("lists the running-app tools next to the others", async () => {
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name);
-  for (const name of ["start_dev_server", "stop_dev_server", "restart_dev_server", "dev_servers", "dev_logs", "dev_errors", "wait_for_rebuild", "check_url", "dx_setup_check", "list_projects", "run_tests", "network_log", "db_query"]) {
+  for (const name of ["start_dev_server", "stop_dev_server", "restart_dev_server", "dev_servers", "dev_logs", "dev_errors", "wait_for_rebuild", "check_url", "dx_setup_check", "list_projects", "run_tests", "network_log", "db_query", "activity_log"]) {
     assert.ok(names.includes(name), name);
   }
 });
@@ -111,6 +111,14 @@ test("an agent runs the app, finds an error through a request, and sees it clear
     assert.match(page.text, /Failed requests:\n- GET http:\/\/tiny-shop\.localhost:\d+\/checkout → 500/, page.text);
     const log = await call("network_log", { project: "tiny-shop" });
     assert.match(log.text, /GET \/checkout → 500/, log.text);
+    // The same load in the activity history, with the browser's exception from the recorder script.
+    const activity = await call("activity_log", { project: "tiny-shop", problems: true });
+    assert.equal(activity.isError, false, activity.text);
+    assert.match(activity.text, /request GET \/checkout → 500/, activity.text);
+    assert.match(activity.text, /srv err TypeError: Cannot read properties of undefined \(reading 'items'\)/, "the server's error too");
+    assert.match(activity.text, /error {3}Uncaught TypeError: Cannot read properties of null \(reading 'items'\)/, activity.text);
+    const again = await call("activity_log", { project: "tiny-shop", problems: true });
+    assert.match(again.text, /^Nothing new recorded for tiny-shop/, "only what's new the second time");
     assert.match(page.text, /Errors tiny-shop logged meanwhile:\n- \[runtime\] TypeError/, "the server's side of the same page load");
     assert.match(page.text, /Visible text:\nCart/);
   }

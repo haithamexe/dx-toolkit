@@ -39,6 +39,12 @@ export interface DxConfig {
   https?: boolean;
   /** Port for https://name.localhost; default 443, or 1356 when 443 is taken. */
   httpsPort?: number;
+  /** Keep a history of what happens in apps opened at name.localhost: requests, routes, clicks, console, errors (default true). */
+  activity?: boolean;
+  /** Days of activity history to keep (default 7). */
+  activityDays?: number;
+  /** The terminal projects open in, by id (`dx terminal --list`); the first one found when unset. */
+  terminal?: string;
 }
 
 /** Folders people usually keep their code in, checked on first run. */

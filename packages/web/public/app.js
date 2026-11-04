@@ -56,6 +56,7 @@ const ICONS = {
   cleanup: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
   deps: "M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6zM9 12l2 2 4-4",
   health: "M3 12h4l3-8 4 16 3-8h4",
+  activity: "M12 7v5l3 2M3.5 12a8.5 8.5 0 1 0 2.5-6M3 4v4h4",
   play: "M7 4l13 8-13 8z",
   stop: "M6 6h12v12H6z",
   external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
@@ -262,12 +263,47 @@ function setPref(key, value) {
   }
 }
 
+/**
+ * Which terminal projects open in: the installed ones, saved to the settings on change. Used on
+ * the Projects page and in Health & settings.
+ */
+function terminalSelect({ withLabel = false } = {}) {
+  const select = h("select", {
+    id: withLabel ? "cfg-terminal" : undefined,
+    "aria-label": withLabel ? undefined : "Terminal projects open in",
+    title: "The terminal the Terminal buttons open",
+    disabled: true,
+    onchange: async (e) => {
+      const value = e.target.value;
+      try {
+        await api("/api/config", { method: "POST", body: { terminal: value } });
+        toast(`Projects open in ${e.target.selectedOptions[0]?.textContent ?? value}`);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    },
+  });
+  (async () => {
+    try {
+      const list = await api("/api/terminals");
+      const installed = list.filter((t) => t.installed);
+      select.replaceChildren(...installed.map((t) => h("option", { value: t.id, selected: t.selected }, withLabel ? t.name : `Terminal: ${t.name}`)));
+      select.disabled = installed.length < 2;
+    } catch {
+      select.hidden = true;
+    }
+  })();
+  if (!withLabel) return h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Terminal projects open in"), select);
+  return h("label", { class: "field", for: "cfg-terminal" }, h("span", { class: "field-label" }, "Terminal"), select, h("span", { class: "field-hint" }, "Where the Terminal buttons and Run in a terminal window open. Only terminals on this computer are listed."));
+}
+
 // ------------------------------------------------------------------ router
 
 const pages = [
   { id: "projects", label: "Projects", icon: "projects", render: projectsPage },
   { id: "new", label: "New project", icon: "new", render: newProjectPage },
   { id: "ports", label: "Ports", icon: "ports", render: portsPage },
+  { id: "activity", label: "Activity", icon: "activity", render: activityPage },
   { id: "journal", label: "Journal", icon: "journal", render: journalPage },
   { id: "summary", label: "Summary", icon: "summary", render: summaryPage },
   { id: "cleanup", label: "Cleanup", icon: "cleanup", render: cleanupPage },
@@ -349,6 +385,7 @@ function projectsPage(root) {
       renderList();
     },
   });
+  const terminalPicker = terminalSelect();
   const devSection = h("section", { class: "section", "aria-labelledby": "dev-title", hidden: true });
   const unsavedSection = h("section", { class: "section", "aria-label": "Work that isn't backed up", hidden: true });
   const listSection = h("section", { class: "section", "aria-label": "All projects" });
@@ -361,6 +398,7 @@ function projectsPage(root) {
       "Projects",
       "Open a project, run its dev server here, or open it in the browser.",
       search,
+      terminalPicker,
       h("a", { class: "btn", href: "#/new" }, icon("new"), "New project"),
       btn("Refresh", () => (load(), loadUnsaved()), { iconName: "refresh", kind: "ghost" }),
     ),
@@ -492,6 +530,7 @@ function projectsPage(root) {
               })
             : null,
         btn("Open in editor", (e) => open(e.currentTarget, p, "editor"), { iconName: "code", small: true, name: `Open ${p.name} in editor` }),
+        btn("Terminal", (e) => open(e.currentTarget, p, "shell"), { iconName: "terminal", small: true, name: `Open ${p.name} in a terminal`, title: "Open a terminal in this project's folder" }),
         moreMenu(p),
       ),
       testRuns.has(p.dir.toLowerCase()) ? testPanel(p, testRuns.get(p.dir.toLowerCase())) : null,
@@ -1293,6 +1332,220 @@ function journalPage(root) {
   setTimeout(() => input.focus(), 0);
 }
 
+// ------------------------------------------------------------------ Activity
+
+const ACTIVITY_KINDS = [
+  ["", "All"],
+  ["request,page", "Requests"],
+  ["route,action", "Routes & clicks"],
+  ["console,error", "Console"],
+  ["problems", "Problems"],
+  ["server,server-error", "Server"],
+];
+const ACTIVITY_LABELS = { request: "Request", page: "Page", route: "Route", action: "Click", console: "Console", error: "Error", server: "Server", "server-error": "Server error" };
+
+function isProblemEvent(e) {
+  if (e.type === "error" || e.type === "server-error") return true;
+  if (e.type === "request" || e.type === "page") return !!e.error || (e.status ?? 0) >= 400;
+  if (e.type === "console") return e.level === "error" || e.level === "warn";
+  return e.level === "error";
+}
+
+function activityPage(root) {
+  let dir = pref("activityDir", "");
+  let kind = pref("activityKind", "");
+  let since = pref("activitySince", "today");
+  let search = "";
+  let events = [];
+  let lastId = 0;
+  let projects = [];
+  let stopped = false;
+  let searchTimer = 0;
+
+  const holder = h("div", { class: "card" }, loadingView("Reading the history…"));
+  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("activityDir", dir), load()) }, h("option", { value: "" }, "All projects"));
+  const searchInput = h("input", {
+    class: "input input-wide",
+    type: "search",
+    placeholder: "Search addresses, payloads, messages…",
+    "aria-label": "Search the history",
+    oninput: () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => ((search = searchInput.value.trim()), load()), 300);
+    },
+  });
+  const clear = btn(
+    "Clear history",
+    async (ev) => {
+      const name = dir ? (projects.find((p) => p.dir === dir)?.name ?? "this project") : "every project";
+      const yes = await confirmDialog({ title: "Clear the history?", text: `This deletes the recorded requests, routes, clicks, console output and errors of ${name}. It can't be undone.`, confirm: "Clear history" });
+      if (!yes) return;
+      const r = await busy(ev.currentTarget, "Clearing…", () => api("/api/activity/clear", { method: "POST", body: dir ? { dir } : {} }));
+      if (!r) return;
+      toast("History cleared");
+      load();
+    },
+    { kind: "danger-ghost", iconName: "cleanup" },
+  );
+
+  append(
+    root,
+    pageHead(
+      "Activity",
+      "What happened in your apps, newest first: requests and responses, routes, clicks, console output and errors.",
+      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
+      segmented("Since", [["1h", "Last hour"], ["today", "Today"], ["7d", "7 days"]], since, (v) => ((since = v), setPref("activitySince", v), load())),
+      clear,
+    ),
+    h("div", { class: "card card-pad toolbar" }, segmented("Show", ACTIVITY_KINDS, kind, (v) => ((kind = v), setPref("activityKind", v), load())), searchInput),
+    holder,
+  );
+
+  function query(extra = {}) {
+    const q = new URLSearchParams({ limit: "500", ...extra });
+    if (dir) q.set("dir", dir);
+    if (kind === "problems") q.set("problems", "1");
+    else if (kind) q.set("types", kind);
+    if (search) q.set("q", search);
+    return q;
+  }
+
+  async function load() {
+    try {
+      events = await api(`/api/activity?${query({ since })}`);
+      lastId = Math.max(lastId, ...events.map((e) => e.id));
+      render();
+    } catch (err) {
+      holder.replaceChildren(errorView(err, load));
+    }
+  }
+
+  async function poll() {
+    if (stopped) return;
+    if (document.visibilityState === "visible" && lastId) {
+      try {
+        const next = await api(`/api/activity?${query({ after: String(lastId) })}`);
+        if (!stopped && next.length) {
+          // In the order things happened: a page's clicks arrive a moment after the requests they caused.
+          events = [...events, ...next].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id).slice(-2000);
+          lastId = Math.max(lastId, ...next.map((e) => e.id));
+          render();
+        }
+      } catch {
+        // the next poll tries again
+      }
+    }
+    if (!stopped) setTimeout(poll, 2000);
+  }
+
+  function render() {
+    if (!events.length) {
+      holder.replaceChildren(
+        stateView(
+          search || kind ? "Nothing matches" : "Nothing recorded yet",
+          search || kind
+            ? "Try another filter, or a longer time."
+            : "Start an app from the Projects page and open it at its .localhost address. Its requests, routes, clicks, console output and errors show up here as they happen.",
+          search || kind ? null : h("a", { class: "btn", href: "#/projects" }, "Go to projects"),
+        ),
+      );
+      return;
+    }
+    const byDay = new Map();
+    for (const e of events) {
+      const d = new Date(e.at);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      (byDay.get(key) ?? byDay.set(key, []).get(key)).push(e);
+    }
+    const many = !dir && new Set(events.map((e) => e.dir)).size > 1;
+    // Keep the rows people opened open when new ones come in.
+    const open = new Set([...holder.querySelectorAll("details[open]")].map((d) => d.dataset.id));
+    holder.replaceChildren(
+      ...[...byDay.entries()].reverse().map(([day, list]) =>
+        h("section", { class: "day" }, h("h2", { class: "day-title" }, dayLabel(day)), h("ul", { class: "activity-list" }, [...list].reverse().map((e) => activityRow(e, many, open.has(String(e.id)))))),
+      ),
+    );
+  }
+
+  function activityRow(e, many, isOpen) {
+    const problem = isProblemEvent(e);
+    const tone = problem ? (e.level === "warn" ? "badge-warn" : "badge-danger") : e.type === "action" || e.type === "route" ? "badge-accent" : "";
+    const label = e.type === "console" && e.level && e.level !== "log" ? `Console ${e.level}` : ACTIVITY_LABELS[e.type] ?? e.type;
+    const time = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const firstLine = e.text.split("\n")[0];
+    const head = [
+      h("span", { class: "time" }, time),
+      h("span", { class: `badge ${tone}` }, label),
+      many ? h("span", { class: "badge" }, e.project) : null,
+      e.service ? h("span", { class: "badge" }, e.service) : null,
+      h("span", { class: `activity-text${e.type === "request" || e.type === "page" || e.type === "console" ? " mono" : ""}` }, firstLine),
+      e.ms !== undefined && (e.type === "request" || e.type === "page") ? h("span", { class: "dim" }, `${e.ms} ms`) : null,
+    ];
+    const details = [];
+    if (e.text.includes("\n")) details.push(h("pre", { class: "log-snippet" }, e.text));
+    if (e.page && e.type !== "page") details.push(h("p", { class: "dim mono activity-meta" }, `on ${e.page}`));
+    if (e.source) details.push(sourceButton(e));
+    if (e.requestBody) details.push(h("p", { class: "activity-meta" }, `Request${e.requestHeaders?.["content-type"] ? ` · ${e.requestHeaders["content-type"]}` : ""}`), h("pre", { class: "log-snippet" }, pretty(e.requestBody)));
+    if (e.responseBody) details.push(h("p", { class: "activity-meta" }, `Response${e.responseHeaders?.["content-type"] ? ` · ${e.responseHeaders["content-type"]}` : ""}${e.truncated ? " · cut short" : ""}`), h("pre", { class: "log-snippet" }, pretty(e.responseBody)));
+    if (e.stack && e.type !== "console") details.push(h("pre", { class: "log-snippet" }, e.stack));
+    else if (e.stack && problem) details.push(h("pre", { class: "log-snippet" }, e.stack));
+    if (e.requestHeaders || e.responseHeaders) {
+      const lines = [
+        ...Object.entries(e.requestHeaders ?? {}).map(([k, v]) => `→ ${k}: ${v}`),
+        ...Object.entries(e.responseHeaders ?? {}).map(([k, v]) => `← ${k}: ${v}`),
+      ];
+      if (lines.length) details.push(h("details", { class: "activity-headers" }, h("summary", null, "Headers"), h("pre", { class: "log-snippet" }, lines.join("\n"))));
+    }
+    if (!details.length) return h("li", { class: "activity-row" }, head);
+    return h("li", null, h("details", { open: isOpen || undefined, dataset: { id: String(e.id) } }, h("summary", { class: "activity-row" }, head), h("div", { class: "activity-detail" }, details)));
+  }
+
+  /** A button that opens the file in your editor, when the place is a file in the project. */
+  function sourceButton(e) {
+    const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(e.source);
+    if (!m) return h("p", { class: "dim mono activity-meta" }, e.source);
+    // The browser names files by their address (/src/App.tsx?t=123); the server by their path.
+    const file = m[1].replace(/^https?:\/\/[^/]+/, "").replace(/\?.*$/, "").replace(/^\/(?=[^/]+\/)/, "");
+    if (/node_modules|^\/?@|^\/?__|^chunk-|\.vite\/deps/.test(file)) return h("p", { class: "dim mono activity-meta" }, e.source);
+    const where = `${inProject(file, e.dir)}:${m[2]}`;
+    return h(
+      "p",
+      { class: "activity-meta" },
+      btn(where, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir: e.dir, file, line: Number(m[2]), column: m[3] ? Number(m[3]) : undefined } })).message)), {
+        small: true,
+        kind: "ghost",
+        iconName: "code",
+        title: "Open in your editor at this line",
+        name: `Open ${where} in editor`,
+      }),
+    );
+  }
+
+  function pretty(body) {
+    try {
+      return JSON.stringify(JSON.parse(body), null, 2);
+    } catch {
+      return body;
+    }
+  }
+
+  (async () => {
+    try {
+      projects = await api("/api/projects");
+      projectSelect.append(...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+      if (dir && !projects.some((p) => p.dir === dir)) ((dir = ""), setPref("activityDir", ""));
+    } catch {
+      // the list stays "All projects"
+    }
+    await load();
+    setTimeout(poll, 2000);
+  })();
+  return () => {
+    stopped = true;
+    clearTimeout(searchTimer);
+  };
+}
+
 // ------------------------------------------------------------------ Summary
 
 function summaryPage(root) {
@@ -1777,6 +2030,8 @@ function healthPage(root) {
     const editor = h("input", { class: "input", id: "cfg-editor", value: config.editor });
     const github = h("input", { class: "input", id: "cfg-github", value: config.githubUser ?? "", placeholder: "Guessed from your repos" });
     const depth = h("select", { id: "cfg-depth" }, [1, 2, 3].map((d) => h("option", { value: d, selected: d === config.scanDepth }, d === 1 ? "Only the folders inside" : `${d} levels deep`)));
+    const activityOn = h("input", { type: "checkbox", id: "cfg-activity", checked: config.activity !== false });
+    const activityDays = h("select", { id: "cfg-activity-days" }, [1, 3, 7, 14, 30, 90].map((d) => h("option", { value: d, selected: d === (config.activityDays ?? 7) }, plural(d, "day"))));
     const save = btn("Save settings", null, { kind: "primary", type: "submit" });
 
     const settings = h(
@@ -1785,7 +2040,8 @@ function healthPage(root) {
         class: "card card-pad section",
         onsubmit: async (e) => {
           e.preventDefault();
-          const r = await busy(save, "Saving…", () => api("/api/config", { method: "POST", body: { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value) } }));
+          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, activityDays: Number(activityDays.value) };
+          const r = await busy(save, "Saving…", () => api("/api/config", { method: "POST", body }));
           if (r) toast("Settings saved");
         },
       },
@@ -1809,6 +2065,14 @@ function healthPage(root) {
         h("label", { class: "field", for: "cfg-editor" }, h("span", { class: "field-label" }, "Editor command"), editor, h("span", { class: "field-hint" }, "code, cursor, or a full path in quotes")),
         h("label", { class: "field", for: "cfg-github" }, h("span", { class: "field-label" }, "GitHub username"), github, h("span", { class: "field-hint" }, "For pull requests in the summary")),
         h("label", { class: "field", for: "cfg-depth" }, h("span", { class: "field-label" }, "Look for projects"), depth),
+        terminalSelect({ withLabel: true }),
+        h(
+          "div",
+          { class: "field" },
+          h("span", { class: "field-label" }, "Activity history"),
+          h("label", { class: "check", for: "cfg-activity" }, activityOn, "Keep a history of requests, routes, clicks, console and errors"),
+          h("label", { class: "toolbar", for: "cfg-activity-days" }, h("span", { class: "field-hint" }, "Keep it for"), activityDays),
+        ),
       ),
       h("div", { class: "form-actions" }, save),
     );
@@ -1830,7 +2094,7 @@ function healthPage(root) {
             ),
           ),
         )
-      : h("div", { class: "card" }, stateView("No activity yet", "Opening projects, killing ports and other actions show up here."));
+      : h("div", { class: "card" }, stateView("Nothing run yet", "Opening projects, killing ports and other things dx does show up here."));
 
     holder.replaceChildren(
       h("section", { class: "section" }, h("h2", { class: "section-title" }, "Checks"), checks),
@@ -1842,7 +2106,7 @@ function healthPage(root) {
         aiTools,
       ),
       settings,
-      h("section", { class: "section" }, h("h2", { class: "section-title" }, "Recent activity"), runs),
+      h("section", { class: "section" }, h("h2", { class: "section-title" }, "Recent runs"), runs),
     );
   }
 

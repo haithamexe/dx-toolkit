@@ -26,3 +26,5 @@ export * from "./tools/https.js";
 export * from "./tools/tests.js";
 export * from "./tools/db.js";
 export * from "./tools/year.js";
+export * from "./tools/activity.js";
+export * from "./tools/terminals.js";

@@ -160,6 +160,9 @@ export class ErrorTracker {
   /** The last few lines, because Node prints a SyntaxError's file:line above the error. */
   private recent: string[] = [];
 
+  /** `onError` hears about every error recorded, a repeat of one already listed included. */
+  constructor(private onError?: (error: DevError) => void) {}
+
   push(line: OutputLine, now = new Date()): void {
     this.handle(line, now);
     if (line.stream !== "dx") {
@@ -269,9 +272,10 @@ export class ErrorTracker {
       existing.lastSeen = at;
       existing.lines = lines.slice(0, MAX_BLOCK);
       existing.resolved = false;
+      this.onError?.(existing);
       return;
     }
-    this.list.push({
+    const error: DevError = {
       id,
       kind: start.kind,
       message,
@@ -285,8 +289,10 @@ export class ErrorTracker {
       firstSeen: at,
       lastSeen: at,
       resolved: false,
-    });
+    };
+    this.list.push(error);
     if (this.list.length > MAX_ERRORS) this.list.splice(0, this.list.length - MAX_ERRORS);
+    this.onError?.(error);
   }
 }
 

@@ -898,6 +898,62 @@ summary.traffic-row {
 .traffic-path {
   overflow-wrap: anywhere;
 }
+/* ------------------------------------------------------------ activity */
+.activity-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.activity-list > li {
+  border-bottom: 1px solid var(--border);
+}
+.activity-list > li:last-child {
+  border-bottom: 0;
+}
+.activity-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: var(--s2) 0;
+  font-size: var(--t-sm);
+}
+summary.activity-row {
+  cursor: pointer;
+}
+.activity-row .time {
+  min-width: 5.5em;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+}
+.activity-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.activity-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: 0 0 var(--s3);
+}
+.activity-meta {
+  margin: 0;
+  font-size: var(--t-sm);
+  overflow-wrap: anywhere;
+}
+.activity-detail pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+}
+.activity-headers summary {
+  cursor: pointer;
+  font-size: var(--t-sm);
+  color: var(--text-dim);
+}
+
 .page-check-head {
   display: flex;
   align-items: center;

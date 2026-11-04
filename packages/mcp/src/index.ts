@@ -41,6 +41,11 @@ import {
   queryDatabase,
   buildYearReview,
   formatYearReview,
+  formatActivity,
+  isProblem,
+  parseSince,
+  readActivity,
+  type ActivityEvent,
   type DevError,
   type PageCheck,
   type Project,
@@ -835,6 +840,81 @@ server.registerTool(
       return lines.join("\n");
     });
     return text(`${list.length} request(s), oldest first:\n${rows.join("\n")}`);
+  },
+);
+
+/** The last activity event the agent saw, per project ("" for all of them). */
+const seenActivity = new Map<string, number>();
+
+server.registerTool(
+  "activity_log",
+  {
+    title: "What happened in the app",
+    description:
+      "The history of what happened in the user's apps, in order: API requests with their payloads and responses, pages loaded, " +
+      "front-end route changes, clicks and form submits (never typed values), console output, uncaught errors in the browser, and the " +
+      "dev server starting, stopping and printing errors. Passwords, tokens and cookies are masked. Use it to see what the user just did " +
+      "and what went wrong (\"I clicked checkout and nothing happened\"), or to replay the steps that led to an error. Recorded for apps " +
+      "opened at their .localhost address while the dashboard runs, kept 7 days. By default: what's new since you last asked (the last " +
+      "30 minutes the first time).",
+    inputSchema: {
+      project: z.string().optional().describe("Project name, or part of it; every project when left out"),
+      since: z.string().optional().describe("30m, 2h, 3d, today, yesterday, 14:30, or a date. Overrides 'only what's new'"),
+      types: z
+        .array(z.enum(["request", "page", "route", "action", "console", "error", "server", "server-error"]))
+        .optional()
+        .describe("Only these kinds of event"),
+      problems: z.boolean().optional().describe("Only what went wrong: failed requests, errors, console errors and warnings, server errors"),
+      search: z.string().optional().describe("Only events mentioning this, in addresses, bodies and stacks too"),
+      limit: z.number().int().min(1).max(1000).optional().describe("At most this many, the newest (default 100)"),
+      bodies: z.boolean().optional().describe("Include payloads, responses and stacks (default true when 30 or fewer events)"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name, since, types, problems, search, limit, bodies }) => {
+    let project: Project | undefined;
+    if (name) {
+      const found = pickProject(name);
+      if (typeof found === "string") return failure(found);
+      project = found;
+    }
+    const key = project?.dir ?? "";
+    let sinceDate: Date | undefined;
+    let after: number | undefined;
+    if (since) {
+      sinceDate = parseSince(since);
+      if (!sinceDate) return failure(`Can't read since "${since}": use 30m, 2h, 3d, today, yesterday, 14:30 or a date.`);
+    } else if (seenActivity.has(key)) after = seenActivity.get(key);
+    else sinceDate = new Date(Date.now() - 30 * 60_000);
+    const query = { dir: project?.dir, types, problems, search, limit: limit ?? 100, since: sinceDate, after };
+    // The dashboard has the last second's events in memory; the files have everything else.
+    const client = await findDashboard();
+    let list: ActivityEvent[];
+    if (client) {
+      const q = new URLSearchParams({ limit: String(query.limit) });
+      if (project) q.set("dir", project.dir);
+      if (types?.length) q.set("types", types.join(","));
+      if (problems) q.set("problems", "1");
+      if (search) q.set("q", search);
+      if (sinceDate) q.set("since", sinceDate.toISOString());
+      if (after !== undefined) q.set("after", String(after));
+      list = await client.get<ActivityEvent[]>(`/api/activity?${q}`);
+    } else {
+      list = readActivity(query);
+    }
+    if (list.length) seenActivity.set(key, Math.max(seenActivity.get(key) ?? 0, ...list.map((e) => e.id)));
+    if (!list.length) {
+      return text(
+        `Nothing ${after !== undefined ? "new " : ""}recorded${project ? ` for ${project.name}` : ""}${since ? ` since ${since}` : ""}. ` +
+          "Activity is recorded for apps opened at their .localhost address while the dx dashboard runs (start_dev_server prints it).",
+      );
+    }
+    const many = !project && new Set(list.map((e) => e.dir)).size > 1;
+    const detail = bodies ?? list.length <= 30;
+    const problemsSeen = list.filter(isProblem).length;
+    return text(
+      `${list.length} event(s), oldest first${problemsSeen ? `, ${problemsSeen} of them problems` : ""}:\n` + formatActivity(list, { bodies: detail, project: many, maxBody: 1500 }),
+    );
   },
 );
 

@@ -3,6 +3,7 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { localRoutes } from "./dev.js";
+import { handleRecorderRequest, injector, requestActivity, shouldInject } from "./recorder.js";
 import { recordExchange } from "./traffic.js";
 
 /**
@@ -123,31 +124,49 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
     if (!t) return notFound(req, res);
     // Every exchange with a dev server is logged (network_log); the dashboard's own aren't.
     const route = t.host === "dx.localhost" ? undefined : localRoutes().get(t.host);
+    // The activity recorder's script and the events it sends are answered here, never forwarded.
+    if (route && (req.url ?? "").startsWith("/__dx/") && handleRecorderRequest(req, res, route, `${isSecure(req) ? "https" : "http"}://${req.headers.host}`)) return;
     const rec = route ? recordExchange(req, route, t.host) : undefined;
     if (rec) req.on("data", (c: Buffer) => rec.request(c));
     let done = false;
     const finish = (error?: string) => {
       if (done) return;
       done = true;
-      rec?.end(error);
+      if (!rec || !route) return;
+      rec.end(error);
+      requestActivity(rec.entry, route, String(req.headers["user-agent"] ?? ""));
     };
+    const outgoing = headersFor(req, t);
+    // A page the recorder goes into is asked for uncompressed, so the tag can be added as it streams.
+    const wantsPage = !!route && req.method === "GET" && /text\/html/i.test(String(req.headers.accept ?? ""));
+    if (wantsPage) delete outgoing["accept-encoding"];
     const upstream = http.request(
-      { host: "localhost", port: t.port, method: req.method, path: req.url, headers: headersFor(req, t) },
+      { host: "localhost", port: t.port, method: req.method, path: req.url, headers: outgoing },
       (up) => {
         const headers = { ...up.headers };
         const location = headers.location;
         if (typeof location === "string") {
           headers.location = location.replace(new RegExp(`^https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]):${t.port}(?=/|$)`), publicOrigin(t.host, isSecure(req)));
         }
-        rec?.headers(up.statusCode ?? 502, up.headers);
-        res.writeHead(up.statusCode ?? 502, up.statusMessage, headers);
+        const status = up.statusCode ?? 502;
+        rec?.headers(status, up.headers);
+        const inject = wantsPage && shouldInject(req, status, up.headers);
+        if (inject) delete headers["content-length"];
+        res.writeHead(status, up.statusMessage, headers);
         if (rec) {
           up.on("data", (c: Buffer) => rec.response(c));
           up.on("end", () => finish());
           up.on("aborted", () => finish("the dev server closed the connection"));
           res.on("close", () => finish());
         }
-        up.pipe(res);
+        if (!inject) return void up.pipe(res);
+        const page = injector((chunk) => res.write(chunk));
+        up.on("data", (c: Buffer) => page.push(c));
+        up.on("end", () => {
+          page.end();
+          res.end();
+        });
+        up.on("aborted", () => res.destroy());
       },
     );
     upstream.on("error", (err) => {

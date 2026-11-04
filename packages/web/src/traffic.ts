@@ -69,6 +69,7 @@ export function recordExchange(req: http.IncomingMessage, route: { dir: string; 
   let reqKept = 0;
   let resKept = 0;
   return {
+    entry,
     request(chunk: Buffer) {
       entry.requestBytes += chunk.length;
       if (reqKept < CAPTURE) {

@@ -8,10 +8,11 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
   - the core tools;
-  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, setup, https, config, runs, doctor`;
-  - the MCP server with 28 tools, 13 of them for running and checking apps;
+  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, activity, terminal, setup, https, config, runs, doctor`;
+  - the MCP server with 29 tools, 14 of them for running and checking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
-  - the dashboard with 8 pages (Projects, New project, Ports, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - the dashboard with 9 pages (Projects, New project, Ports, Activity, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - the activity history (requests, routes, clicks, console, errors, kept 7 days) and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
@@ -24,6 +25,8 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Raycast**: the extension type-checks (six commands, Work Summary and Clean Up Projects added), but has never been run in Raycast itself.
 - **`dx https` end to end**: the proxy's https is tested with a throwaway openssl certificate; the real `mkcert -install` path hasn't been run on a maintainer machine (it changes the system trust store, so it needs the maintainer's go-ahead).
 - **Coverage in `dx test`**, and screenshot comparison before and after a change.
+- **Terminals beyond Windows**: Command Prompt, Windows PowerShell and Git Bash were opened for real on Windows; the macOS (iTerm2, Warp, Ghostty, kitty) and Linux launch commands are written from each one's documentation and haven't been run on those systems.
+- **Activity for `localhost:<port>`**: only pages opened at `.localhost` pass through dx. Recording the others would need the dev server's cooperation (a Vite/Next plugin) or a browser extension.
 - **MongoDB in `dx db`**: only Postgres, MySQL/MariaDB and Redis today.
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
@@ -34,6 +37,25 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Activity history (`core/src/tools/activity.ts`, `web/src/activity.ts`, `web/src/recorder.ts`, `web/public/recorder.js`)
+
+- **On disk, unlike the network log**: the point is a history to go back to, so it's kept, as JSON lines in `~/.dx/activity/<project>-<hash>/<day>.jsonl` (mode 0600), for `activityDays` (default 7). The dashboard keeps the last 2000 in memory for following along and writes in batches every 500 ms; the CLI and the MCP server read the files directly, so they work without the dashboard.
+- **The browser side is a script the proxy adds to HTML pages**, right after `<head>`, as the page streams. That was the only no-setup way: a browser extension needs installing, and wrapping the dev server needs knowing each framework.
+  - The page is asked for uncompressed so the tag can go in.
+  - Nothing is added when the answer isn't 2xx HTML, when the page's CSP wouldn't run a `'self'` script, or when `activity` is off.
+- **Served at `/__dx/node_modules/dx-recorder.js` with a source map listing it in `x_google_ignoreList`**, so Chrome's dev tools skip it in stacks and `console.log` keeps showing the app's own file and line. The script reports the caller's line itself, from a stack.
+- **Events are accepted only with the page's own `Origin`**, bounded and masked on the server; nothing is read back. A headless page check is told apart by its user agent (`from: "check"`).
+- **Never typed values**: clicks are recorded with the control's label, forms with their name and action.
+- **Requests the proxy saw aren't recorded twice**: the script records only requests to other origins (`localhost:4000`, other hosts), with bodies only for loopback addresses.
+- **Listed by time, followed by id.** The page sends its events in batches a second later, so ids are arrival order; sorting by `at` puts a click before the request it caused. "What's new" uses the highest id seen, not the last in the list.
+- **Not recorded**: scripts, styles and images that loaded fine, WebSockets, and `/favicon.ico`.
+
+### Terminals (`core/src/tools/terminals.ts`)
+
+- **A fixed list per system, each found where it's usually installed or on PATH**, and `terminal` in the config picks one. The default order keeps what dx did before: Windows Terminal, else Command Prompt; Terminal on macOS; `x-terminal-emulator` on Linux.
+- **A command runs and the window stays open** (`cmd /k`, `-NoExit`, `sh -c "…; exec $SHELL -l"`). Warp can't be handed a command, so for one the next terminal is used.
+- **If the chosen one fails to start, the next one found is tried**, so a terminal that was uninstalled doesn't break the button.
 
 ### Tests (`core/src/tools/tests.ts`)
 

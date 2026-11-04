@@ -131,6 +131,23 @@ test("settings: validates and saves", async () => {
   assert.equal(status, 200);
   assert.equal(json.editor, "cursor");
   assert.equal(json.githubUser, "octocat");
+
+  // The terminal: only one dx knows on this system; "" goes back to the first one found.
+  assert.equal((await api("/api/config", { method: "POST", body: { terminal: "rm -rf /" } })).status, 400);
+  const terminals = (await api("/api/terminals")).json as { id: string; installed: boolean; selected: boolean }[];
+  assert.ok(terminals.length >= 3);
+  const installed = terminals.filter((t) => t.installed);
+  if (installed.length) {
+    const pick = installed[installed.length - 1].id;
+    assert.equal((await api("/api/config", { method: "POST", body: { terminal: pick } })).json.terminal, pick);
+    assert.equal(((await api("/api/terminals")).json as typeof terminals).find((t) => t.selected)?.id, pick);
+    assert.equal((await api("/api/config", { method: "POST", body: { terminal: "" } })).json.terminal, undefined);
+  }
+  assert.equal((await api("/api/projects/open", { method: "POST", body: { dir: path.join(root, "nowhere"), action: "shell" } })).status, 404, "only known projects");
+
+  // How long the activity history is kept stays within bounds.
+  assert.equal((await api("/api/config", { method: "POST", body: { activity: false, activityDays: 5000 } })).json.activityDays, 365);
+  assert.equal((await api("/api/config", { method: "POST", body: { activity: true, activityDays: 7 } })).json.activity, true);
 });
 
 test("runs a dev server, streams its output, notices the URL it prints, and stops it", async () => {

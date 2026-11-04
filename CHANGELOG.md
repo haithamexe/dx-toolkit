@@ -12,6 +12,20 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 - **`dx db` and the `db_query` MCP tool**: read-only queries against the development database in docker-compose (Postgres, MySQL/MariaDB, Redis), run inside the container as the user it was set up with, so no credentials are needed. Only reading statements get through, one at a time, and the session itself is read-only.
 - **The year in review**: `dx summary --year` (and **This year** on the Summary page, and `year` in the `work_summary` MCP tool). It covers month by month, projects with their first and last commit, the busiest day and month, the longest run of days with commits, pull requests merged, and your journal.
 
+- **The activity history**: everything that happens in an app opened at its `.localhost` address, in order, kept 7 days. It covers:
+  - requests with their payloads and responses;
+  - pages and front-end route changes;
+  - clicks and form submits (never typed values);
+  - console output with the line that wrote it, and uncaught errors;
+  - the dev server starting, stopping and printing errors.
+
+  Passwords, tokens and cookies are masked. It's on the new **Activity** page (live, filtered by project, kind and time, searchable), in `dx activity` (`-f` to follow, `--problems`, `-q`, `-b` for payloads), and the `activity_log` MCP tool. The browser side comes from a small script the local domains proxy adds to the app's HTML pages. Turn it off with `"activity": false`, or in Health & settings.
+- **Open a project in a terminal, in the terminal you pick**: a **Terminal** button on every project, and a dropdown at the top of the Projects page (and in Health & settings) listing the terminals installed on the computer: Windows Terminal, PowerShell, Command Prompt, Git Bash, WezTerm and Alacritty on Windows; Terminal, iTerm2, Warp, Ghostty, kitty, WezTerm and Alacritty on macOS; the usual ones on Linux. `dx terminal <project>` opens one; `dx terminal --list` and `--use <id>` pick it. **Run in a terminal window** and `dx go -w` use the same choice.
+
+### Changed
+
+- The **Recent activity** section of Health & settings is now **Recent runs**, since the new Activity page is something else.
+
 ### Fixed
 
 - Dashboard API routes treated a missing number in the address as 0: the Cleanup route without `days` looked at projects idle for 0 days instead of 30.

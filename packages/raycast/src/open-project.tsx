@@ -148,7 +148,9 @@ function ProjectActions(props: { project: Project; config?: DxConfig; hasDx: boo
           icon={Icon.Terminal}
           shortcut={{ macOS: { modifiers: ["cmd"], key: "t" }, Windows: { modifiers: ["ctrl"], key: "t" } }}
           onAction={() =>
-            run("Terminal opened", project.name, () => openTerminal(project.dir, undefined, project.name))
+            run("Terminal opened", project.name, async () => {
+              await openTerminal(project.dir, undefined, project.name);
+            })
           }
         />
         <Action.ShowInFinder path={project.dir} />

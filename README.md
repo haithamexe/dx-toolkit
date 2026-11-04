@@ -23,11 +23,12 @@ Everything dx stores is in one folder: `~/.dx` (`C:\Users\<you>\.dx`).
 
 | File | What it is |
 |---|---|
-| `config.json` | Settings: where your projects are, which editor to open |
+| `config.json` | Settings: where your projects are, which editor and terminal to open |
 | `journal.md` | Your work journal, plain markdown, edit it by hand any time |
 | `runs.jsonl` | One line per tool run, so a failure is never silent (`dx runs`) |
 | `summaries/` | Saved work summaries, one markdown file per day you ran `dx summary --save` |
 | `templates/` | Your project templates for `dx new`, one folder each |
+| `activity/` | The activity history: one folder per project, one file per day, kept 7 days |
 | `dashboard.json` | While the dashboard runs: its address and access token, readable by you only, so the `dx` command and AI tools can reach it |
 
 ---
@@ -73,14 +74,15 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 
 | Page | What you can do there |
 |---|---|
-| **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; **Check page** loads it in a headless browser and lists exceptions, console errors and failed requests; **Requests** shows what the app sent through its `.localhost` address and what came back; see servers your AI agent started; **work that isn't backed up** across all projects; **leave a note** on a project for next time; **check its .env** and look for committed keys; **run its tests** and see each failure with file, line, expected and actual; open a project in your editor, in a terminal window or in File Explorer; save one as a template |
+| **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; **Check page** loads it in a headless browser and lists exceptions, console errors and failed requests; **Requests** shows what the app sent through its `.localhost` address and what came back; see servers your AI agent started; **work that isn't backed up** across all projects; **leave a note** on a project for next time; **check its .env** and look for committed keys; **run its tests** and see each failure with file, line, expected and actual; open a project in your editor, in **a terminal** (pick which one at the top of the page: Windows Terminal, PowerShell, Git Bash, iTerm2, Warp, Ghostty and others, whichever you have) or in File Explorer; run its dev server in a terminal window; save one as a template |
 | **New project** | Create a project from a template or a copy of another, with git and packages installed; or **clone a repository** and get it ready to run |
+| **Activity** | Everything that happened in your apps, newest first, live: requests with their payloads and responses, pages and route changes, clicks, console output, browser errors, and the dev server starting, stopping and failing. Filter by project, kind or time, search payloads and messages, open an error at its line in your editor. See [The activity history](#the-activity-history) |
 | **Ports** | See what's listening and stop it (it asks first, naming the process) |
 | **Journal** | Add what you did, read back 7, 30 or 90 days |
 | **Summary** | Your week: commits, pull requests, journal, where the time went, uncommitted work; copy it as markdown or save it. **This year** gives the year in review |
 | **Cleanup** | See which `node_modules` and build folders can go, pick them, delete them (it asks first) |
 | **Dependencies** | Run the audit across all projects (npm, pnpm, yarn and bun) with a progress bar; open a row for its outdated packages, and **Update packages** within their ranges |
-| **Health & settings** | `dx doctor`'s checks with how to fix each problem, which AI tools are connected (with Connect and Disconnect buttons), your projects folders, editor and GitHub username, and recent activity |
+| **Health & settings** | `dx doctor`'s checks with how to fix each problem, which AI tools are connected (with Connect and Disconnect buttons), your projects folders, editor, terminal and GitHub username, whether to keep the activity history and for how long, and what dx ran recently |
 
 | Summary | Cleanup |
 |---|---|
@@ -91,6 +93,25 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 - **Dev servers you start from the dashboard stop when the dashboard stops**, like a dev server stops when you close its terminal. For one that keeps running, use **More → Run in a terminal window**.
 - Light and dark follow your system, or pick one at the bottom of the sidebar. It works on a phone-sized window too.
 - `dx ui --port 5000` uses another port; `dx ui --no-open` doesn't open the browser. From the project folder, `npm run ui` does the same as `dx ui`.
+
+---
+
+## The activity history
+
+Every app you open at its `.localhost` address (the address `dx up`, `dx go` and the dashboard give you) leaves a history of what happened, in order:
+
+- **Requests** with their method, address, status, time, and what was sent and returned;
+- **Pages** loaded, and **route changes** without a page load (`/cart → /checkout`);
+- **Clicks** on buttons and links, and **forms** submitted. What you type is never recorded;
+- **Console output** (`console.log`, `warn`, `error`) with the file and line that wrote it, and **uncaught errors** with their stack;
+- the **dev server** starting, getting ready, stopping and crashing, and each **error it printed**.
+
+See it on the **Activity** page, with `dx activity`, or ask your AI agent (`activity_log`). Nothing to set up:
+
+- **How it's recorded.** Requests go through the local domains proxy, which logs them. For the browser side, the proxy adds one `<script>` tag to your app's HTML pages, served from your app's own address. Browser dev tools leave it out of stack traces, so `console.log` still shows your file and line. Requests the page makes to `localhost:<port>` or other addresses are recorded by that script.
+- **Only what you open at `.localhost`.** `localhost:5173` is the dev server directly, and nothing passes through dx there.
+- **Private.** Passwords, tokens, cookies and API keys are masked before anything is written. It's kept in `~/.dx/activity`, readable by you only, for 7 days (`activityDays` in the settings). Only the page itself can add to its history; no other website can. `dx activity --clear` or **Clear history** deletes it.
+- **Off**: untick it in Health & settings, or set `"activity": false`. Pages are then served exactly as your dev server sends them.
 
 ---
 
@@ -145,6 +166,8 @@ dx up shop
 | `dx logs todo-app -f` | Follow the output of a dev server running in the dashboard, one your AI agent started included |
 | `dx errors` | Errors in every running dev server, with file and line (`dx errors todo-app` for one) |
 | `dx traffic todo-app -f` | The requests the app made through its `.localhost` address, live; `--bodies` for what was sent and returned (passwords, tokens and cookies masked), `--failed` for 4xx/5xx only |
+| `dx activity` | What happened in your apps today, in order: requests and responses, routes, clicks, console, errors. `dx activity todo-app -f` follows it live, `--problems` shows only what went wrong, `-q checkout` searches, `-b` adds payloads and stacks, `--since 2h` goes back further |
+| `dx terminal todo-app` | Open the project in a new terminal window. `dx terminal --list` shows the terminals on this computer, `dx terminal --use git-bash` picks the one projects open in (the dashboard uses it too) |
 | `dx setup` | Connect dx to your AI tools (it does this by itself; `--list` shows them, `--undo` removes dx from them) |
 | `dx go todo-app` | Open the project in your editor, start its dev server here (its whole stack, if it has one), open the browser when it's ready |
 | `dx go todo-app -w` | Same, but the dev server runs in a new terminal window |
@@ -319,6 +342,8 @@ Created on first run, with the code folders and editor dx found:
 }
 ```
 
+- **`terminal`**: the terminal projects open in, by id (`dx terminal --list`). Without it: Windows Terminal, else Command Prompt, on Windows; Terminal on macOS; the system default on Linux.
+- **`activity`** / **`activityDays`**: `false` turns the activity history off (pages are then left exactly as the dev server sends them); a number keeps that many days instead of 7.
 - **`localDomains`** / **`localDomainsPort`**: `false` turns `*.localhost` addresses off; a number picks their port instead of 80 (or 1355).
 - **`aiToolsSeen`**: the AI tools dx has connected itself to once. A tool you disconnect stays disconnected. Set `"autoConnectAi": false` to stop dx connecting itself to new ones (`dx setup --undo` does both).
 
@@ -373,6 +398,7 @@ Ask your agent to work on a project and check its own work, for example *"Start 
 | `check_env` | What a project's `.env` is missing compared with `.env.example`, `.env` files git would commit, and keys or tokens in tracked files |
 | `run_tests` | Runs the project's tests and returns each failure with its name, file and line, and expected against actual; `match` reruns just the ones being fixed |
 | `network_log` | The requests the app made through its `.localhost` address, with status, timing and bodies (credentials masked): what the front end sent the API, and what came back |
+| `activity_log` | What happened in the app, in order: what the user clicked, the routes they went through, each request with its payload and response, console output and errors in the browser and on the server. Ask *"I clicked checkout and nothing happened, why?"* and the agent reads the steps that led there |
 | `db_query` | A read-only query against the project's development database (Postgres, MySQL/MariaDB, Redis in docker-compose), to check what an action actually stored |
 | `resume_project`, `leave_note` | Where things were left in a project (branch, what ran, open errors, commits since, the last note), and a note for next time. Ask *"carry on with todo-app"* and the agent starts from there |
 | `dx_setup_check` | dx's health checks, each problem with the command that fixes it, so the agent can fix your setup for you |

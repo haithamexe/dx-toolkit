@@ -16,6 +16,7 @@ import {
   type Stack,
   type StackService,
 } from "@dx/core";
+import { recordActivity } from "./activity.js";
 
 /**
  * Dev servers run by the dashboard. A project runs as one process, or, when it has a stack, as
@@ -133,12 +134,19 @@ function localUrlOf(host: string): string | undefined {
   return `http://${host}${localPort === 80 ? "" : `:${localPort}`}`;
 }
 
+export interface LocalRoute {
+  url: string;
+  dir: string;
+  project: string;
+  service?: string;
+}
+
 /** Every *.localhost name dx serves, and the address it points at. */
-export function localRoutes(): Map<string, { url: string; dir: string; service?: string }> {
-  const routes = new Map<string, { url: string; dir: string; service?: string }>();
+export function localRoutes(): Map<string, LocalRoute> {
+  const routes = new Map<string, LocalRoute>();
   for (const p of procs.values()) {
     if (p.stackKey || !p.child || !p.url) continue;
-    routes.set(`${serviceName(p.project)}.localhost`, { url: p.url, dir: p.dir });
+    routes.set(`${serviceName(p.project)}.localhost`, { url: p.url, dir: p.dir, project: p.project });
   }
   for (const run of stacks.values()) {
     if (run.phase === "stopped") continue;
@@ -146,8 +154,8 @@ export function localRoutes(): Map<string, { url: string; dir: string; service?:
     const main = mainService(run.stack)?.name;
     for (const svc of serviceInfos(run)) {
       if (!svc.url || svc.status === "stopped" || svc.status === "failed") continue;
-      routes.set(`${svc.service}.${base}.localhost`, { url: svc.url, dir: run.dir, service: svc.service });
-      if (svc.service === main) routes.set(`${base}.localhost`, { url: svc.url, dir: run.dir, service: svc.service });
+      routes.set(`${svc.service}.${base}.localhost`, { url: svc.url, dir: run.dir, project: run.name, service: svc.service });
+      if (svc.service === main) routes.set(`${base}.localhost`, { url: svc.url, dir: run.dir, project: run.name, service: svc.service });
     }
   }
   return routes;
@@ -356,10 +364,11 @@ function spawnProc(spec: Spec): Proc {
     startedAt: new Date().toISOString(),
     lastLine: 0,
     lines: [],
-    trackers: new Map([["", new ErrorTracker()]]),
+    trackers: new Map(),
     lastOutputAt: Date.now(),
     subUrls: new Map(),
   };
+  p.trackers.set("", trackerFor(p));
   procs.set(spec.key, p);
   push(p, "dx", `$ ${spec.command}`);
 
@@ -637,6 +646,23 @@ function pushChunk(p: Proc, stream: "out" | "err", chunk: Buffer): void {
   for (const line of parts) push(p, stream, line);
 }
 
+/** Picks errors out of one process's (or one service's) output, and adds each to the activity history. */
+function trackerFor(p: Proc, service?: string): ErrorTracker {
+  return new ErrorTracker((e: DevError) =>
+    recordActivity({
+      dir: p.dir,
+      project: p.project,
+      service: service ?? p.service,
+      type: "server-error",
+      text: e.message,
+      level: "error",
+      source: e.file ? `${e.file}${e.line ? `:${e.line}${e.column ? `:${e.column}` : ""}` : ""}` : undefined,
+      stack: e.lines.join("\n"),
+      from: "server",
+    }),
+  );
+}
+
 function push(p: Proc, stream: DevLine["stream"], raw: string): void {
   let text = raw.replace(ANSI, "").replace(/\r/g, "");
   let service: string | undefined;
@@ -652,8 +678,20 @@ function push(p: Proc, stream: DevLine["stream"], raw: string): void {
   p.lastOutputAt = Date.now();
 
   let tracker = p.trackers.get(service ?? "");
-  if (!tracker) p.trackers.set(service ?? "", (tracker = new ErrorTracker()));
+  if (!tracker) p.trackers.set(service ?? "", (tracker = trackerFor(p, service)));
   tracker.push(line);
+  // dx's own lines (started, ready, stopped, exited) are the server's part of the activity history.
+  if (stream === "dx") {
+    recordActivity({
+      dir: p.dir,
+      project: p.project,
+      service: p.service,
+      type: "server",
+      text,
+      level: /^Exited with (?!0\.)|^Couldn't|failed|exited with/i.test(text) ? "error" : undefined,
+      from: "server",
+    });
+  }
   // An error's last line is only known once the output pauses.
   clearTimeout(p.flushTimer);
   p.flushTimer = setTimeout(() => {

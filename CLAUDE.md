@@ -52,7 +52,8 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - The network log (`traffic.ts`) masks credential headers and body fields before storing anything, keeps it in memory only, and never records the dashboard's own traffic. `POST /api/tests` runs a known project's own test setup with fixed flags; a name pattern is quoted.
 - `POST /api/clone` takes only a git address (`normalizeGitUrl`) and passes it to git after `--`. `POST /api/deps/fix`, `GET /api/env` and `POST /api/note` take a known project's `dir`, and the fix runs fixed commands only.
 - The local domains proxy (`proxy.ts`) listens on loopback only and forwards only to dev servers dx runs (`localRoutes()`) or the dashboard (`dx.localhost`), over http and, when `dx https` is on, https. Never route to an arbitrary host or port from a request; the certificate grows only for names that are already routes.
-- `server.test.ts` and `stack.test.ts` cover all of this. Run them after touching these files.
+- The activity recorder (`recorder.ts`): the proxy answers `/__dx/` paths itself and never forwards them. `POST /__dx/events` takes events only when `Origin` is the page's own origin, at most 512 KB and 200 events, known types and fields only, clipped and masked (`maskBody`). Nothing is ever read back from it. The script tag goes only into 2xx HTML answers to GET, uncompressed, and not when the page's CSP wouldn't run a `'self'` script or `activity` is off. History files are mode 0600 under `~/.dx/activity`; `GET /api/activity` and `POST /api/activity/clear` take a known project's `dir`.
+- `server.test.ts`, `stack.test.ts` and `activity.test.ts` cover all of this. Run them after touching these files.
 
 ## No setup
 
