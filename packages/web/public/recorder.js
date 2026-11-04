@@ -28,7 +28,12 @@
       ev.page = location.href;
       queue.push(ev);
       if (queue.length > 500) queue.splice(0, queue.length - 500);
-      if (!timer) timer = setTimeout(flush, 1000);
+      // Errors go at once: they're what matters most, and a tab that's closed next would lose them.
+      var urgent = ev.type === "error" || ev.level === "error";
+      if (urgent) {
+        clearTimeout(timer);
+        timer = setTimeout(flush, 0);
+      } else if (!timer) timer = setTimeout(flush, 250);
     } catch (e) {
       // never get in the page's way
     }

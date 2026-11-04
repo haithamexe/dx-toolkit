@@ -112,7 +112,12 @@ test("an agent runs the app, finds an error through a request, and sees it clear
     const log = await call("network_log", { project: "tiny-shop" });
     assert.match(log.text, /GET \/checkout → 500/, log.text);
     // The same load in the activity history, with the browser's exception from the recorder script.
-    const activity = await call("activity_log", { project: "tiny-shop", problems: true });
+    // The page sends its events itself, a moment after they happen: give a slow machine a few seconds.
+    let activity = await call("activity_log", { project: "tiny-shop", problems: true, since: "10m" });
+    for (let i = 0; i < 20 && !/Uncaught TypeError/.test(activity.text); i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      activity = await call("activity_log", { project: "tiny-shop", problems: true, since: "10m" });
+    }
     assert.equal(activity.isError, false, activity.text);
     assert.match(activity.text, /request GET \/checkout → 500/, activity.text);
     assert.match(activity.text, /srv err TypeError: Cannot read properties of undefined \(reading 'items'\)/, "the server's error too");
