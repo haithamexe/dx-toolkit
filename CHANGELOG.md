@@ -6,6 +6,13 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ### Added
 
+- **Git page** in the dashboard:
+  - **A staging board.** A project's changed files are cards in **Changes** and **Staged**. Drag them across, press the arrow on a card, or pick several with Ctrl+click and Shift+click. Cards slide to their new place; under "reduce motion" they don't.
+  - **One block at a time.** Open a file to see its changes side by side and stage or unstage one block, by its button or by dragging it.
+  - **Commit** from the page, with Ctrl+Enter. The committed cards fly into the history, where the new commit appears.
+  - **The history as a graph**: every branch, tag and remote branch in its own coloured lane. Open a commit for its message and its diff, Visual side by side or Raw.
+  - Changes you make in your editor or a terminal show up by themselves.
+- **`dx git <project>`** prints the branch, what's staged and changed, and the recent history as a graph in the terminal. `--ui` opens the Git page.
 - **Machine page**, `dx machine` and the `machine_info` MCP tool: what this computer has, and what runs on it.
   - **Tools**: Node, npm, pnpm, yarn, bun, deno, git, gh, docker, Python, Go, Java and Rust, with the installed version, the newest one, and whether yours still gets security fixes (from endoflife.date, the npm registry and GitHub releases, kept for 12 hours). **Update** opens the command that fits how the tool was installed (nvm, fnm, volta, mise, asdf, winget, Homebrew, scoop, npm, corepack…) in a terminal you can watch.
   - **Your projects**: what each project asks for (`.nvmrc`, `.node-version`, `.tool-versions`, `engines`, `volta`, `packageManager`, lock files, `.python-version`, `requires-python`, `go.mod`, compose files) next to what's installed, with the command that switches or installs it.

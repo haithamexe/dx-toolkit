@@ -61,6 +61,16 @@ import {
   reportContext,
   type Replay,
   listTerminals,
+  gitCommit,
+  gitCommitDetail,
+  gitFileDiff,
+  gitGraph,
+  gitStage,
+  gitStageHunk,
+  gitStatus,
+  gitUnstage,
+  GitError,
+  GIT_GRAPH_MAX,
   parseSince,
   terminalIds,
   checkProjectNeeds,
@@ -308,6 +318,48 @@ const routes: Record<string, Handler> = {
     recordRun("env", true, `${project.name}: .gitignore ${added.length ? `now ignores ${added.join(", ")}` : "already had them"}`, "web", { project: project.name });
     return { added };
   },
+  // ------------------------------------------------------------ git: the graph and the staging board
+  // Every path must be one `git status` lists right now, and a block is named by its id: the
+  // patch is built from git's own diff (gitStageHunk), never taken from the request.
+  "GET /api/git/graph": (req) => gitCall(() => gitGraph(gitProject(req.query.get("dir")).dir, { limit: clampInt(req.query.get("limit"), 1, GIT_GRAPH_MAX, 200) })),
+  "GET /api/git/commit": (req) => gitCall(() => gitCommitDetail(gitProject(req.query.get("dir")).dir, String(req.query.get("hash") ?? ""))),
+  "GET /api/git/status": (req) => gitCall(() => gitStatus(gitProject(req.query.get("dir")).dir)),
+  "GET /api/git/diff": (req) =>
+    gitCall(() => gitFileDiff(gitProject(req.query.get("dir")).dir, String(req.query.get("path") ?? ""), req.query.get("staged") === "true")),
+  "POST /api/git/stage": async (req) => {
+    const project = gitProject(req.body.dir);
+    const paths = pathsOf(req.body.paths);
+    const status = await gitCall(() => gitStage(project.dir, paths));
+    recordRun("git", true, `${project.name}: staged ${plural(paths.length, "file")}`, "web", { project: project.name });
+    return status;
+  },
+  "POST /api/git/unstage": async (req) => {
+    const project = gitProject(req.body.dir);
+    const paths = pathsOf(req.body.paths);
+    const status = await gitCall(() => gitUnstage(project.dir, paths));
+    recordRun("git", true, `${project.name}: unstaged ${plural(paths.length, "file")}`, "web", { project: project.name });
+    return status;
+  },
+  "POST /api/git/hunk": async (req) => {
+    const project = gitProject(req.body.dir);
+    const file = String(req.body.path ?? "");
+    const staged = req.body.staged === true;
+    const status = await gitCall(() => gitStageHunk(project.dir, file, String(req.body.hunk ?? ""), staged));
+    recordRun("git", true, `${project.name}: ${staged ? "unstaged" : "staged"} a block of ${file}`, "web", { project: project.name });
+    return status;
+  },
+  "POST /api/git/commit": async (req) => {
+    const project = gitProject(req.body.dir);
+    try {
+      const c = await gitCall(() => gitCommit(project.dir, String(req.body.message ?? "")));
+      recordRun("git", true, `${project.name}: committed ${c.short} ${c.subject}`, "web", { project: project.name });
+      return c;
+    } catch (err) {
+      recordRun("git", false, `${project.name}: commit failed`, "web", { project: project.name });
+      throw err;
+    }
+  },
+
   "GET /api/unsaved": () => findUnsavedWork(),
   "POST /api/clone": async (req) => {
     const url = String(req.body.url ?? "");
@@ -677,6 +729,31 @@ function dxOwnedPids(): number[] {
     for (const x of [s, ...(s.services ?? [])]) if (x.pid) pids.push(x.pid);
   }
   return pids;
+}
+
+function gitProject(dir: unknown): Project {
+  const project = knownProject(dir);
+  if (!project.hasGit) throw new HttpError(400, `${project.name} isn't a git repository.`);
+  return project;
+}
+
+/** git's own refusals ("nothing staged", a hook that failed) reach the page as they are. */
+async function gitCall<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof GitError) throw new HttpError(err.status, err.message);
+    throw err;
+  }
+}
+
+function pathsOf(raw: unknown): string[] {
+  if (!Array.isArray(raw) || !raw.every((p) => typeof p === "string")) throw new HttpError(400, "Which files? Send their paths.");
+  return raw;
+}
+
+function plural(n: number, one: string): string {
+  return `${n} ${n === 1 ? one : `${one}s`}`;
 }
 
 function startedBy(raw: unknown): StartedBy {

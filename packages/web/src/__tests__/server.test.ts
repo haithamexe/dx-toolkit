@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -184,6 +185,61 @@ test("env & secrets: lists .env files, reads and saves only those, and fixes .gi
   const after = (await api(`/api/env/project?dir=${encodeURIComponent(envApp)}`)).json;
   assert.equal(after.gitignore, true);
   assert.ok(after.rules.find((r: { pattern: string }) => r.pattern === ".env").covered);
+});
+
+test("git: graph, status, staging by file and by block, and commit, only on known projects and listed files", async () => {
+  const repo = path.join(root, "git-app");
+  fs.mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "octocat@example.com");
+  git("config", "user.name", "octocat");
+  git("config", "core.autocrlf", "false");
+  git("config", "commit.gpgsign", "false");
+  const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+  fs.writeFileSync(path.join(repo, "notes.txt"), `${lines.join("\n")}\n`);
+  git("add", ".");
+  git("commit", "-q", "-m", "First notes");
+  const q = `dir=${encodeURIComponent(repo)}`;
+
+  const graph = await api(`/api/git/graph?${q}`);
+  assert.equal(graph.status, 200);
+  assert.equal(graph.json.commits[0].subject, "First notes");
+  const commit = await api(`/api/git/commit?${q}&hash=${graph.json.commits[0].short}`);
+  assert.ok(commit.json.patch.includes("+line 1"));
+  assert.equal((await api(`/api/git/commit?${q}&hash=--all`)).status, 400);
+  assert.equal((await api(`/api/git/graph?dir=${encodeURIComponent(path.join(root, "nowhere"))}`)).status, 404, "only known projects");
+  assert.equal((await api(`/api/git/status?dir=${encodeURIComponent(app)}`)).status, 400, "a project without git");
+
+  const changed = lines.slice();
+  changed[1] = "line 2 edited";
+  changed[27] = "line 28 edited";
+  fs.writeFileSync(path.join(repo, "notes.txt"), `${changed.join("\n")}\n`);
+  fs.writeFileSync(path.join(repo, "todo.txt"), "buy milk\n");
+  const status = (await api(`/api/git/status?${q}`)).json;
+  assert.deepEqual(status.files.map((f: { path: string }) => f.path).sort(), ["notes.txt", "todo.txt"]);
+
+  assert.equal((await api("/api/git/stage", { method: "POST", body: { dir: repo, paths: ["../tiny-app/package.json"] } })).status, 409, "only files git lists");
+  assert.equal((await api("/api/git/stage", { method: "POST", body: { dir: repo, paths: "todo.txt" } })).status, 400);
+  const staged = await api("/api/git/stage", { method: "POST", body: { dir: repo, paths: ["todo.txt"] } });
+  assert.equal(staged.json.files.find((f: { path: string }) => f.path === "todo.txt").staged, true);
+
+  const diff = (await api(`/api/git/diff?${q}&path=notes.txt&staged=false`)).json;
+  assert.equal(diff.hunks.length, 2);
+  assert.equal((await api("/api/git/hunk", { method: "POST", body: { dir: repo, path: "notes.txt", hunk: "made-up", staged: false } })).status, 409);
+  await api("/api/git/hunk", { method: "POST", body: { dir: repo, path: "notes.txt", hunk: diff.hunks[0].id, staged: false } });
+  assert.ok(git("diff", "--cached", "notes.txt").includes("+line 2 edited"));
+  assert.ok(!git("diff", "--cached", "notes.txt").includes("+line 28 edited"), "only that block");
+
+  assert.equal((await api("/api/git/commit", { method: "POST", body: { dir: repo, message: "" } })).status, 400);
+  const made = await api("/api/git/commit", { method: "POST", body: { dir: repo, message: "Edit the notes and add a todo" } });
+  assert.equal(made.status, 200);
+  assert.equal(git("log", "-1", "--format=%s").trim(), "Edit the notes and add a todo");
+  assert.ok(fs.readFileSync(path.join(home, "runs.jsonl"), "utf8").includes("git-app: committed"));
+  await api("/api/git/stage", { method: "POST", body: { dir: repo, paths: ["notes.txt"] } });
+  const unstaged = await api("/api/git/unstage", { method: "POST", body: { dir: repo, paths: ["notes.txt"] } });
+  assert.equal(unstaged.status, 200);
+  assert.equal(git("diff", "--cached"), "", "nothing staged after unstaging");
 });
 
 test("runs a dev server, streams its output, notices the URL it prints, and stops it", async () => {

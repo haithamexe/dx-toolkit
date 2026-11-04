@@ -34,6 +34,13 @@
   --code-string: #1a7f37;
   --code-number: #b45309;
   --code-literal: #6d28d9;
+  /* The commit graph's lanes, one colour per branch line. */
+  --lane-1: #0e7490;
+  --lane-2: #7c3aed;
+  --lane-3: #c2410c;
+  --lane-4: #15803d;
+  --lane-5: #be185d;
+  --lane-6: #1d4ed8;
   --shadow: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 3px rgb(16 24 40 / 0.08);
   --shadow-lg: 0 12px 32px rgb(16 24 40 / 0.18);
 
@@ -90,6 +97,12 @@
     --code-string: #86efac;
     --code-number: #fbbf24;
     --code-literal: #c4b5fd;
+    --lane-1: #2cc4e0;
+    --lane-2: #a78bfa;
+    --lane-3: #fb923c;
+    --lane-4: #4ade80;
+    --lane-5: #f472b6;
+    --lane-6: #60a5fa;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
     --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.55);
     color-scheme: dark;
@@ -121,6 +134,12 @@
   --code-string: #86efac;
   --code-number: #fbbf24;
   --code-literal: #c4b5fd;
+  --lane-1: #2cc4e0;
+  --lane-2: #a78bfa;
+  --lane-3: #fb923c;
+  --lane-4: #4ade80;
+  --lane-5: #f472b6;
+  --lane-6: #60a5fa;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.55);
   color-scheme: dark;
@@ -1773,6 +1792,529 @@ summary.error-row {
   }
   .table .cmd {
     max-width: 220px;
+  }
+}
+
+/* ------------------------------------------------------------ Git: the board */
+.git-branch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+  font-size: var(--t-sm);
+}
+.git-branch-name {
+  padding: var(--s1) var(--s3);
+  font-size: var(--t-sm);
+}
+.git-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  gap: var(--s4);
+  align-items: start;
+}
+.git-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-height: 160px;
+  padding: var(--s3);
+  transition:
+    border-color 0.15s,
+    background-color 0.15s;
+}
+.git-col.drop-target {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+}
+.git-col-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--control);
+}
+.git-col-head .btn {
+  margin-left: auto;
+}
+.git-col-title {
+  font-size: var(--t-md);
+  font-weight: 650;
+}
+.git-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.git-card {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--control);
+  padding: 0 var(--s1) 0 var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+  background: var(--surface);
+  cursor: grab;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    opacity 0.15s;
+}
+.git-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow);
+}
+.git-card:active {
+  cursor: grabbing;
+}
+.git-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.git-card.open {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.git-card.dragging,
+.diff-hunk.dragging {
+  opacity: 0.45;
+}
+.git-card-main {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--s2);
+  min-width: 0;
+  padding: var(--s1) 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.git-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.git-folder {
+  color: var(--text-dim);
+  font-size: var(--t-xs);
+  overflow-wrap: anywhere;
+}
+.git-code {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: 700 var(--t-xs) / 1 var(--mono);
+}
+.git-code-M,
+.git-code-T {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.git-code-A,
+.git-code-N,
+.git-code-C {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.git-code-D,
+.git-code-U {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.git-code-R {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.git-empty {
+  margin: auto 0;
+  padding: var(--s4) var(--s2);
+  font-size: var(--t-sm);
+  text-align: center;
+}
+.git-message {
+  width: 100%;
+  min-height: auto;
+  padding: var(--s2) var(--s3);
+  font: inherit;
+  resize: vertical;
+}
+.git-commit-summary,
+.git-hint {
+  font-size: var(--t-sm);
+}
+.git-hint kbd {
+  padding: 0 var(--s1);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font: var(--t-xs) / 1.4 var(--mono);
+}
+.git-file-panel:empty {
+  display: none;
+}
+.git-file-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+.git-file-title .section-title {
+  font-size: var(--t-md);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ diffs, side by side */
+.diff-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.diff-file {
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+  overflow: hidden;
+}
+.diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  background: var(--surface-2);
+  font-size: var(--t-sm);
+  cursor: pointer;
+}
+.diff-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.diff-file-body > p {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+}
+.diff-hunk {
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+  overflow: hidden;
+}
+.diff-file-body .diff-hunk {
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+.diff-hunk-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--s6);
+  padding: var(--s1) var(--s3);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--t-xs);
+}
+.diff-hunk-head[draggable="true"] {
+  cursor: grab;
+}
+.diff-hunk-head .btn {
+  margin-left: auto;
+}
+.diff-context {
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.diff-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+  font: var(--t-xs) / 1.6 var(--mono);
+}
+.diff-row {
+  display: contents;
+}
+.diff-grid-one {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.diff-grid-one .diff-empty {
+  display: none;
+}
+.diff-grid-one .diff-no.diff-right {
+  border-left: 0;
+}
+.diff-no {
+  padding: 0 var(--s2);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+.diff-text {
+  min-width: 0;
+  padding: 0 var(--s2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-no.diff-right {
+  border-left: 1px solid var(--border);
+}
+.diff-del {
+  background: var(--danger-soft);
+}
+.diff-add {
+  background: var(--ok-soft);
+}
+.diff-empty {
+  background: var(--surface-2);
+}
+.diff-cut {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  font-size: var(--t-xs);
+}
+.diff-add-count,
+.diff-del-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.diff-add-count {
+  color: var(--ok);
+}
+.diff-del-count {
+  color: var(--danger);
+}
+.diff-raw {
+  max-height: 480px;
+}
+
+/* ------------------------------------------------------------ Git: the commit graph */
+.graph-card {
+  overflow: hidden;
+}
+.graph {
+  margin: 0;
+  padding: var(--s1) 0;
+  list-style: none;
+}
+.lane-0 {
+  --lane: var(--lane-1);
+}
+.lane-1 {
+  --lane: var(--lane-2);
+}
+.lane-2 {
+  --lane: var(--lane-3);
+}
+.lane-3 {
+  --lane: var(--lane-4);
+}
+.lane-4 {
+  --lane: var(--lane-5);
+}
+.lane-5 {
+  --lane: var(--lane-6);
+}
+.graph-row {
+  display: grid;
+  grid-template-columns: calc(var(--lanes, 1) * 16px) minmax(0, 1fr) minmax(0, 9em) 4.5em 5em;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  height: var(--s6);
+  padding: 0 var(--s4) 0 var(--s3);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.graph-row:hover,
+.graph-item.open > .graph-row {
+  background: var(--surface-hover);
+}
+.graph-cell {
+  display: block;
+  overflow: visible;
+}
+.graph-line {
+  fill: none;
+  stroke: var(--lane);
+  stroke-width: 2;
+}
+.graph-dot {
+  fill: var(--lane);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+.graph-dot-merge {
+  fill: var(--surface);
+  stroke: var(--lane);
+}
+.graph-text {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+.graph-refs {
+  display: inline-flex;
+  flex: none;
+  gap: var(--s1);
+  max-width: 60%;
+  overflow: hidden;
+}
+.graph-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-author,
+.graph-hash,
+.graph-time {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--t-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-time {
+  text-align: right;
+}
+.graph-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 0 var(--s2);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.graph-ref .icon {
+  width: 12px;
+  height: 12px;
+}
+.graph-ref-current {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.graph-ref-remote {
+  border-style: dashed;
+  color: var(--text-dim);
+}
+.graph-ref-tag {
+  border-color: transparent;
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.graph-ref-head {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.graph-detail {
+  display: grid;
+  grid-template-columns: calc(var(--lanes, 1) * 16px) minmax(0, 1fr);
+  gap: var(--s3);
+  padding: 0 var(--s4) 0 var(--s3);
+}
+.graph-strip {
+  display: block;
+  width: calc(var(--lanes, 1) * 16px);
+  height: 100%;
+}
+.graph-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+  padding: var(--s2) 0 var(--s4);
+}
+.graph-detail-subject {
+  margin: 0;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.graph-detail-message {
+  margin: 0;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.graph-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
+  margin: 0;
+  font-size: var(--t-sm);
+}
+.graph-more {
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--border);
+}
+@keyframes graph-in {
+  from {
+    background: var(--accent-soft);
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  40% {
+    background: var(--accent-soft);
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    background: transparent;
+  }
+}
+.graph-new > .graph-row {
+  animation: graph-in 1.2s ease-out;
+}
+
+@media (max-width: 860px) {
+  .git-board {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .git-col {
+    min-height: 0;
+  }
+  .diff-grid {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .diff-row-ctx > .diff-right,
+  .diff-empty {
+    display: none;
+  }
+  .diff-no.diff-right {
+    border-left: 0;
+  }
+  .graph-row {
+    grid-template-columns: calc(var(--lanes, 1) * 16px) minmax(0, 1fr) 4.5em;
+    padding-right: var(--s3);
+  }
+  .graph-author,
+  .graph-hash {
+    display: none;
   }
 }
 

@@ -20,6 +20,7 @@ import { testCommand } from "./commands/test.js";
 import { trafficCommand } from "./commands/traffic.js";
 import { activityCommand } from "./commands/activity.js";
 import { terminalCommand } from "./commands/terminal.js";
+import { gitCommand } from "./commands/git.js";
 import { machineCommand } from "./commands/machine.js";
 import { configCommand, doctorCommand, runsCommand } from "./commands/system.js";
 import { uiCommand } from "./commands/ui.js";
@@ -50,6 +51,7 @@ const commands: Command[] = [
   trafficCommand,
   activityCommand,
   terminalCommand,
+  gitCommand,
   machineCommand,
   setupCommand,
   httpsCommand,

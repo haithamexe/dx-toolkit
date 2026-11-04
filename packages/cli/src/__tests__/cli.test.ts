@@ -138,3 +138,29 @@ test("machine: what a project needs, offline, and a PID it doesn't list is refus
   assert.equal(dx("machine", "--stop", "abc").code, 2, "a usage error");
   assert.equal(dx("machine", "nonsense").code, 2);
 });
+
+test("git shows the branch, staged and changed files, and the history as a graph", () => {
+  const dir = project("notes-app", { "notes.md": "# Notes\n" });
+  git(dir, "checkout", "-qb", "idea");
+  fs.writeFileSync(path.join(dir, "idea.md"), "an idea\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-qm", "Write the idea down");
+  git(dir, "checkout", "-q", "main");
+  git(dir, "merge", "-q", "--no-ff", "-m", "Merge the idea", "idea");
+  fs.writeFileSync(path.join(dir, "notes.md"), "# Notes\n\nmore\n");
+  fs.writeFileSync(path.join(dir, "todo.md"), "- buy milk\n");
+  git(dir, "add", "todo.md");
+
+  const r = dx("git", "notes-app");
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^notes-app {2}main {2}no upstream/m);
+  assert.match(r.out, /Staged \(1\)\n {2}A todo\.md/);
+  assert.match(r.out, /Changes \(1\)\n {2}M notes\.md/);
+  assert.match(r.out, /○ ╮ [0-9a-f]{7} Merge the idea \(main\)/, "the merge, with the branch it brought in opening beside it");
+  assert.match(r.out, /│ ● [0-9a-f]{7} Write the idea down \(idea\)/);
+
+  const json = JSON.parse(dx("git", "notes-app", "--json").out);
+  assert.equal(json.graph.commits.length, 3);
+  assert.equal(dx("git", "notes-app", "-n", "0").code, 2);
+  assert.equal(dx("git", "no-such-project").code, 2);
+});

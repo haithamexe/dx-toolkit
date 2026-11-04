@@ -10,7 +10,7 @@ Guidance for Claude Code when working in this repository. What the project is fo
 
 | Package | What it is | Built by `npm run build` |
 |---|---|---|
-| `packages/core` | The tools: projects, ports, launch, journal, summary, github, cleanup, deps, scaffold, doctor, machine. Plain Node, no runtime dependencies | yes |
+| `packages/core` | The tools: projects, ports, launch, journal, summary, github, git, cleanup, deps, scaffold, doctor, machine. Plain Node, no runtime dependencies | yes |
 | `packages/web` | The dashboard (`dx ui`): a `node:http` server plus a vanilla-JS page in `public/` | yes |
 | `packages/cli` | The `dx` command | yes |
 | `packages/mcp` | The MCP server (stdio) for Claude and other AI tools | yes |
@@ -50,6 +50,7 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - `~/.dx/dashboard.json` (mode 0600) holds the URL and token so the CLI and MCP server can call the API (`web/src/link.ts`). Never put the token anywhere else: not in a URL, a log line or `runs.jsonl`.
 - `POST /api/check` reaches loopback hosts only and doesn't follow redirects, also with `browser: true` (`checkPage` refuses anything but loopback itself); `POST /api/open-file` opens files inside a known project only.
 - The network log (`traffic.ts`) masks credential headers and body fields before storing anything, keeps it in memory only, and never records the dashboard's own traffic. `POST /api/tests` runs a known project's own test setup with fixed flags; a name pattern is quoted.
+- **Git** (`git.ts`, `/api/git/*`): every route takes a known git project's `dir`. Paths must be ones a fresh `git status` lists, and are passed with `--literal-pathspecs` on stdin. A block is named by its id; the patch is rebuilt from git's own diff on the server, never taken from the request. A commit hash must be 4 to 40 hex characters, so it can't pass as an option. Commit messages go in on stdin.
 - `POST /api/clone` takes only a git address (`normalizeGitUrl`) and passes it to git after `--`. `POST /api/deps/fix`, `GET /api/env` and `POST /api/note` take a known project's `dir`, and the fix runs fixed commands only.
 - The local domains proxy (`proxy.ts`) listens on loopback only and forwards only to dev servers dx runs (`localRoutes()`) or the dashboard (`dx.localhost`), over http and, when `dx https` is on, https. Never route to an arbitrary host or port from a request; the certificate grows only for names that are already routes.
 - The activity recorder (`recorder.ts`): the proxy answers `/__dx/` paths itself and never forwards them. `POST /__dx/events` takes events only when `Origin` is the page's own origin, at most 512 KB and 200 events, known types and fields only, clipped and masked (`maskBody`). Nothing is ever read back from it. The script tag goes only into 2xx HTML answers to GET, uncompressed, and not when the page's CSP wouldn't run a `'self'` script or `activity` is off. History files are mode 0600 under `~/.dx/activity`; `GET /api/activity`, `GET /api/activity/report` and `POST /api/activity/clear` take a known project's `dir`. `POST /api/activity/replay` takes a known project's `dir` and a visit id; the steps come only from the recorded history, never from the request, and the page must be on loopback (`isLoopbackUrl`), as for `/api/check`.

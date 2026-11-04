@@ -31,6 +31,7 @@ export * from "./tools/year.js";
 export * from "./tools/activity.js";
 export * from "./tools/activityReport.js";
 export * from "./tools/terminals.js";
+export * from "./tools/git.js";
 export * from "./tools/versions.js";
 export * from "./tools/machine.js";
 export * from "./tools/projectNeeds.js";
