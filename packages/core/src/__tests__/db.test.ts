@@ -52,7 +52,8 @@ test("queries a real Postgres, and the session can't write", { skip: docker ? fa
   fs.writeFileSync(path.join(dir, "compose.yaml"), `name: dx-db-test-${process.pid}\nservices:\n  db:\n    image: postgres:16-alpine\n    environment:\n      POSTGRES_USER: shop\n      POSTGRES_PASSWORD: devpass\n      POSTGRES_DB: shop\n`);
   compose("up", "-d");
   for (let i = 0; i < 60; i++) {
-    if (spawnSync("docker", ["compose", "exec", "-T", "db", "pg_isready", "-U", "shop"], { cwd: dir, stdio: "ignore" }).status === 0) break;
+    // Over TCP: during first-time setup the image runs a temporary server on its socket only.
+    if (spawnSync("docker", ["compose", "exec", "-T", "db", "pg_isready", "-h", "127.0.0.1", "-U", "shop"], { cwd: dir, stdio: "ignore" }).status === 0) break;
     await new Promise((r) => setTimeout(r, 1000));
   }
   compose("exec", "-T", "db", "psql", "-U", "shop", "-d", "shop", "-c", "CREATE TABLE orders (id serial primary key, item text); INSERT INTO orders (item) VALUES ('cart');");

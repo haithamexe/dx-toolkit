@@ -205,7 +205,15 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
   let proc: ChildProcess | undefined;
   let cdp: Cdp | undefined;
   try {
-    const launched = await launch(found.path, profile, options.width ?? 1280, options.height ?? 800);
+    // Some systems (newer Ubuntu, containers) don't let Chrome set up its sandbox; it quits at once
+    // saying so. The page is on this computer and a dev server's own, so run it without one then.
+    let launched: { proc: ChildProcess; ws: string };
+    try {
+      launched = await launch(found.path, profile, options.width ?? 1280, options.height ?? 800, false);
+    } catch (err) {
+      if (!/sandbox/i.test((err as Error).message)) throw err;
+      launched = await launch(found.path, profile, options.width ?? 1280, options.height ?? 800, true);
+    }
     proc = launched.proc;
     cdp = await Cdp.connect(launched.ws);
     const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
@@ -507,7 +515,7 @@ function clip(text: string): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function launch(exe: string, profile: string, width: number, height: number): Promise<{ proc: ChildProcess; ws: string }> {
+function launch(exe: string, profile: string, width: number, height: number, noSandbox: boolean): Promise<{ proc: ChildProcess; ws: string }> {
   const args = [
     "--headless=new",
     "--remote-debugging-port=0",
@@ -521,6 +529,8 @@ function launch(exe: string, profile: string, width: number, height: number): Pr
     "--disable-component-update",
     "--mute-audio",
     "--hide-scrollbars",
+    // Chrome refuses to start as root (in a container, say) unless its sandbox is off.
+    ...(noSandbox || process.getuid?.() === 0 ? ["--no-sandbox"] : []),
     "about:blank",
   ];
   return new Promise((resolve, reject) => {
