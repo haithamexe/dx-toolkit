@@ -63,7 +63,7 @@ export function checkOpenUrl(raw: string): string {
 // ------------------------------------------------------------------ the pipe
 
 type Message = { id?: number; result?: unknown; error?: { message: string }; method?: string; params?: Record<string, unknown>; sessionId?: string };
-export type CdpSend = <T = unknown>(method: string, params?: object, sessionId?: string) => Promise<T>;
+export type CdpSend = <T = unknown>(method: string, params?: object, sessionId?: string, timeoutMs?: number) => Promise<T>;
 
 /** The DevTools protocol over a pipe: JSON messages, each ended by a NUL byte. */
 export class PipeConnection {
@@ -754,7 +754,8 @@ export async function launchDxBrowser(options: DxBrowserOptions): Promise<DxBrow
   };
 
   // Ready when it answers; a browser that quits first was handed the address by one already open with this profile.
-  const ready = conn.send("Browser.getVersion", {}, undefined);
+  // As long as the start itself may take: a browser's first start on a fresh machine is slow (CI took over 30 s).
+  const ready = conn.send("Browser.getVersion", {}, undefined, START_TIMEOUT_MS);
   const quit = new Promise<never>((_, reject) => {
     proc.once("error", (e) => reject(new Error(`Couldn't start the browser: ${e.message}`)));
     proc.once("exit", (code) =>

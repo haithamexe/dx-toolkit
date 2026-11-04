@@ -59,7 +59,8 @@ export interface DevProcess {
   runByDx: boolean;
 }
 
-const DEV_NAMES = /^(node|bun|deno|python[\d.]*w?|py|ruby|php[\d.]*|java|dotnet|esbuild|air|uvicorn|gunicorn|flask|celery|rails|puma|nodemon|tsx)$/;
+// npm, npx, pnpm and yarn are node on Windows, but on Linux and macOS they rename themselves ("npm run dev").
+const DEV_NAMES = /^(node|npm|npx|pnpm|yarn|bun|deno|python[\d.]*w?|py|ruby|php[\d.]*|java|dotnet|esbuild|air|uvicorn|gunicorn|flask|celery|rails|puma|nodemon|tsx)$/;
 
 export function isDevProcessName(name: string): boolean {
   return DEV_NAMES.test(path.basename(name).toLowerCase().replace(/\.exe$/, ""));
@@ -370,25 +371,35 @@ export function parseWindowsSnapshot(stdout: string): ProcessSnapshot {
 }
 
 async function unixSnapshot(): Promise<ProcessSnapshot> {
-  const r = await exec("ps", ["-axo", "pid=,ppid=,etime=,pcpu=,rss=,comm="]);
-  const now = Date.now();
+  // Two lists, because a name and a command line can both hold spaces: one column per call stays readable.
+  const [stats, args] = await Promise.all([exec("ps", ["-axo", "pid=,ppid=,etime=,pcpu=,rss=,comm="]), exec("ps", ["-axo", "pid=,args="])]);
+  return parsePs(stats.stdout, args.stdout, Date.now());
+}
+
+/**
+ * `ps` output as a snapshot. The program's name comes from `comm`, or else from the command
+ * line's first word: Node 24 renames its main thread, so on Linux `comm` says "MainThread" for
+ * every Node process, and npm sets its title to "npm run dev".
+ */
+export function parsePs(stats: string, argsOut: string, now: number): ProcessSnapshot {
+  const commands = new Map<number, string>();
+  for (const line of argsOut.split("\n")) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (m) commands.set(Number(m[1]), m[2].trim());
+  }
   const all: ProcessSnapshot["all"] = [];
   const dev: RawProcess[] = [];
-  for (const line of r.stdout.split("\n")) {
+  for (const line of stats.split("\n")) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(.+)$/.exec(line);
     if (!m) continue;
-    const p = { pid: Number(m[1]), ppid: Number(m[2]), name: path.basename(m[6].trim()), startedAt: now - parseElapsed(m[3]) * 1000 };
+    const pid = Number(m[1]);
+    const command = commands.get(pid);
+    const comm = path.basename(m[6].trim());
+    const first = command ? path.basename(command.split(/\s+/)[0]) : "";
+    const name = isDevProcessName(comm) || !isDevProcessName(first) ? comm : first;
+    const p = { pid, ppid: Number(m[2]), name, startedAt: now - parseElapsed(m[3]) * 1000 };
     all.push(p);
-    if (isDevProcessName(p.name)) dev.push({ ...p, cpu: Number(m[4]), memory: Number(m[5]) * 1024 });
-  }
-  if (dev.length) {
-    const args = await exec("ps", ["-o", "pid=,args=", "-p", dev.map((p) => p.pid).join(",")]);
-    const byPid = new Map<number, string>();
-    for (const line of args.stdout.split("\n")) {
-      const m = /^\s*(\d+)\s+(.*)$/.exec(line);
-      if (m) byPid.set(Number(m[1]), m[2]);
-    }
-    for (const p of dev) p.command = byPid.get(p.pid);
+    if (isDevProcessName(name)) dev.push({ ...p, command, cpu: Number(m[4]), memory: Number(m[5]) * 1024 });
   }
   return { all, dev };
 }

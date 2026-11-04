@@ -265,6 +265,14 @@ export function snapshotProject(s: Snapshot): Project | undefined {
   return p && { ...p, name: s.name };
 }
 
+function realPath(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 /**
  * Checks out `hash` of the project in its own folder under ~/.dx/snapshots (reused when it's
  * already there at that commit), gets its packages ready and copies the project's .env files in.
@@ -273,7 +281,9 @@ export async function createSnapshot(project: Pick<Project, "name" | "dir">, has
   const c = await resolveCommit(project.dir, hash);
   const id = snapshotId(project.name, c.hash);
   const wt = path.join(snapshotsRoot(), id);
-  const rel = path.relative(c.root, path.resolve(project.dir));
+  // Real paths on both sides: a folder can be named two ways on Windows (C:\Users\RUNNER~1 and
+  // C:\Users\runneradmin), and git always gives the long one.
+  const rel = path.relative(realPath(c.root), realPath(project.dir));
   if (rel.startsWith("..") || path.isAbsolute(rel)) throw new GitError("The project isn't inside its repository.");
   const store = load();
   const existing = store[id];

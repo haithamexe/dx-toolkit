@@ -23,6 +23,7 @@ const {
   parseSize,
   parseWindowsSnapshot,
   parseWindowsServices,
+  parsePs,
   dockerInfo,
   dockerPrune,
   dockerStop,
@@ -308,6 +309,16 @@ test("processes: parses what Windows and ps say", () => {
   assert.equal(snap.all.length, 1);
   assert.equal(snap.dev[0].command, "node x.js", "a single process comes back as an object, not a list");
   assert.equal(snap.dev[0].cpu, 2.5);
+  // Node 24 on Linux calls its main thread "MainThread", and npm renames itself: the command line says what runs.
+  const ps = parsePs(
+    ["    1     0 3-00:00:00  0.0  1000 systemd", "  200     1    10:00  1.5 51200 MainThread", "  201   200    09:59  0.0  2048 npm run dev", "  202     1    01:00  0.0  1024 bash"].join("\n"),
+    ["    1 /sbin/init", "  200 node /work/shop-website/node_modules/vite/bin/vite.js", "  201 npm run dev", "  202 -bash"].join("\n"),
+    NOW,
+  );
+  assert.deepEqual(ps.dev.map((p) => [p.pid, p.name]), [[200, "node"], [201, "npm"]]);
+  assert.equal(ps.dev[0].command, "node /work/shop-website/node_modules/vite/bin/vite.js");
+  assert.equal(ps.dev[0].memory, 51200 * 1024);
+  assert.equal(ps.all.length, 4, "every process is kept, to follow parents");
   assert.equal(parseElapsed("05:03"), 303);
   assert.equal(parseElapsed("02:00:01"), 7201);
   assert.equal(parseElapsed("3-00:00:00"), 3 * 86400);
