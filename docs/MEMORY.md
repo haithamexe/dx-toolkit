@@ -17,7 +17,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.2.0. Under *Unreleased*: tests, network log, browser flows, database queries, year in review.
+- **Latest release**: 1.3.0. Nothing under *Unreleased* yet.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -31,6 +31,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
+  - **1.3.0** adds the activity history (with Replay and bug reports), opening projects in a terminal you pick, `dx test`, the network log, browser flows, `dx db` and the year in review.
   - **1.2.0** adds browser errors, `dx clone`, resume and notes, `dx status`, `dx env`, `dx https` and `dx deps --fix`.
   - **1.1.0** is the first on npm, as `dx-devkit`. npm refused `dxkit` as too close to existing names (degit, pdfkit). A free name (`npm view <name>` gives E404) can still be refused: the look-alike check only runs on a real publish, and short names fail it most.
   - **To release**: add each change to `CHANGELOG.md` under *Unreleased*; at release time, bump every `package.json`, run `npm run release` and `node scripts/smoke-package.mjs`, tag `vX.Y.Z`, then `npm publish ./release` (needs the maintainer's npm login) and, once npm has processed it, `node scripts/smoke-package.mjs --from-npm`.

@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.3.0 (2026-11-04)
+
+dx now keeps a history of what happens in your apps (requests, clicks, routes, console and errors), can replay a visit to reproduce a bug, and opens projects in the terminal you pick. Your AI agent can also run your tests, read the network log, click through pages and query the development database. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **`dx test` and the `run_tests` MCP tool**: run a project's tests and get each failure with its name, file and line, the message, and expected against actual, read from the framework's own report (vitest and jest JSON, node:test TAP, pytest JUnit XML, go test JSON). `-m` runs only matching tests; `--changed` only those related to uncommitted changes (vitest, jest). In the dashboard: **Run tests** in a project's menu, with a button that opens your editor at the failing line.
