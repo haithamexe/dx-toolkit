@@ -300,7 +300,8 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
     if (nav.errorText) {
       result.error = nav.errorText === "net::ERR_CONNECTION_REFUSED" ? "Nothing is listening at that address. Is the dev server running?" : nav.errorText;
     } else {
-      const deadline = started + timeoutMs;
+      // The page's own time starts once the browser is up: a slow first start isn't the page's fault.
+      const deadline = Date.now() + timeoutMs;
       while (!loaded && Date.now() < deadline) await sleep(100);
       if (!loaded) result.error = `The page didn't finish loading within ${Math.round(timeoutMs / 1000)}s.`;
       // Then wait for late errors: hydration, data fetched after load. Stop once the network is quiet.
@@ -515,6 +516,8 @@ function clip(text: string): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const START_TIMEOUT_MS = 60_000;
+
 function launch(exe: string, profile: string, width: number, height: number, noSandbox: boolean): Promise<{ proc: ChildProcess; ws: string }> {
   const args = [
     "--headless=new",
@@ -536,17 +539,23 @@ function launch(exe: string, profile: string, width: number, height: number, noS
   return new Promise((resolve, reject) => {
     const proc = spawn(exe, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
     let err = "";
+    // What it printed, without the D-Bus complaints headless Chrome makes on Linux: they're harmless.
+    const said = () => {
+      const text = err.split("\n").filter((l) => l.trim() && !/dbus|Could not parse server address/i.test(l)).join("\n");
+      return text ? ` It said: ${text.slice(-300)}` : "";
+    };
+    // A browser's very first start on a machine (fresh profile, font cache built) can take a while.
     const timer = setTimeout(() => {
       proc.kill();
-      reject(new Error(`The browser didn't start within 20s.${err ? ` It said: ${err.slice(-300)}` : ""}`));
-    }, 20_000);
+      reject(new Error(`The browser didn't start within ${START_TIMEOUT_MS / 1000}s.${said()}`));
+    }, START_TIMEOUT_MS);
     proc.on("error", (e) => {
       clearTimeout(timer);
       reject(new Error(`Couldn't start the browser: ${e.message}`));
     });
     proc.on("exit", (code) => {
       clearTimeout(timer);
-      reject(new Error(`The browser quit straight away (code ${code}).${err ? ` It said: ${err.slice(-300)}` : ""}`));
+      reject(new Error(`The browser quit straight away (code ${code}).${said()}`));
     });
     proc.stderr!.setEncoding("utf8");
     proc.stderr!.on("data", (chunk: string) => {
