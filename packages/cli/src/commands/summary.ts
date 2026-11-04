@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
-import { buildSummary, buildYearReview, formatSummary, formatYearReview, loadConfig, openInEditor, recordRun, saveSummary, saveYearReview } from "@dx/core";
+import { buildSummary, buildYearStory, formatSummary, formatYearReview, loadConfig, openInEditor, recordRun, saveSummary, saveYearReview } from "@dx/core";
 import type { Command } from "../command.js";
 import { c, ok, tildify, UsageError, warn } from "../ui.js";
 
@@ -99,13 +99,13 @@ async function year(y: number, values: { copy?: boolean; save?: boolean; open?: 
   if (!Number.isInteger(y) || y < 1990) throw new UsageError("--year takes a year, e.g. --year 2025.");
   if (!values.json) process.stderr.write(c.dim(`Reading a year of commits${values.github ? " and pull requests" : ""}…\n`));
   const config = loadConfig();
-  const review = await buildYearReview(y, { config, allAuthors: values["all-authors"], github: values.github });
+  const { review, story } = await buildYearStory(y, { config, allAuthors: values["all-authors"], github: values.github });
   if (values.json) {
     const { summary, ...rest } = review;
-    console.log(JSON.stringify({ ...rest, journal: summary.journal.length, github: summary.github }, null, 2));
+    console.log(JSON.stringify({ ...rest, journal: summary.journal.length, github: summary.github, story }, null, 2));
     return;
   }
-  const markdown = formatYearReview(review);
+  const markdown = formatYearReview(review, story);
   console.log(markdown);
   if (review.summary.github && "error" in review.summary.github) warn(`No pull requests: ${review.summary.github.error}`);
   if (values.copy) {

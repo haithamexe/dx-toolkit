@@ -30,6 +30,8 @@ export interface TrafficEntry {
   responseBytes: number;
   /** The body was longer than what's kept. */
   truncated?: boolean;
+  /** Answered by dx's mock mode, not the dev server. */
+  mocked?: boolean;
 }
 
 const MAX_ENTRIES = 1000;
@@ -39,10 +41,9 @@ const CAPTURE = 512 * 1024;
 const entries: TrafficEntry[] = [];
 let seq = 0;
 
-const SECRET_HEADERS = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-csrf-token)$/i;
-// "authorization" but not "author", "card_number" but not "cards".
-const SECRET_KEY = /pass(word)?|passwd|secret|token|api[-_]?key|^auth$|authorization|credential|session[-_]?id|cookie|card[-_]?(number|no)|cvv|cvc|ssn|iban|private[-_]?key/i;
-export const MASK = "•••";
+// The masking is core's, shared with the activity recorder and the dx browser.
+import { MASK, classify, maskBody, maskHeaders } from "@dx/core";
+export { MASK, classify, maskBody, maskHeaders };
 
 /** Starts recording one exchange. Call the returned functions as the bodies stream and when it ends. */
 export function recordExchange(req: http.IncomingMessage, route: { dir: string; service?: string }, host: string) {
@@ -139,15 +140,6 @@ export function clearTraffic(dir?: string): void {
   for (let i = entries.length - 1; i >= 0; i--) if (entries[i].dir.toLowerCase() === dir.toLowerCase()) entries.splice(i, 1);
 }
 
-/** API calls are what matter; pages, scripts, styles and images are kept but listed only on request. */
-export function classify(method: string, contentType: string, path: string): TrafficKind {
-  if (/text\/html/i.test(contentType)) return "page";
-  if (method !== "GET" && method !== "HEAD") return "api";
-  if (/json|xml|text\/plain|graphql|x-www-form-urlencoded|event-stream/i.test(contentType)) return "api";
-  if (/\/api\/|\/graphql|\/trpc\//i.test(path) && !/javascript|css|image|font/i.test(contentType)) return "api";
-  return "asset";
-}
-
 function isText(type: string): boolean {
   return /json|text\/|xml|graphql|x-www-form-urlencoded|javascript/i.test(type);
 }
@@ -169,40 +161,3 @@ function cut(text: string, max: number, entry: TrafficEntry): string {
   return text.slice(0, max);
 }
 
-export function maskHeaders(headers: http.IncomingHttpHeaders | http.OutgoingHttpHeaders): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    if (v === undefined) continue;
-    out[k.toLowerCase()] = SECRET_HEADERS.test(k) ? MASK : Array.isArray(v) ? v.join(", ") : String(v);
-  }
-  return out;
-}
-
-/** Masks the values of keys that look like credentials, in JSON, forms and key=value text. */
-export function maskBody(body: string, type: string): string {
-  if (/json|graphql/i.test(type)) {
-    try {
-      return JSON.stringify(maskJson(JSON.parse(body)));
-    } catch {
-      // cut short or not JSON after all: fall through to the text rules
-    }
-  }
-  if (/x-www-form-urlencoded/i.test(type)) {
-    return body
-      .split("&")
-      .map((pair) => {
-        const [k, ...rest] = pair.split("=");
-        return SECRET_KEY.test(decodeURIComponent(k ?? "")) && rest.length ? `${k}=${MASK}` : pair;
-      })
-      .join("&");
-  }
-  return body.replace(/("?)([\w-]*(?:pass(?:word)?|secret|token|api[-_]?key)[\w-]*)\1(\s*[:=]\s*)("?)[^"&\s,}]+\4/gi, `$1$2$1$3$4${MASK}$4`);
-}
-
-function maskJson(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(maskJson);
-  if (v && typeof v === "object") {
-    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, SECRET_KEY.test(k) && (typeof x === "string" || typeof x === "number") ? MASK : maskJson(x)]));
-  }
-  return v;
-}

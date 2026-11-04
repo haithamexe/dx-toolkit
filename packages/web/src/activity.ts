@@ -1,5 +1,5 @@
 import path from "node:path";
-import { activityMatcher, appendActivity, byTime, loadConfig, TOTAL_LIMIT_BYTES, nextActivityId, pruneActivity, readActivity, type ActivityEvent, type ActivityQuery } from "@dx/core";
+import { activityMatcher, appendActivity, byTime, loadConfig, TOTAL_LIMIT_BYTES, nextActivityId, pruneActivity, readActivity, sameActivityDir, type ActivityEvent, type ActivityQuery } from "@dx/core";
 
 /**
  * The dashboard's side of the activity history (core's activity.ts): events come in from the
@@ -44,7 +44,7 @@ export function recordActivity(e: NewActivity): ActivityEvent | undefined {
   if (!activitySettings().on) return undefined;
   const now = Date.now();
   const at = e.at && !Number.isNaN(Date.parse(e.at)) ? e.at : new Date(now).toISOString();
-  const event = { ...e, id: nextActivityId(now), at, project: e.project ?? path.basename(e.dir) } as ActivityEvent;
+  const event = { ...e, id: nextActivityId(now), at, project: e.project ?? (e.dir.startsWith("site:") ? e.dir.slice(5) : path.basename(e.dir)) } as ActivityEvent;
   recent.push(event);
   if (recent.length > RECENT) recent.splice(0, recent.length - RECENT);
   queue.push(event);
@@ -96,6 +96,5 @@ export function listActivity(q: ActivityQuery): ActivityEvent[] {
 export function forgetRecentActivity(dir?: string): void {
   flushActivity();
   if (!dir) return void recent.splice(0);
-  const norm = (p: string) => (process.platform === "linux" ? path.resolve(p) : path.resolve(p).toLowerCase());
-  for (let i = recent.length - 1; i >= 0; i--) if (norm(recent[i].dir) === norm(dir)) recent.splice(i, 1);
+  for (let i = recent.length - 1; i >= 0; i--) if (sameActivityDir(recent[i].dir, dir)) recent.splice(i, 1);
 }

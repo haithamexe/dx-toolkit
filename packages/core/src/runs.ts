@@ -10,13 +10,16 @@ export interface RunRecord {
   source?: string;
   /** Which project the run was about, when there was one. */
   project?: string;
-  /** How long it ran, e.g. how long a dev server was up. */
+  /** How long it ran, e.g. how long a dev server was up, or how long an AI agent's call took. */
   ms?: number;
+  /** For an AI agent's call through the MCP server: a short, secret-free summary of its arguments. */
+  args?: string;
 }
 
 export interface RunExtra {
   project?: string;
   ms?: number;
+  args?: string;
 }
 
 const RUNS_FILE = "runs.jsonl";

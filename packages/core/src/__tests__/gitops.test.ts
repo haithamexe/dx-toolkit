@@ -255,6 +255,56 @@ test("a merge conflict: preview names the file, then Mine/Theirs/Both per block,
   assert.equal(r.read("menu.txt"), "soup\nrye bread\ncake\n");
 });
 
+test("the merge editor: a block's result written by hand, only the conflict blocks replaced, in the file's own line endings", async () => {
+  const r = repo();
+  r.git("config", "merge.conflictStyle", "diff3");
+  // Far enough apart that git keeps them as two blocks.
+  const middle = "cake\npie\nfruit\njam\nscones\n";
+  r.commit("menu.txt", `soup\nbread\n${middle}tea\n`, "Menu");
+  r.git("switch", "-q", "-c", "theirs");
+  r.commit("menu.txt", `soup\nrye bread\n${middle}green tea\n`, "Rye");
+  r.git("switch", "-q", "main");
+  r.commit("menu.txt", `soup\ngarlic bread\n${middle}mint tea\n`, "Garlic");
+  await gitMerge(r.dir, "theirs");
+  // Two blocks, with the base (diff3) between them: one written by hand, one a side.
+  let c = await gitConflict(r.dir, "menu.txt");
+  let blocks = c.parts.filter((x) => x.kind === "conflict") as any[];
+  assert.equal(blocks.length, 2);
+  assert.deepEqual(blocks[0].base, ["bread"], "the base is read for reference");
+
+  const resolve = (choices: any[], hash = c.hash) => gitResolve(r.dir, "menu.txt", { hash, choices });
+  await assert.rejects(resolve([{ text: "garlic rye bread\n" }]), /each of the 2 conflicts/, "one per block");
+  await assert.rejects(resolve([{ text: "<<<<<<< HEAD\ngarlic\n" }, "ours"]), /conflict marker/);
+  await assert.rejects(resolve(["ours", { text: "a\n=======\nb" }]), /Conflict 2's text still has a conflict marker/);
+  await assert.rejects(resolve([{ text: "x".repeat(512 * 1024 + 1) }, "ours"]), (e: any) => e.status === 413);
+  await assert.rejects(resolve([{ nope: 1 }, "ours"]), /each of the 2 conflicts/);
+  await assert.rejects(resolve([{ text: "x" }, "ours"], "stale"), (e: any) => e.status === 409);
+  assert.match(r.read("menu.txt"), /<<<<<<< HEAD/, "nothing written on a refusal");
+  // ======== (eight) is a markdown underline, not a marker.
+  const done = await resolve([{ text: "garlic rye bread\n========\n" }, "theirs"]);
+  assert.match(done.message, /one block as you wrote it/);
+  assert.equal(r.read("menu.txt"), `soup\ngarlic rye bread\n========\n${middle}green tea\n`, "the text around the blocks is the file's own");
+  assert.ok(!(await gitStatus(r.dir)).files.find((f) => f.path === "menu.txt")!.conflicted, "staged");
+
+  // A CRLF file: what's written in the textarea (LF) comes out CRLF; an empty result removes the block.
+  const w = repo();
+  w.commit("menu.txt", "soup\r\nbread\r\ncake\r\n", "Menu");
+  w.git("switch", "-q", "-c", "theirs");
+  w.commit("menu.txt", "soup\r\nrye bread\r\ncake\r\n", "Rye");
+  w.git("switch", "-q", "main");
+  w.commit("menu.txt", "soup\r\ngarlic bread\r\ncake\r\n", "Garlic");
+  await gitMerge(w.dir, "theirs");
+  let cw = await gitConflict(w.dir, "menu.txt");
+  assert.equal(cw.parts.filter((x) => x.kind === "conflict").length, 1);
+  await gitResolve(w.dir, "menu.txt", { hash: cw.hash, choices: [{ text: "garlic bread\nrye bread" }] });
+  assert.equal(w.read("menu.txt"), "soup\r\ngarlic bread\r\nrye bread\r\ncake\r\n");
+  w.git("merge", "--abort");
+  await gitMerge(w.dir, "theirs");
+  cw = await gitConflict(w.dir, "menu.txt");
+  await gitResolve(w.dir, "menu.txt", { hash: cw.hash, choices: [{ text: "" }] });
+  assert.equal(w.read("menu.txt"), "soup\r\ncake\r\n");
+});
+
 test("the shelf: put changes on it, take them off, throw them away, undo each", async () => {
   const r = repo();
   r.commit("a.txt", "a\n", "Start");

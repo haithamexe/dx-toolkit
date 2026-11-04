@@ -147,6 +147,24 @@ test("an agent leaves a note, reads it back, and checks the project's .env", asy
 
   const unsaved = await call("unsaved_work");
   assert.match(unsaved.text, /Everything is committed and pushed/, "the test projects aren't git repositories");
+
+  // Every call above is in the run log for the AI lane, without the note's text or the .env's values.
+  const runs = fs
+    .readFileSync(path.join(home, "runs.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { tool: string; source: string; ok: boolean; detail?: string; project?: string; args?: string; ms?: number });
+  const calls = runs.filter((r) => r.tool.startsWith("mcp."));
+  for (const tool of ["start_dev_server", "check_url", "dev_errors", "stop_dev_server", "leave_note", "resume_project", "check_env", "unsaved_work"]) {
+    assert.ok(calls.some((r) => r.tool === `mcp.${tool}`), `${tool} is recorded`);
+  }
+  assert.ok(calls.every((r) => r.source === "mcp" && typeof r.ms === "number"));
+  const note = calls.find((r) => r.tool === "mcp.leave_note")!;
+  assert.deepEqual([note.detail, note.project, note.args, note.ok], ["Left a note on tiny-shop", "tiny-shop", "project=tiny-shop note=(41 chars)", true]);
+  assert.ok(!JSON.stringify(calls).includes("empty-cart") && !JSON.stringify(calls).includes("PORT=4000"));
+  const checkout = calls.find((r) => r.tool === "mcp.check_url" && r.args?.includes("path=/checkout"));
+  assert.equal(checkout?.detail, "Checked /checkout on tiny-shop: 500, 1 server error");
+  assert.equal(checkout?.ok, false);
 });
 
 test("an agent joins two repositories into a stack with set_stack, then runs it", async () => {

@@ -54,7 +54,9 @@ export function readJournal(options: { sinceDays?: number; now?: Date } = {}): J
   const now = options.now ?? new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (options.sinceDays - 1));
   const startKey = localDate(start);
-  return entries.filter((e) => e.date >= startKey);
+  // A window that ends before today (a past year) leaves out what came after it.
+  const endKey = localDate(now);
+  return entries.filter((e) => e.date >= startKey && e.date <= endKey);
 }
 
 export function parseJournal(text: string): JournalEntry[] {

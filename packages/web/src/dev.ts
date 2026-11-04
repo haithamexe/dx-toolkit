@@ -66,6 +66,8 @@ export interface DevServerInfo {
   note?: string;
   /** dx answers at `url` itself, so a visit there is in the activity history too. */
   recorded?: boolean;
+  /** The project as it was at a commit, run from ~/.dx/snapshots. */
+  snapshot?: boolean;
 }
 
 interface Proc {
@@ -101,6 +103,8 @@ interface Proc {
   docker?: { compose: string; hostPort?: number };
   /** dx at the server's usual address (`port`), passing to where the server runs (`hidden`). */
   front?: { door: FrontDoor; port: number; hidden: number };
+  snapshot?: boolean;
+  portHint?: number;
 }
 
 /** Whether apps dx starts are recorded at localhost:<port> too (needs the activity history on). */
@@ -242,11 +246,15 @@ function errorsOf(list: Proc[], options: { all?: boolean; after?: number; servic
 
 // ------------------------------------------------------------ starting
 
-/** Starts a project: its stack when it has one, else its dev command. */
-export function startDevServer(project: Project, startedBy: StartedBy = "dashboard"): DevServerInfo {
+/**
+ * Starts a project: its stack when it has one, else its dev command. A snapshot (the project as
+ * it was at a commit, under ~/.dx/snapshots) runs on a port of its own, next to the project's
+ * usual dev server, and isn't remembered as where you left off.
+ */
+export function startDevServer(project: Project, startedBy: StartedBy = "dashboard", options: { snapshot?: boolean } = {}): DevServerInfo {
   const stack = detectStack(project);
   // Where you left off: what ran, on which branch (dx resume, resume_project).
-  rememberSession(project.dir, project.name, { ran: stack ? stack.services.map((s) => s.name) : ["dev"] });
+  if (!options.snapshot) rememberSession(project.dir, project.name, { ran: stack ? stack.services.map((s) => s.name) : ["dev"] });
   if (stack) return startStack(project, stack, startedBy);
   if (!project.devCommand) throw new Error(`${project.name} has no dev command. Add one in .devrc.json: { "dev": "..." }`);
   const existing = procs.get(key(project.dir));
@@ -260,6 +268,7 @@ export function startDevServer(project: Project, startedBy: StartedBy = "dashboa
     port: getProjectPort(project),
     startedBy,
   };
+  if (options.snapshot) return info(startOnOwnPort(project, { ...spec, url: undefined, port: undefined, snapshot: true }));
   // Recorded at localhost:<port> too, when its tool can be moved to another port.
   const usual = spec.port;
   if (usual && localhostRecording() && moveDevPort(project, 1)) return info(startBehindDoor(project, spec, usual));
@@ -376,6 +385,10 @@ interface Spec {
   env?: Record<string, string>;
   split?: StackService[];
   docker?: Proc["docker"];
+  /** A snapshot: on a port of its own. */
+  snapshot?: boolean;
+  /** The PORT it was given, when its tool can't be told by flag: ready once that port opens. */
+  portHint?: number;
 }
 
 function spawnProc(spec: Spec): Proc {
@@ -438,6 +451,35 @@ function startBehindDoor(project: Project, spec: Spec, usual: number): Proc {
   return p;
 }
 
+/**
+ * A snapshot's dev server, on a free port so it doesn't fight the project's own for its usual
+ * one: told by flag when dx knows its tool (moveDevPort), else given PORT, which most servers
+ * read, and the address it prints wins as always. No localhost door: its usual port belongs to
+ * the project.
+ */
+function startOnOwnPort(project: Project, spec: Spec): Proc {
+  const p = newProc(spec);
+  void (async () => {
+    let run = spec;
+    try {
+      const port = await freePort();
+      const moved = moveDevPort(project, port);
+      run = moved
+        ? { ...spec, command: moved.command, env: { ...spec.env, ...moved.env }, url: `http://localhost:${port}`, port }
+        : { ...spec, env: { ...spec.env, PORT: String(port) }, portHint: port };
+      push(p, "dx", moved ? `Snapshot: runs on port ${port}, so the project's own dev server keeps its port.` : `Snapshot: given PORT=${port}; if it listens somewhere else, the address it prints is used.`);
+    } catch {
+      // started with its own settings; the address it prints is used
+    }
+    if (p.stopping) {
+      p.status = "stopped";
+      return;
+    }
+    launch(p, run);
+  })();
+  return p;
+}
+
 async function closeDoor(p: Proc): Promise<void> {
   const door = p.front?.door;
   p.front = undefined;
@@ -445,7 +487,7 @@ async function closeDoor(p: Proc): Promise<void> {
 }
 
 function launch(p: Proc, spec: Spec): void {
-  Object.assign(p, { command: spec.command, url: spec.url, port: spec.port });
+  Object.assign(p, { command: spec.command, url: spec.url, port: spec.port, portHint: spec.portHint });
   push(p, "dx", `$ ${spec.command}`);
 
   const child = spawn(spec.command, {
@@ -530,6 +572,12 @@ async function watchReady(p: Proc): Promise<void> {
       }
       return;
     }
+    // Given PORT and said nothing about where it listens: that port opening is its address.
+    if (p.port === undefined && p.portHint !== undefined && (await isPortOpen(p.portHint)) && p.status === "starting" && p.port === undefined) {
+      p.url = `http://localhost:${p.portHint}`;
+      p.port = p.portHint;
+      continue;
+    }
     const age = Date.now() - Date.parse(p.startedAt);
     const quiet = Date.now() - p.lastOutputAt;
     if (p.port === undefined && age > 5000 && quiet > 2500) {
@@ -551,7 +599,7 @@ async function waitSettled(p: Proc, timeoutMs: number): Promise<void> {
 
 export async function stopDevServer(dir: string): Promise<DevServerInfo | undefined> {
   const name = stacks.get(key(dir))?.name ?? procs.get(key(dir))?.project;
-  if (name) {
+  if (name && !procs.get(key(dir))?.snapshot) {
     const open = devErrors(dir)[0]?.errors.filter((e) => !e.resolved).map((e) => `${e.message}${e.file ? ` (${e.file}${e.line ? `:${e.line}` : ""})` : ""}`) ?? [];
     rememberSession(dir, name, { openErrors: open.slice(0, 5) });
   }
@@ -623,6 +671,7 @@ export async function restartDevServer(project: Project, startedBy: StartedBy = 
   const k = key(project.dir);
   const run = stacks.get(k);
   const by = run?.startedBy ?? procs.get(k)?.startedBy ?? startedBy;
+  const snapshot = procs.get(k)?.snapshot;
   if (run) {
     await stopStack(run);
     clearDevServer(project.dir);
@@ -635,7 +684,7 @@ export async function restartDevServer(project: Project, startedBy: StartedBy = 
     }
     procs.delete(k);
   }
-  return startDevServer(project, by);
+  return startDevServer(project, by, { snapshot });
 }
 
 /** Forgets a stopped server or stack, so its card and output go away. */
@@ -650,6 +699,26 @@ export function clearDevServer(dir: string): void {
   }
   const p = procs.get(k);
   if (p && !p.child) procs.delete(k);
+}
+
+/**
+ * "Take over": a server an AI agent started becomes yours, labelled as started from the dashboard.
+ * Only the label changes; the process keeps running as it was. Undefined when the server isn't
+ * running or wasn't the agent's.
+ */
+export function takeOverDevServer(dir: string): DevServerInfo | undefined {
+  const k = key(dir);
+  const run = stacks.get(k);
+  if (run) {
+    if (run.startedBy !== "ai" || run.phase === "stopped" || run.phase === "stopping") return undefined;
+    run.startedBy = "dashboard";
+    for (const p of procs.values()) if (p.stackKey === k) p.startedBy = "dashboard";
+    return stackInfo(run);
+  }
+  const p = procs.get(k);
+  if (!p || p.stackKey || p.startedBy !== "ai" || !(p.child || p.status === "starting")) return undefined;
+  p.startedBy = "dashboard";
+  return info(p);
 }
 
 /** True while any dev server or stack is running. */
@@ -813,6 +882,7 @@ function info(p: Proc): DevServerInfo {
   const shown = p.front ? `http://localhost:${p.front.port}` : url;
   const out: DevServerInfo = { project, dir, command, url: shown, pid, status, startedBy, errorCount, startedAt, stoppedAt, exitCode, lastLine, service, role };
   if (p.front) out.recorded = true;
+  if (p.snapshot) out.snapshot = true;
   if (!p.stackKey && url && p.child) out.localUrl = localUrlOf(`${serviceName(project)}.localhost`);
   return out;
 }

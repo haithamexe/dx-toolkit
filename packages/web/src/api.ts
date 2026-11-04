@@ -15,8 +15,11 @@ import {
   sessionLookup,
   runTests,
   buildYearReview,
+  buildYearStory,
   formatYearReview,
   saveYearReview,
+  type YearReview,
+  type YearStory,
   connectAiTools,
   copyProject,
   deleteCleanup,
@@ -64,6 +67,10 @@ import {
   gitCommitChanges,
   gitSuggestMessage,
   claudeCli,
+  applyFix,
+  proposeFix,
+  splitLocation,
+  type FixTarget,
   gitRefs,
   gitUndoList,
   gitUndo,
@@ -94,9 +101,14 @@ import {
   gitPush,
   gitPushTags,
   type ConflictChoice,
+  type ConflictResolution,
   type GitActionResult,
   type MergeMode,
   type RebaseAction,
+  commitAt,
+  searchCommits,
+  snapshotByDir,
+  snapshotProject,
   gitCommitDetail,
   gitFileDiff,
   gitGraph,
@@ -120,8 +132,33 @@ import {
   stopDevProcess,
   supportedNodeLines,
   TOOL_IDS,
+  activityOverview,
+  addSite,
+  checkOpenUrl,
+  listSites,
+  normalizeSiteHost,
+  removeSite,
+  resolveCommit,
+  siteDir,
   type DockerPrune,
   type ToolId,
+  addMocks,
+  bugBundleFileName,
+  BugBundleError,
+  clearMocks,
+  exportBugBundle,
+  loadMocks,
+  MockError,
+  mockSummary,
+  readBugBundle,
+  removeMock,
+  setMockMode,
+  updateMock,
+  describeCapture,
+  listVisual,
+  visualImageFile,
+  visualFolder,
+  VisualError,
   type ActivityType,
   type AiToolId,
   type DepsReport,
@@ -132,6 +169,11 @@ import {
 import { activitySettings, flushActivity, forgetActivitySettings, forgetRecentActivity, listActivity } from "./activity.js";
 import { checkUrl } from "./check.js";
 import { clearTraffic, listTraffic } from "./traffic.js";
+import { forgetFix, rememberFix, storedFix } from "./fixes.js";
+import { removeSnapshotRun, runSnapshot, snapshotViews } from "./snapshots.js";
+import { bugReplayJob, startBugReplay } from "./bugreplay.js";
+import { forgetMocks } from "./mocks.js";
+import { closeDxBrowser, dxBrowserStatus, forgetSites, openDxBrowser } from "./dxbrowser.js";
 import {
   clearDevServer,
   devErrors,
@@ -140,9 +182,12 @@ import {
   restartDevServer,
   startDevServer,
   stopDevServer,
+  takeOverDevServer,
   waitForDevServer,
   type StartedBy,
 } from "./dev.js";
+import { aiLane, interruptAi } from "./ai.js";
+import { noticeHead, requestCapture, sawHead, visualState } from "./visual.js";
 
 /** A request the page made, already parsed. */
 export interface ApiRequest {
@@ -184,13 +229,14 @@ const routes: Record<string, Handler> = {
       hasGit: p.hasGit,
       lastActive: p.lastActive,
       dev: running.get(p.dir.toLowerCase()),
+      mocks: mockSummary(p.dir),
       stack: stack && { source: stack.source, services: stack.services.map((s) => ({ name: s.name, role: s.role, kind: s.kind, command: s.command })) },
     };
     });
   },
 
   "POST /api/projects/open": async (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { snapshots: true });
     const config = loadConfig();
     const action = String(req.body.action);
     if (action === "editor") {
@@ -210,6 +256,7 @@ const routes: Record<string, Handler> = {
       return { message: `Showed ${project.name} in the file manager` };
     }
     if (action === "terminal") {
+      if (snapshotByDir(project.dir)) throw new HttpError(400, "Run a snapshot from the dashboard, or with dx run.");
       if (!project.devCommand) throw new HttpError(400, `${project.name} has no dev command.`);
       const command = (await commandExists("dx")) ? "dx go . --no-editor" : project.devCommand;
       const used = await openTerminal(project.dir, command, project.name);
@@ -236,7 +283,7 @@ const routes: Record<string, Handler> = {
   },
   "GET /api/traffic": (req) => {
     const q = req.query;
-    const dir = q.get("dir") ? knownProject(q.get("dir")).dir : undefined;
+    const dir = q.get("dir") ? knownProject(q.get("dir"), { snapshots: true }).dir : undefined;
     return listTraffic({
       dir,
       service: q.get("service") || undefined,
@@ -256,7 +303,10 @@ const routes: Record<string, Handler> = {
     const since = q.get("since") ? parseSince(q.get("since")!) : undefined;
     if (q.get("since") && !since) throw new HttpError(400, "since takes 30m, 2h, 3d, today, yesterday or a date.");
     return listActivity({
-      dir: q.get("dir") ? knownProject(q.get("dir")).dir : undefined,
+      dir: activityDirOf(q.get("dir"), q.get("site")),
+      // host: what the dx browser recorded on a site, whichever project it's linked to.
+      site: q.get("host") || undefined,
+      env: q.get("env") || undefined,
       types: (q.get("types") ?? "")
         .split(",")
         .filter((t): t is ActivityType => (ACTIVITY_TYPES as string[]).includes(t)),
@@ -267,21 +317,30 @@ const routes: Record<string, Handler> = {
       limit: clampInt(q.get("limit"), 1, 2000, 200),
     });
   },
+  // The Activity page's list: every project and recorded site with its counts, the sites, and the dx browser.
+  "GET /api/activity/overview": (req) => {
+    const raw = req.query.get("since");
+    const since = raw ? parseSince(raw) : undefined;
+    if (raw && !since) throw new HttpError(400, "since takes 30m, 2h, 3d, today, yesterday or a date.");
+    flushActivity();
+    return { entries: activityOverview({ since }), sites: siteViews(), browser: dxBrowserStatus() };
+  },
   "GET /api/activity/usage": () => {
     const s = activitySettings();
     return { ...activityUsage(), maxBytes: s.maxBytes, dayLimitBytes: DAY_LIMIT_BYTES, days: s.days, on: s.on };
   },
   "GET /api/activity/report": (req) => {
-    const project = knownProject(req.query.get("dir"));
+    const dir = activityDirOf(req.query.get("dir"), req.query.get("site"));
+    if (!dir) throw new HttpError(400, "Which project or site?");
     const id = Number(req.query.get("id"));
     if (!Number.isSafeInteger(id) || id <= 0) throw new HttpError(400, "Which event? Give its id.");
     flushActivity();
-    const { target, events } = reportContext(project.dir, id);
+    const { target, events } = reportContext(dir, id);
     if (!target) throw new HttpError(404, "That event isn't in the history any more.");
     return { title: target.text.split("\n")[0], markdown: bugReport(target, events) };
   },
   "POST /api/activity/replay": async (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { snapshots: true });
     const visit = typeof req.body.visit === "string" ? req.body.visit.slice(0, 40) : "";
     if (!visit) throw new HttpError(400, "Which visit? Give its id.");
     const replay = replayOf(project.dir, visit);
@@ -293,12 +352,164 @@ const routes: Record<string, Handler> = {
     recordRun("replay", done, `${project.name}: replayed ${replay.steps.length} step(s)${found ? `, ${found} problem(s) on the page` : ", no problems"}`, "web", { project: project.name });
     return { replay, result };
   },
+  // A bug bundle: the error, the events around it and the visit's steps, masked again, with
+  // paths made project-relative and no host; the page saves it as a file.
+  "GET /api/activity/bundle": async (req) => {
+    const project = knownProject(req.query.get("dir"), { snapshots: true });
+    flushActivity();
+    const bundle = await bundleCall(() => exportBugBundle(project, Number(req.query.get("id"))));
+    recordRun("bug-bundle", true, `${project.name}: exported ${bundle.error.text.split(/\r?\n/)[0].slice(0, 80)}`, "web", { project: project.name });
+    return { file: bugBundleFileName(bundle), bundle };
+  },
+  // Replaying someone's bundle: checked field by field (readBugBundle), the commit must be hex and
+  // in this project's repository, and the steps run only on this project's own dev server.
+  "POST /api/activity/bundle/replay": async (req) => {
+    const bundle = await bundleCall(async () => readBugBundle(req.body.bundle));
+    const use = req.body.use === "working" ? "working" : "commit";
+    const project = use === "commit" ? gitProject(req.body.dir) : knownProject(req.body.dir);
+    if (use === "commit" && !bundle.git) throw new HttpError(400, "The bundle doesn't say which commit it was recorded at. Replay it on your working copy instead.");
+    return gitCall(() => startBugReplay(project, bundle, use));
+  },
+  "GET /api/activity/bundle/replay": (req) => {
+    const job = bugReplayJob(String(req.query.get("id") ?? ""));
+    if (!job) throw new HttpError(404, "That replay isn't known any more. Start it again.");
+    return job;
+  },
+
+  // ------------------------------------------------------------ mock mode
+  // Mocks apply only in dx's own proxy, for dev servers dx runs; files are 0600; bodies at most 1 MB.
+  "GET /api/mocks": (req) => {
+    const project = knownProject(req.query.get("dir"), { snapshots: true });
+    const set = loadMocks(project.dir, project.name);
+    // The list without whole bodies; one endpoint's whole body comes with ?id.
+    const id = req.query.get("id");
+    if (id) {
+      const ep = set.endpoints.find((e) => e.id === id);
+      if (!ep) throw new HttpError(404, "That mock isn't there any more. Refresh the list.");
+      return ep;
+    }
+    return {
+      ...set,
+      endpoints: set.endpoints.map(({ body, recorded, ...e }) => ({ ...e, bytes: Buffer.byteLength(body), preview: body.slice(0, 2000), recordedAt: recorded.at, recordedStatus: recorded.status })),
+    };
+  },
+  "POST /api/mocks/make": (req) => {
+    const project = knownProject(req.body.dir, { snapshots: true });
+    flushActivity();
+    const visit = typeof req.body.visit === "string" ? req.body.visit.slice(0, 40) : "";
+    const events = visit ? visitRequests(project.dir, visit) : sinceRequests(project.dir, req.body.since);
+    const r = addMocks(project.dir, project.name, events);
+    forgetMocks();
+    if (!r.added && !r.replaced && !r.kept) throw new HttpError(404, "No API calls through dx in that time. Open the app at its .localhost address (or the address dx records) and use it first.");
+    recordRun("mock", true, `${project.name}: ${r.added} added, ${r.replaced} updated${r.kept ? `, ${r.kept} you edited kept` : ""}`, "web", { project: project.name });
+    return { added: r.added, replaced: r.replaced, kept: r.kept, endpoints: r.set.endpoints.length, on: r.set.on };
+  },
+  "POST /api/mocks/mode": (req) => {
+    const project = knownProject(req.body.dir, { snapshots: true });
+    const set = mockCall(() =>
+      setMockMode(project.dir, project.name, { on: typeof req.body.on === "boolean" ? req.body.on : undefined, strict: typeof req.body.strict === "boolean" ? req.body.strict : undefined }),
+    );
+    forgetMocks();
+    recordRun("mock", true, `${project.name}: mock mode ${set.on ? "on" : "off"}${set.strict ? " (strict)" : ""}`, "web", { project: project.name });
+    return { on: set.on, strict: set.strict, endpoints: set.endpoints.length };
+  },
+  "POST /api/mocks/update": (req) => {
+    const project = knownProject(req.body.dir, { snapshots: true });
+    const ep = mockCall(() =>
+      updateMock(project.dir, String(req.body.id ?? ""), {
+        status: req.body.status,
+        delayMs: req.body.delayMs,
+        contentType: req.body.contentType,
+        body: req.body.body,
+        enabled: req.body.enabled,
+        offline: req.body.offline,
+        preset: req.body.preset,
+      }),
+    );
+    forgetMocks();
+    return ep;
+  },
+  "POST /api/mocks/remove": (req) => {
+    const project = knownProject(req.body.dir, { snapshots: true });
+    if (req.body.all === true) clearMocks(project.dir);
+    else mockCall(() => removeMock(project.dir, String(req.body.id ?? "")));
+    forgetMocks();
+    recordRun("mock", true, `${project.name}: ${req.body.all === true ? "every mock removed" : "a mock removed"}`, "web", { project: project.name });
+    return { ok: true };
+  },
+
   "POST /api/activity/clear": (req) => {
-    const dir = req.body.dir === undefined ? undefined : knownProject(req.body.dir).dir;
+    const dir = req.body.site !== undefined ? activityDirOf(undefined, req.body.site) : req.body.dir === undefined ? undefined : knownProject(req.body.dir).dir;
     forgetRecentActivity(dir);
     clearActivity(dir);
-    recordRun("activity", true, dir ? `${path.basename(dir)}: history cleared` : "all history cleared", "web");
+    recordRun("activity", true, dir ? `${dir.startsWith("site:") ? dir.slice(5) : path.basename(dir)}: history cleared` : "all history cleared", "web");
     return { ok: true };
+  },
+
+  // ------------------------------------------------------------ the dx browser and recorded sites
+  // The browser is driven over a pipe, never a port; it records only recorded sites and addresses
+  // on this computer, masked before storing; an address to open must be http(s). dx fetches
+  // nothing from those sites itself.
+  "GET /api/browser": () => dxBrowserStatus(),
+  "POST /api/browser/open": async (req) => {
+    let url: string | undefined;
+    if (req.body.url !== undefined && req.body.url !== "") {
+      try {
+        url = checkOpenUrl(String(req.body.url));
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message);
+      }
+    }
+    // Which host, never the whole address: it can carry a token.
+    const where = url ? ` at ${new URL(url).host}` : "";
+    try {
+      const status = await openDxBrowser(url);
+      recordRun("browser", true, `opened${where}`, "web");
+      return status;
+    } catch (err) {
+      recordRun("browser", false, `couldn't open${where}: ${(err as Error).message.split("\n")[0]}`, "web");
+      throw new HttpError(500, (err as Error).message);
+    }
+  },
+  "POST /api/browser/close": async () => {
+    const closed = await closeDxBrowser();
+    if (closed) recordRun("browser", true, "closed", "web");
+    return dxBrowserStatus();
+  },
+  "GET /api/sites": () => siteViews(),
+  "POST /api/sites/add": (req) => {
+    const project = req.body.dir ? knownProject(req.body.dir) : undefined;
+    try {
+      const site = addSite({
+        host: String(req.body.host ?? ""),
+        project: project?.dir,
+        env: typeof req.body.env === "string" ? req.body.env : undefined,
+        label: typeof req.body.label === "string" ? req.body.label : undefined,
+      });
+      forgetSites();
+      recordRun("sites", true, `recording ${site.host} (${site.env})${project ? ` for ${project.name}` : ""}`, "web", project ? { project: project.name } : {});
+      return siteViews().find((s) => s.host === site.host) ?? site;
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  },
+  "POST /api/sites/remove": (req) => {
+    let removed;
+    try {
+      removed = removeSite(String(req.body.host ?? ""));
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+    if (!removed) throw new HttpError(404, "That site isn't recorded. Refresh the list.");
+    forgetSites();
+    recordRun("sites", true, `stopped recording ${removed.host}`, "web");
+    return { ok: true, host: removed.host };
+  },
+  // A commit a site said it runs: shown with Run this commit only when the linked project has it.
+  "GET /api/sites/commit": async (req) => {
+    const project = gitProject(req.query.get("dir"));
+    const c = await gitCall(() => resolveCommit(project.dir, String(req.query.get("hash") ?? "")));
+    return { hash: c.hash, short: c.short, subject: c.subject };
   },
   "POST /api/tests": (req) =>
     runTests(knownProject(req.body.dir), {
@@ -356,9 +567,43 @@ const routes: Record<string, Handler> = {
   // ------------------------------------------------------------ git: the graph and the staging board
   // Every path must be one `git status` lists right now, and a block is named by its id: the
   // patch is built from git's own diff (gitStageHunk), never taken from the request.
+  // Run any commit: the search runs git with the words as one fixed-string argument; a commit must
+  // be 4 to 40 hex characters and resolve; snapshots live only under ~/.dx/snapshots.
+  "GET /api/git/search": (req) =>
+    gitCall(() => searchCommits(gitProject(req.query.get("dir")).dir, String(req.query.get("q") ?? ""), { limit: clampInt(req.query.get("limit"), 1, 200, 50) })),
+  "GET /api/git/at": async (req) => {
+    const project = gitProject(req.query.get("dir"));
+    const at = Number(req.query.get("at"));
+    if (!req.query.get("at") || !Number.isFinite(at) || at <= 0) throw new HttpError(400, "Which moment? Give a time in ms.");
+    return (await gitCall(() => commitAt(project.dir, at))) ?? null;
+  },
+  "GET /api/snapshots": (req) => snapshotViews(req.query.get("dir") ? knownProject(req.query.get("dir")).dir : undefined),
+  "POST /api/snapshots/run": async (req) => {
+    const project = gitProject(req.body.dir);
+    return gitCall(() => runSnapshot(project, String(req.body.hash ?? ""), startedBy(req.body.by)));
+  },
+  "POST /api/snapshots/remove": async (req) => {
+    if (typeof req.body.id !== "string" || !req.body.id) throw new HttpError(400, "Which snapshot? Give its id.");
+    try {
+      const s = await removeSnapshotRun(req.body.id);
+      return { ok: true, message: `Removed ${s.name}. Your working copy wasn't touched.` };
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status) throw new HttpError(status, (err as Error).message);
+      recordRun("snapshot", false, `${req.body.id}: ${(err as Error).message.split("\n")[0]}`, "web");
+      throw err;
+    }
+  },
+
   "GET /api/git/graph": (req) => gitCall(() => gitGraph(gitProject(req.query.get("dir")).dir, { limit: clampInt(req.query.get("limit"), 1, GIT_GRAPH_MAX, 200) })),
   "GET /api/git/commit": (req) => gitCall(() => gitCommitDetail(gitProject(req.query.get("dir")).dir, String(req.query.get("hash") ?? ""))),
-  "GET /api/git/status": (req) => gitCall(() => gitStatus(gitProject(req.query.get("dir")).dir)),
+  "GET /api/git/status": async (req) => {
+    const project = gitProject(req.query.get("dir"));
+    const status = await gitCall(() => gitStatus(project.dir));
+    // HEAD moved under a dev server dx runs (a commit in a terminal, a checkout): capture the new look.
+    noticeHead(project, status.head?.toLowerCase());
+    return status;
+  },
   "GET /api/git/diff": (req) =>
     gitCall(() => gitFileDiff(gitProject(req.query.get("dir")).dir, String(req.query.get("path") ?? ""), req.query.get("staged") === "true")),
   "POST /api/git/stage": async (req) => {
@@ -389,9 +634,39 @@ const routes: Record<string, Handler> = {
     try {
       const c = await gitCall(() => gitCommitChanges(project.dir, String(req.body.message ?? ""), { amend }));
       recordRun("git", true, `${project.name}: ${amend ? "amended" : "committed"} ${c.short} ${c.subject}`, "web", { project: project.name });
-      return c;
+      // The visual diff, in the background: the commit is answered first, whatever the capture does.
+      sawHead(project.dir, c.hash.toLowerCase());
+      const visual = requestCapture(project, "commit");
+      return { ...c, visual: visual.started || visual.queued ? "capturing" : undefined };
     } catch (err) {
       recordRun("git", false, `${project.name}: ${amend ? "amend" : "commit"} failed`, "web", { project: project.name });
+      throw err;
+    }
+  },
+  // Visual diffs: screenshots of a project's pages per commit, under ~/.dx/visual. An image is named
+  // by a known project, a hex commit the index has and a capture name that commit has: the file's
+  // path is built in core (visualImageFile), never taken from the request. Captures load only the
+  // dev server dx runs for that project, on this computer.
+  "GET /api/visual": (req) => {
+    const project = gitProject(req.query.get("dir"));
+    const commits = listVisual(project.dir).map((c) => ({ ...c, captures: c.captures.map((x) => ({ ...x, text: describeCapture(x) })) }));
+    return { ...visualState(project.dir), folder: visualFolder(project.dir), commits };
+  },
+  "POST /api/visual/capture": (req) => {
+    const project = gitProject(req.body.dir);
+    const r = requestCapture(project, "manual", "web", { force: true });
+    if (!r.started && !r.queued) throw new HttpError(409, r.reason ?? "Couldn't start a capture.");
+    return { ...r, ...visualState(project.dir) };
+  },
+  "GET /api/visual/image": (req) => {
+    const project = gitProject(req.query.get("dir"));
+    try {
+      const file = visualImageFile(project.dir, req.query.get("commit"), req.query.get("name"), req.query.get("kind") ?? "shot");
+      const data = fs.readFileSync(file);
+      if (data.length > 16 * 1024 * 1024) throw new HttpError(413, "That image is too large to show.");
+      return { image: `data:image/png;base64,${data.toString("base64")}` };
+    } catch (err) {
+      if (err instanceof VisualError) throw new HttpError(err.status, err.message);
       throw err;
     }
   },
@@ -404,6 +679,41 @@ const routes: Record<string, Handler> = {
     recordRun("git", true, `${project.name}: Claude Code wrote a commit message`, "web", { project: project.name });
     return r;
   },
+  // Ask Claude to fix: only on the page's button. The error is looked up here from dx's own
+  // records (never sent by the page), the prompt is built in core, the patch is kept here and
+  // applied by its id, and every file is backed up in the undo journal first.
+  "GET /api/fix/available": async () => ({ claude: !!(await claudeCli()) }),
+  "POST /api/fix/propose": async (req) => {
+    const project = knownProject(req.body.dir);
+    const source = req.body.source;
+    if (source !== "dev" && source !== "activity") throw new HttpError(400, "Which error? Say where it's from (dev or activity) and give its id.");
+    const error = source === "dev" ? devErrorFor(project, req.body.id) : activityErrorFor(project, req.body.id);
+    const what = error.message.split("\n")[0].slice(0, 100);
+    try {
+      const r = await gitCall(() => proposeFix(project.dir, error));
+      recordRun("fix", r.ok, `${project.name}: ${r.ok ? `Claude proposed a fix to ${plural(r.files.length, "file")}` : "Claude proposed nothing to apply"} for ${what}`, "web", { project: project.name });
+      if (!r.ok) return { ok: false, reason: r.reason, explanation: r.explanation, answer: r.answer };
+      return { ok: true, id: rememberFix(project.dir, r), patch: r.patch, files: r.files, explanation: r.explanation, answer: r.answer };
+    } catch (err) {
+      recordRun("fix", false, `${project.name}: asking Claude failed for ${what}`, "web", { project: project.name });
+      throw err;
+    }
+  },
+  "POST /api/fix/apply": async (req) => {
+    const project = knownProject(req.body.dir);
+    const fix = storedFix(req.body.id, project.dir);
+    if (!fix) throw new HttpError(404, "That proposal isn't here any more (they're kept for 30 minutes, and not after a restart). Ask again.");
+    try {
+      const r = await gitCall(() => applyFix(project.dir, fix));
+      forgetFix(req.body.id);
+      recordRun("fix", true, `${project.name}: applied Claude's fix to ${plural(r.files.length, "file")}`, "web", { project: project.name });
+      return r;
+    } catch (err) {
+      recordRun("fix", false, `${project.name}: Claude's fix wasn't applied`, "web", { project: project.name });
+      throw err;
+    }
+  },
+  "POST /api/fix/dismiss": (req) => ({ ok: forgetFix(req.body.id) }),
   // Branches, tags, the shelf, and what can be undone.
   "GET /api/git/refs": (req) => gitCall(() => gitRefs(gitProject(req.query.get("dir")).dir)),
   "GET /api/git/undo": (req) => gitCall(() => gitUndoList(gitProject(req.query.get("dir")).dir)),
@@ -444,8 +754,11 @@ const routes: Record<string, Handler> = {
   },
 
   "GET /api/dev": () => listDevServers(),
-  "POST /api/dev/start": (req) => startDevServer(knownProject(req.body.dir), startedBy(req.body.by)),
-  "POST /api/dev/restart": (req) => restartDevServer(knownProject(req.body.dir), startedBy(req.body.by)),
+  "POST /api/dev/start": (req) => {
+    const project = knownProject(req.body.dir, { snapshots: true });
+    return startDevServer(project, startedBy(req.body.by), { snapshot: !!snapshotByDir(project.dir) });
+  },
+  "POST /api/dev/restart": (req) => restartDevServer(knownProject(req.body.dir, { snapshots: true }), startedBy(req.body.by)),
   "GET /api/dev/errors": (req) =>
     devErrors(req.query.get("dir") || undefined, {
       all: req.query.get("all") === "1",
@@ -462,7 +775,7 @@ const routes: Record<string, Handler> = {
   "POST /api/check": async (req) => {
     let url = typeof req.body.url === "string" ? req.body.url : "";
     if (!url) {
-      const project = knownProject(req.body.dir);
+      const project = knownProject(req.body.dir, { snapshots: true });
       const dev = listDevServers().find((s) => s.dir.toLowerCase() === project.dir.toLowerCase());
       // A browser check goes through the local domain when there is one, so its requests are logged.
       const base = (req.body.browser === true || Array.isArray(req.body.steps) ? dev?.localUrl : undefined) ?? dev?.url ?? project.url;
@@ -485,7 +798,7 @@ const routes: Record<string, Handler> = {
     }
   },
   "POST /api/open-file": async (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { snapshots: true });
     const raw = String(req.body.file ?? "");
     const norm = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
     // The project's folder, and for a stack the folders its services run in (another repository, say).
@@ -504,6 +817,32 @@ const routes: Record<string, Handler> = {
     return { message: `Opened ${path.basename(file)}${line ? `:${line}` : ""}` };
   },
   "POST /api/dev/stop": async (req) => (await stopDevServer(String(req.body.dir))) ?? null,
+  // Take over: a server the AI agent started becomes the user's. Only its label changes.
+  "POST /api/dev/takeover": (req) => {
+    const project = knownProject(req.body.dir, { snapshots: true });
+    const taken = takeOverDevServer(project.dir);
+    if (!taken) throw new HttpError(409, `${project.name} isn't running as the AI agent's server.`);
+    recordRun("ai.takeover", true, `${project.name}: taken over from the AI agent`, "web", { project: project.name });
+    return taken;
+  },
+
+  // ------------------------------------------------------------ the AI lane
+  "GET /api/ai": (req) => {
+    const limit = clampInt(req.query.get("limit"), 1, 500, 40);
+    const raw = req.query.get("dir");
+    if (!raw) return aiLane({ limit });
+    // One project's calls, for the Activity page's "By AI" filter.
+    const project = knownProject(raw, { snapshots: true });
+    const norm = (d: string) => (process.platform === "win32" ? d.toLowerCase() : d);
+    const lane = aiLane({ limit: 500 });
+    return { ...lane, calls: lane.calls.filter((c) => c.dir && norm(c.dir) === norm(project.dir)).slice(0, limit), servers: lane.servers.filter((s) => norm(s.dir) === norm(project.dir)) };
+  },
+  // Interrupt: stops only dev servers dx runs that the AI agent started (of those named, when dirs is sent).
+  "POST /api/ai/interrupt": (req) => {
+    const raw = req.body.dirs;
+    if (raw !== undefined && (!Array.isArray(raw) || !raw.every((d) => typeof d === "string"))) throw new HttpError(400, "dirs is a list of project folders.");
+    return interruptAi(raw as string[] | undefined);
+  },
   "POST /api/dev/clear": (req) => {
     clearDevServer(String(req.body.dir));
     return { ok: true };
@@ -610,6 +949,18 @@ const routes: Record<string, Handler> = {
     const markdown = formatYearReview(review);
     if (req.query.get("save") === "1") saveYearReview(markdown, year);
     return { year, commits: review.commits, activeDays: review.activeDays, projects: review.projects.length, markdown };
+  },
+  // Your year as a story: built on this computer from git, the journal, runs.jsonl and sessions.json.
+  "GET /api/summary/story": async (req) => {
+    const year = clampInt(req.query.get("year"), 1990, new Date().getFullYear(), new Date().getFullYear());
+    return storyView(await yearStory(year, req.query.get("allAuthors") === "1", req.query.get("github") !== "0"));
+  },
+  "POST /api/summary/story/save": async (req) => {
+    const year = clampInt(req.body.year, 1990, new Date().getFullYear(), new Date().getFullYear());
+    const built = await yearStory(year, req.body.allAuthors === true, req.body.github !== false);
+    const file = saveYearReview(formatYearReview(built.review, built.story), year);
+    recordRun("summary", true, `${year} in review saved from the dashboard`, "web");
+    return { file, year };
   },
   "POST /api/summary/save": async (req) => {
     const summary = await buildSummary({
@@ -752,6 +1103,7 @@ const routes: Record<string, Handler> = {
     }
     if (typeof req.body.activity === "boolean") config.activity = req.body.activity;
     if (typeof req.body.localhostRecording === "boolean") config.localhostRecording = req.body.localhostRecording;
+    if (typeof req.body.visualDiff === "boolean") config.visualDiff = req.body.visualDiff;
     if (req.body.activityDays !== undefined) config.activityDays = clampInt(req.body.activityDays, 1, 365, config.activityDays ?? 7);
     if (req.body.activityMaxMB !== undefined) config.activityMaxMB = clampInt(req.body.activityMaxMB, 50, 100_000, config.activityMaxMB ?? 500);
     saveConfig(config);
@@ -779,12 +1131,20 @@ export async function handleApi(req: ApiRequest): Promise<unknown> {
   return handler(req);
 }
 
-/** The project at `dir`, only if it's one dx found: the page can't point actions at any other folder. */
-function knownProject(dir: unknown): Project {
+/**
+ * The project at `dir`, only if it's one dx found: the page can't point actions at any other
+ * folder. With `snapshots`, also a snapshot registered in ~/.dx/snapshots.json (only folders under
+ * ~/.dx/snapshots, and only while registered), for running it, reading its output and history,
+ * and opening it; nothing that changes files or git takes one.
+ */
+function knownProject(dir: unknown, { snapshots = false } = {}): Project {
   const wanted = String(dir ?? "").toLowerCase();
   const project = scanProjects(loadConfig()).find((p) => p.dir.toLowerCase() === wanted);
-  if (!project) throw new HttpError(404, "That project isn't in your projects folders any more. Refresh the list.");
-  return project;
+  if (project) return project;
+  const snap = snapshots && typeof dir === "string" ? snapshotByDir(dir) : undefined;
+  const asProject = snap && snapshotProject(snap);
+  if (asProject) return asProject;
+  throw new HttpError(404, "That project isn't in your projects folders any more. Refresh the list.");
 }
 
 /** Each project's needs next to the installed tools; the Node lines come from the release list when it's at hand. */
@@ -804,6 +1164,10 @@ function dxOwnedPids(): number[] {
 
 type GitActionFn = (dir: string, body: Record<string, unknown>, str: (v: unknown) => string) => Promise<GitActionResult>;
 const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+const resolutionsOf = (v: unknown[]): ConflictResolution[] =>
+  v.slice(0, 1000).flatMap((x): ConflictResolution[] =>
+    typeof x === "string" ? [x as ConflictChoice] : x && typeof x === "object" && typeof (x as { text?: unknown }).text === "string" ? [{ text: (x as { text: string }).text }] : [],
+  );
 const MERGE_MODES: MergeMode[] = ["merge", "squash", "fast-forward"];
 
 /** The git operations the page can ask for, each with its arguments taken one by one. */
@@ -822,8 +1186,9 @@ const GIT_ACTIONS: Record<string, GitActionFn> = {
   rebase: (d, b, s) => gitRebase(d, s(b.onto)),
   continue: (d) => gitContinue(d),
   abort: (d) => gitAbort(d),
+  // Each choice is a side's name or { text } from the merge editor; anything else is dropped, so the count check refuses it.
   resolve: (d, b, s) =>
-    gitResolve(d, s(b.path), { hash: s(b.hash), choices: Array.isArray(b.choices) ? (strings(b.choices) as ConflictChoice[]) : undefined, side: b.side === "ours" || b.side === "theirs" ? b.side : undefined }),
+    gitResolve(d, s(b.path), { hash: s(b.hash), choices: Array.isArray(b.choices) ? resolutionsOf(b.choices) : undefined, side: b.side === "ours" || b.side === "theirs" ? b.side : undefined }),
   "stash-push": (d, b, s) => gitStashPush(d, { paths: Array.isArray(b.paths) ? strings(b.paths) : undefined, message: s(b.message) }),
   "stash-apply": (d, b, s) => gitStashApply(d, s(b.oid), { pop: b.pop === true }),
   "stash-drop": (d, b, s) => gitStashDrop(d, s(b.oid)),
@@ -845,10 +1210,119 @@ const GIT_ACTIONS: Record<string, GitActionFn> = {
     ),
 };
 
+/** An error of the project's dev server (running, or the last run), by the id the error tracker gave it. */
+function devErrorFor(project: Project, id: unknown): FixTarget {
+  const e = typeof id === "string" ? devErrors(project.dir, { all: true })[0]?.errors.find((x) => x.id === id) : undefined;
+  if (!e) throw new HttpError(404, "That error isn't in the dev server's output any more. Refresh the page.");
+  return { kind: e.kind, message: e.message, file: e.file, line: e.line, column: e.column, stack: e.lines.join("\n") };
+}
+
+/** An error in the project's activity history, by its event id: exceptions, server errors and console errors only. */
+function activityErrorFor(project: Project, id: unknown): FixTarget {
+  const n = Number(id);
+  if (!Number.isSafeInteger(n) || n <= 0) throw new HttpError(400, "Which error? Give its id.");
+  flushActivity();
+  const e = reportContext(project.dir, n).target;
+  if (!e) throw new HttpError(404, "That error isn't in the history any more.");
+  if (!(e.type === "error" || e.type === "server-error" || (e.type === "console" && e.level === "error"))) throw new HttpError(400, "Only errors can be sent to Claude: an exception, a server error or a console error.");
+  const at = e.source ? splitLocation(e.source) : undefined;
+  return { kind: e.type === "error" ? "browser" : e.type, message: e.text, file: at?.file, line: at?.line, column: at?.column, stack: e.stack, page: e.page };
+}
+
+/**
+ * The folder of history asked for: a known project, or a recorded site that isn't linked to one
+ * (site:<host>, by its host). Undefined when neither is given: every project.
+ */
+function activityDirOf(dir: unknown, site: unknown): string | undefined {
+  if (site !== undefined && site !== null && site !== "") {
+    try {
+      return siteDir(normalizeSiteHost(String(site)));
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  }
+  if (dir === undefined || dir === null || dir === "") return undefined;
+  return knownProject(dir, { snapshots: true }).dir;
+}
+
+/** The recorded sites, with the name of the project each belongs to. */
+function siteViews() {
+  const config = loadConfig();
+  const projects = scanProjects(config);
+  return listSites(config).map((s) => {
+    const p = s.project ? projects.find((x) => x.dir.toLowerCase() === s.project!.toLowerCase()) : undefined;
+    return { ...s, projectName: p?.name ?? (s.project ? path.basename(s.project) : undefined), hasGit: p?.hasGit ?? false, missing: !!s.project && !p };
+  });
+}
+
 function gitProject(dir: unknown): Project {
   const project = knownProject(dir);
   if (!project.hasGit) throw new HttpError(400, `${project.name} isn't a git repository.`);
   return project;
+}
+
+/** A bundle that can't be read, or an event that isn't there, reaches the page with its own status. */
+async function bundleCall<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof BugBundleError || err instanceof GitError) throw new HttpError(err.status, err.message);
+    throw err;
+  }
+}
+
+/** The last year story built, for a minute, so Save right after viewing doesn't read git again. */
+let lastStory: { key: string; at: number; built: Promise<{ review: YearReview; story: YearStory }> } | undefined;
+function yearStory(year: number, allAuthors: boolean, github: boolean): Promise<{ review: YearReview; story: YearStory }> {
+  const key = `${year}|${allAuthors}|${github}`;
+  if (lastStory && lastStory.key === key && Date.now() - lastStory.at < 60_000) return lastStory.built;
+  const built = buildYearStory(year, { allAuthors, github });
+  lastStory = { key, at: Date.now(), built };
+  built.catch(() => {
+    if (lastStory?.built === built) lastStory = undefined;
+  });
+  return built;
+}
+
+/** What the page draws: the story and the review's own numbers, not every commit of the year. */
+function storyView({ review, story }: { review: YearReview; story: YearStory }) {
+  const gh = review.summary.github;
+  return {
+    year: review.year,
+    story,
+    projects: review.projects.slice(0, 12),
+    months: review.months,
+    busiestDay: review.busiestDay,
+    github: gh && "user" in gh ? { merged: gh.merged.length, reviewed: gh.reviewed.length } : gh && "error" in gh ? { error: gh.error } : undefined,
+    markdown: formatYearReview(review, story),
+  };
+}
+
+function mockCall<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof MockError) throw new HttpError(err.status, err.message);
+    throw err;
+  }
+}
+
+/** The API calls during one visit: the proxy's requests carry no visit id, so the visit's own time span picks them. */
+function visitRequests(dir: string, visit: string) {
+  const started = parseInt(visit.slice(8), 36);
+  const since = Number.isFinite(started) && started > 1e12 ? new Date(started - 60_000) : new Date(Date.now() - 7 * 86_400_000);
+  const all = readActivity({ dir, since, limit: 5000 });
+  const own = all.filter((e) => e.visit === visit);
+  if (!own.length) throw new HttpError(404, "That visit isn't in the history any more.");
+  const from = Math.min(...own.map((e) => Date.parse(e.at))) - 2000;
+  const to = Math.max(...own.map((e) => Date.parse(e.at))) + 5000;
+  return all.filter((e) => e.type === "request" && Date.parse(e.at) >= from && Date.parse(e.at) <= to);
+}
+
+function sinceRequests(dir: string, raw: unknown) {
+  const since = parseSince(typeof raw === "string" && raw ? raw : "1h");
+  if (!since) throw new HttpError(400, "since takes 30m, 2h, 3d, today, yesterday or a date.");
+  return readActivity({ dir, since, types: ["request"], limit: 5000 });
 }
 
 /** git's own refusals ("nothing staged", a hook that failed) reach the page as they are. */

@@ -8,6 +8,8 @@ import { certCovers, ensureCert, loadConfig, projectHostNames, type CertFiles, t
 import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
 import { DOMAIN_PORTS, startLocalDomains, type LocalDomains, type TlsOptions } from "./proxy.js";
 import { clearDashboardInfo, writeDashboardInfo } from "./link.js";
+import { closeDxBrowser, dxBrowserOpen, setDxBrowserDashboardPort } from "./dxbrowser.js";
+import { startHeadWatch } from "./visual.js";
 
 /** The certificate for https://*.localhost when `dx https` turned it on and mkcert is still here. */
 async function localTls(config: DxConfig): Promise<TlsOptions | undefined> {
@@ -67,6 +69,9 @@ export interface Dashboard {
 
 const DEFAULT_PORT = 4646;
 const MAX_BODY = 1024 * 1024;
+// A bug bundle (at most 2 MB) and a mock's body (at most 1 MB, larger once escaped as JSON) come in whole.
+const LARGE_BODY = 3 * 1024 * 1024;
+const LARGE_PATHS = new Set(["/api/activity/bundle/replay", "/api/mocks/update"]);
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -111,7 +116,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       let body: Record<string, unknown> = {};
       if (req.method === "POST") {
         try {
-          body = await readJson(req);
+          body = await readJson(req, LARGE_PATHS.has(url.pathname) ? LARGE_BODY : MAX_BODY);
         } catch (err) {
           return send(res, 400, { error: (err as Error).message });
         }
@@ -147,6 +152,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
 
   port = await listen(server, options.port ?? DEFAULT_PORT);
   const url = `http://127.0.0.1:${port}/`;
+  setDxBrowserDashboardPort(port);
 
   let domains: LocalDomains | undefined;
   const config = loadConfig();
@@ -158,15 +164,20 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
 
   const idleMs = (options.idleMinutes ?? 30) * 60_000;
   const idleTimer = setInterval(() => {
-    if (options.background && !anyDevServerRunning() && Date.now() - lastActivity > idleMs) options.onIdle?.();
+    if (options.background && !anyDevServerRunning() && !dxBrowserOpen() && Date.now() - lastActivity > idleMs) options.onIdle?.();
   }, Math.min(60_000, Math.max(1000, idleMs / 4)));
   idleTimer.unref();
+  // A commit made in a terminal under a dev server dx runs gets its visual diff too.
+  const stopHeadWatch = startHeadWatch();
 
   function close(): Promise<void> {
     closing ??= (async () => {
       clearInterval(idleTimer);
+      stopHeadWatch();
       clearDashboardInfo();
       await stopAllDevServers();
+      // It records through this dashboard, so it goes with it, like the dev servers.
+      await closeDxBrowser().catch(() => undefined);
       setLocalDomainsPort(undefined);
       await domains?.close();
       await new Promise<void>((resolve) => {
@@ -207,13 +218,13 @@ function tokenMatches(given: string | string[] | undefined, token: string): bool
   return timingSafeEqual(Buffer.from(given), Buffer.from(token));
 }
 
-function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+function readJson(req: http.IncomingMessage, max = MAX_BODY): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > max) {
         reject(new Error("Request too large."));
         req.destroy();
       } else chunks.push(c);

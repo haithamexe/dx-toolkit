@@ -81,6 +81,10 @@ const ICONS = {
   tag: "M3 12V4h8l10 10-8 8zM7.5 7.5h.01",
   up: "M12 19V5M6 11l6-6 6 6",
   down: "M12 5v14M6 13l6 6 6-6",
+  fix: "M4 20L14 10M14 4v2M14 14v2M8 7H6M22 7h-2M18.5 3.5l-1.4 1.4M18.5 10.5l-1.4-1.4M10.9 3.5l1.4 1.4",
+  ai: "M11 3l1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9zM18.5 15l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z",
+  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
+  image: "M4 5h16v14H4zM4 16l4.5-4.5 4 4 3-3L20 17M15.5 9.5h.01",
 };
 
 function icon(name) {
@@ -122,10 +126,10 @@ async function busy(button, busyLabel, fn) {
   }
 }
 
-function toast(message, kind = "ok") {
+function toast(message, kind = "ok", { ms } = {}) {
   const el = h("div", { class: `toast ${kind === "error" ? "toast-error" : ""}` }, h("div", null, message));
   document.getElementById("toasts").append(el);
-  setTimeout(() => el.remove(), kind === "error" ? 9000 : 4500);
+  setTimeout(() => el.remove(), ms ?? (kind === "error" ? 9000 : 4500));
 }
 
 function confirmDialog({ title, text, confirm = "Confirm", danger = true }) {
@@ -309,6 +313,26 @@ function liveDetail(draw) {
   liveDetails.add(entry);
   el.redraw = entry.draw;
   return el;
+}
+
+/** "Mocked: 12 endpoints" while a project's mock mode is on, so a front end answered by dx isn't mistaken for the real API. */
+function mockBadge(m, dir) {
+  if (!m?.on) return null;
+  return h(
+    "a",
+    { class: "badge badge-warn", href: "#/activity", onclick: () => dir && setPref("activitySel", `p:${dir}`), title: `Its API calls are answered by dx from recordings${m.strict ? "; others get a 404" : ""}. Turn it off on the Activity page or with dx mock off.` },
+    `Mocked: ${plural(m.enabled, "endpoint")}`,
+  );
+}
+
+/** Saves data as a .json file through the browser's own download, from this page's script (a Blob, no server address). */
+function downloadJson(name, data) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2) + "\n"], { type: "application/json" }));
+  const a = h("a", { href: url, download: name, hidden: true });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 function copyButton(text, label = "Copy") {
@@ -755,6 +779,118 @@ function diffBlock(patch, { truncated = false } = {}) {
   };
 }
 
+// ------------------------------------------------------------------ Ask Claude to fix
+
+/**
+ * An error goes to Claude Code with the code around it, only on the button, and its patch comes
+ * back to review: Visual side by side or Raw, then Apply fix, Ask again or Dismiss. The server
+ * looks the error up and keeps the patch itself; nothing changes in your files until Apply.
+ */
+let fixCheck;
+function claudeCanFix() {
+  if (!fixCheck || Date.now() - fixCheck.at > 60_000) fixCheck = { at: Date.now(), ok: api("/api/fix/available").then((r) => !!r.claude, () => false) };
+  return fixCheck.ok;
+}
+
+const FIX_TITLE =
+  "Claude Code (claude -p) looks at this error and the code around it, and proposes a patch for you to review. This sends the error, nearby code and your uncommitted changes to your Claude account, and only when you click. Nothing changes in your files until you apply it.";
+
+/** Each error's panel, by "dir|place": it outlives the list redrawing as new output comes in. */
+const fixPanels = new Map();
+
+/** The Ask Claude to fix button for one error, and the panel its proposal opens in. */
+function fixControls(dir, source, id, label, place = id) {
+  const key = `${dir}|${source}|${place}`;
+  let state = fixPanels.get(key);
+  if (!state) {
+    state = { el: h("div", { class: "fix-panel", hidden: true, "aria-live": "polite" }), busy: false };
+    fixPanels.set(key, state);
+  }
+  const button = btn("Ask Claude to fix", () => askClaude(state, dir, source, id), { small: true, kind: "ghost", iconName: "fix", title: FIX_TITLE, name: `Ask Claude to fix: ${label}` });
+  button.hidden = true;
+  button.disabled = state.busy;
+  state.button = button;
+  claudeCanFix().then((ok) => (button.hidden = !ok));
+  return { button, panel: state.el };
+}
+
+async function askClaude(state, dir, source, id) {
+  if (state.busy) return;
+  state.busy = true;
+  if (state.button) state.button.disabled = true;
+  const panel = state.el;
+  panel.hidden = false;
+  panel.replaceChildren(h("div", { class: "fix-busy", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), "Claude is looking at the error and the code around it…"));
+  if (state.id) api("/api/fix/dismiss", { method: "POST", body: { id: state.id } }).catch(() => {});
+  state.id = undefined;
+  try {
+    const r = await api("/api/fix/propose", { method: "POST", body: { dir, source, id } });
+    state.id = r.ok ? r.id : undefined;
+    drawFix(state, dir, source, id, r);
+  } catch (err) {
+    panel.replaceChildren(errorView(err, () => askClaude(state, dir, source, id)), h("div", { class: "toolbar" }, btn("Dismiss", () => closeFix(state), { small: true, kind: "ghost", iconName: "x" })));
+  } finally {
+    state.busy = false;
+    if (state.button) state.button.disabled = false;
+  }
+}
+
+function drawFix(state, dir, source, errorId, r) {
+  const again = btn("Ask again", () => askClaude(state, dir, source, errorId), { small: true, iconName: "refresh", title: "Ask Claude for another patch. This sends the error and the code again." });
+  const dismiss = btn("Dismiss", () => closeFix(state), { small: true, kind: "ghost", iconName: "x" });
+  const explanation = r.explanation ? h("p", { class: "fix-explanation" }, r.explanation) : null;
+  if (!r.ok) {
+    state.el.replaceChildren(
+      h("div", { class: "fix-head" }, icon("fix"), h("strong", null, "Claude's answer can't be applied")),
+      h("div", { class: "note note-warn" }, icon("warn"), h("p", null, r.reason)),
+      explanation,
+      h("section", { class: "detail-section" }, h("div", { class: "detail-head" }, h("strong", null, "Claude's answer, as it said it"), copyButton(r.answer)), h("pre", { class: "log-snippet raw-text" }, r.answer)),
+      h("div", { class: "toolbar" }, again, dismiss),
+    );
+    return;
+  }
+  const apply = btn("Apply fix", (ev) => applyClaudeFix(ev.currentTarget, state, dir, r), {
+    kind: "primary",
+    small: true,
+    iconName: "check",
+    title: "Write the patch into your files. It shows on the Git page as changes, and Undo puts the files back.",
+  });
+  state.el.replaceChildren(
+    h("div", { class: "fix-head" }, icon("fix"), h("strong", null, "Claude's fix"), h("span", { class: "dim mono fix-files" }, r.files.join(", "))),
+    explanation,
+    liveDetail(diffBlock(r.patch)),
+    h("div", { class: "toolbar" }, apply, again, dismiss),
+    h("p", { class: "dim fix-hint" }, "Nothing has changed in your files yet. Applied, the fix shows on the Git page as changes you can stage, commit or undo."),
+  );
+}
+
+async function applyClaudeFix(button, state, dir, r) {
+  const done = await busy(button, "Applying…", () => api("/api/fix/apply", { method: "POST", body: { dir, id: r.id } }));
+  if (!done) return;
+  state.id = undefined;
+  const gitLink = () => h("a", { href: `#/git?dir=${encodeURIComponent(dir)}` }, "review it on the Git page");
+  const undo = () => btn("Undo", (ev) => undoClaudeFix(ev.currentTarget, state, dir, done.undoId), { small: true, kind: "ghost", iconName: "left", title: "Put the files back as they were before the fix" });
+  state.el.replaceChildren(
+    h("div", { class: "note note-ok" }, icon("check"), h("p", null, `The fix is in ${done.files.join(", ")}: `, gitLink(), ".")),
+    h("div", { class: "toolbar" }, undo(), btn("Close", () => closeFix(state), { small: true, kind: "ghost", iconName: "x" })),
+  );
+  toast(h("span", { class: "toast-line" }, h("span", null, "The fix is in your files: ", gitLink(), "."), undo()), "ok", { ms: 10_000 });
+}
+
+async function undoClaudeFix(button, state, dir, undoId) {
+  const r = await busy(button, "Undoing…", () => api("/api/git/action", { method: "POST", body: { dir, action: "undo", id: undoId } }));
+  if (!r) return;
+  toast(r.message);
+  closeFix(state);
+}
+
+function closeFix(state) {
+  if (state.id) api("/api/fix/dismiss", { method: "POST", body: { id: state.id } }).catch(() => {});
+  state.id = undefined;
+  state.el.hidden = true;
+  state.el.replaceChildren();
+}
+
 /**
  * Which terminal projects open in: the installed ones, saved to the settings on change. Used on
  * the Projects page and in Health & settings.
@@ -858,6 +994,7 @@ async function updateRunningCount() {
 function projectsPage(root) {
   let projects = [];
   let query = "";
+  let focusDir = new URLSearchParams(location.hash.split("?")[1] ?? "").get("dir") ?? "";
   const openLogs = new Set(JSON.parse(pref("openLogs", "[]")));
   const openErrors = new Set(JSON.parse(pref("openErrors", "[]")));
   const logState = new Map(); // dir -> { after, el }
@@ -904,9 +1041,21 @@ function projectsPage(root) {
 
   async function load() {
     try {
-      projects = await api("/api/projects");
+      // Snapshots (a project as it was at a commit) show here while their dev server is around.
+      const [list, snaps] = await Promise.all([api("/api/projects"), api("/api/snapshots").catch(() => [])]);
+      projects = [...list, ...snaps.filter((s) => s.dev).map((s) => ({ name: s.name, dir: s.dir, snapshot: s, dev: s.dev }))];
       renderList();
       renderDev();
+      // Linked from the AI lane (#/projects?dir=…): bring that server's card into view, once.
+      if (focusDir) {
+        const card = [...devSection.querySelectorAll("article.dev")].find((el) => el.dataset.dir?.toLowerCase() === focusDir.toLowerCase());
+        focusDir = "";
+        if (card) {
+          card.scrollIntoView({ block: "center", behavior: reducedMotion.matches ? "auto" : "smooth" });
+          card.classList.add("dev-linked");
+          setTimeout(() => card.classList.remove("dev-linked"), 2000);
+        }
+      }
     } catch (err) {
       listHolder.replaceChildren(errorView(err, load));
     }
@@ -962,8 +1111,9 @@ function projectsPage(root) {
   }
 
   function renderList() {
-    const list = query ? projects.filter((p) => p.name.toLowerCase().includes(query) || p.dir.toLowerCase().includes(query)) : projects;
-    if (projects.length === 0) {
+    const own = projects.filter((p) => !p.snapshot);
+    const list = query ? own.filter((p) => p.name.toLowerCase().includes(query) || p.dir.toLowerCase().includes(query)) : own;
+    if (own.length === 0) {
       listHolder.replaceChildren(
         stateView("No projects found", "dx looks for folders with a package.json, go.mod, .git and similar in your projects folders.", h("a", { class: "btn btn-primary", href: "#/health" }, "Add a projects folder")),
       );
@@ -992,6 +1142,7 @@ function projectsPage(root) {
           h("span", { class: "badge" }, kind),
           p.stack ? h("span", { class: "badge badge-accent", title: `Found from ${STACK_SOURCES[p.stack.source] ?? "the project"}` }, `Stack: ${p.stack.services.map((s) => s.name).join(", ")}`) : null,
           running ? statusBadge(p.dev.status) : null,
+          mockBadge(p.mocks, p.dir),
         ),
         h(
           "div",
@@ -1215,14 +1366,15 @@ function projectsPage(root) {
     };
     const card = h(
       "article",
-      { class: "card dev" },
+      { class: "card dev", dataset: { dir: s.dir } },
       h(
         "div",
         { class: "dev-head" },
         h(
           "div",
           { class: "dev-title" },
-          h("strong", null, s.project),
+          h("strong", null, s.snapshot ? s.project.replace("@", " @ ") : s.project),
+          s.snapshot ? h("span", { class: "badge badge-accent", title: "The project as it was at a commit, run from its own folder in ~/.dx/snapshots" }, "snapshot") : null,
           statusBadge(s.status),
           s.startedBy === "ai" ? h("span", { class: "badge badge-accent", title: "Started by an AI agent through dx's MCP tools" }, "Started by AI") : null,
           s.errorCount ? h("span", { class: "badge badge-danger" }, plural(s.errorCount, "error")) : null,
@@ -1248,6 +1400,9 @@ function projectsPage(root) {
             ? btn(showingErrors ? "Hide errors" : "Show errors", () => toggle(openErrors, "openErrors"), { iconName: "warn", small: true })
             : null,
           btn(showing ? "Hide output" : "Show output", () => toggle(openLogs, "openLogs"), { iconName: "log", small: true }),
+          live && s.startedBy === "ai"
+            ? btn("Take over", (e) => takeOverServer(e.currentTarget, s, load), { iconName: "user", small: true, title: "Make this server yours: it's labelled as started from the dashboard and keeps running after the agent is done" })
+            : null,
           live
             ? btn("Stop", (e) => stopDev(e.currentTarget, s.dir), { iconName: "stop", small: true })
             : [
@@ -1258,6 +1413,16 @@ function projectsPage(root) {
                   load();
                 }, { iconName: "x", small: true, kind: "ghost" }),
               ],
+          s.snapshot
+            ? btn("Remove", async (e) => {
+                const snap = projects.find((p) => p.dir === s.dir)?.snapshot;
+                if (snap && (await removeSnapshotFlow(snap, e.currentTarget))) {
+                  logState.delete(key);
+                  load();
+                  void updateRunningCount();
+                }
+              }, { iconName: "cleanup", small: true, kind: "danger-ghost", name: `Remove ${s.project}` })
+            : null,
         ),
       ),
       s.services ? h("ul", { class: "stack-services", "aria-label": `Services of ${s.project}` }, s.services.map(serviceRow)) : null,
@@ -1424,6 +1589,8 @@ function projectsPage(root) {
   function errorItem(e, dir) {
     const where = e.file ? `${inProject(e.file, dir)}${e.line ? `:${e.line}` : ""}${e.column ? `:${e.column}` : ""}` : null;
     const detail = e.lines.slice(1, 8).join("\n");
+    // Ask Claude to fix needs git: the patch is checked with it, and Undo brings the files back from it.
+    const fixer = projects.find((p) => p.dir === dir)?.hasGit && !e.resolved ? fixControls(dir, "dev", e.id, e.message) : null;
     return h(
       "li",
       { class: "dev-error" },
@@ -1435,13 +1602,21 @@ function projectsPage(root) {
         h("strong", { class: "dev-error-message" }, e.message),
         e.count > 1 ? h("span", { class: "dim" }, `×${e.count}`) : null,
       ),
-      where
-        ? btn(where, (ev) =>
-            busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file: e.file, line: e.line, column: e.column } })).message)),
-            { small: true, kind: "ghost", iconName: "code", title: "Open in your editor at this line", name: `Open ${where} in editor` },
+      where || fixer
+        ? h(
+            "div",
+            { class: "toolbar dev-error-actions" },
+            where
+              ? btn(where, (ev) =>
+                  busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file: e.file, line: e.line, column: e.column } })).message)),
+                  { small: true, kind: "ghost", iconName: "code", title: "Open in your editor at this line", name: `Open ${where} in editor` },
+                )
+              : null,
+            fixer?.button,
           )
         : null,
       detail ? h("pre", { class: "log log-snippet" }, detail) : null,
+      fixer?.panel,
     );
   }
 
@@ -1508,7 +1683,7 @@ function projectsPage(root) {
     const servers = await api("/api/dev").catch(() => null);
     const differs = (s) => {
       const dev = projects.find((p) => p.dir === s.dir)?.dev;
-      return dev?.status !== s.status || dev?.errorCount !== s.errorCount;
+      return dev?.status !== s.status || dev?.errorCount !== s.errorCount || dev?.startedBy !== s.startedBy;
     };
     if (servers && (servers.some(differs) || servers.length !== projects.filter((p) => p.dev).length)) load();
     for (const key of trafficPanels.keys()) void refreshTraffic(key);
@@ -2723,7 +2898,7 @@ function initials(name) {
  * its parents below, and the lanes passing by. Every line has pathLength 1, so the stylesheet can
  * draw it in, and data-lane, so hovering can light up a branch's path.
  */
-function graphCell(row, lanes, { merge = false, author = "", head = false } = {}) {
+function graphCell(row, lanes, { merge = false, author = "", head = false, look = false } = {}) {
   const w = lanes * LANE_W;
   const svg = svgEl("svg", { class: "graph-cell", viewBox: `0 0 ${w} 32`, width: w, height: 32, "aria-hidden": "true" });
   const x = (lane) => lane * LANE_W + LANE_W / 2;
@@ -2737,6 +2912,8 @@ function graphCell(row, lanes, { merge = false, author = "", head = false } = {}
   if (row.lane < lanes) {
     const lane = `lane-${row.lane % LANE_COLOURS}`;
     if (head) svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: 9, class: `graph-pulse ${lane}` }));
+    // The visual diff: an orange ring when the commit changed how the app looks.
+    if (look) svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: merge ? 8 : 11, class: "graph-look" }));
     if (merge) svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: 5, class: `graph-dot graph-dot-merge ${lane}`, "data-lane": row.lane }));
     else {
       svg.append(svgEl("circle", { cx: x(row.lane), cy: 16, r: 8.5, class: `graph-dot ${lane}`, "data-lane": row.lane }));
@@ -2851,6 +3028,80 @@ function actionMenu(label, items, { name } = {}) {
 /** Commit messages being written, per project, kept while you visit other pages. */
 const gitDrafts = new Map();
 
+// ------------------------------------------------------------------ snapshots (run any commit)
+
+const SNAPSHOT_PHASES = { creating: "Checking out", installing: "Installing packages", starting: "Starting", failed: "Couldn't start" };
+
+/** Being set up, or its dev server starting. */
+function snapshotPending(s) {
+  return (s.job && s.job.phase !== "failed") || s.dev?.status === "starting";
+}
+
+function snapshotBadge(s) {
+  if (s.job) {
+    const failed = s.job.phase === "failed";
+    return h("span", { class: `badge ${failed ? "badge-danger" : "badge-warn"}` }, failed ? null : h("span", { class: "dot dot-pulse" }), SNAPSHOT_PHASES[s.job.phase] ?? s.job.phase);
+  }
+  const status = s.dev?.status;
+  const [cls, text, pulse] =
+    status === "ready" ? ["badge-ok", "Running", false] : status === "starting" ? ["badge-warn", "Starting", true] : status === "failed" ? ["badge-danger", "Failed", false] : ["", "Not running", false];
+  return h("span", { class: `badge ${cls}` }, h("span", { class: `dot ${pulse ? "dot-pulse" : ""}` }), text);
+}
+
+/** Asks first, then stops the snapshot and deletes its folder. True when it's gone. */
+async function removeSnapshotFlow(s, button) {
+  const yes = await confirmDialog({
+    title: `Remove ${s.name.replace("@", " @ ")}?`,
+    text: [`This stops its dev server and deletes its folder, ${tildify(s.path ?? s.dir ?? "")}.`, "Your working copy, branches and node_modules aren't touched."],
+    confirm: "Remove",
+  });
+  if (!yes) return false;
+  const run = () => api("/api/snapshots/remove", { method: "POST", body: { id: s.id } });
+  const r = button?.isConnected ? await busy(button, "Removing…", run) : await run().catch((err) => void toast(err.message, "error"));
+  if (!r) return false;
+  toast(r.message);
+  return true;
+}
+
+/** One snapshot: its commit, how it's doing, its address, and Run/Stop/Remove. */
+function snapshotRow(s, { onChange }) {
+  const live = s.dev && (s.dev.status === "starting" || s.dev.status === "ready");
+  const url = s.dev?.status === "ready" ? (s.dev.localUrl ?? s.dev.url) : undefined;
+  const busyJob = s.job && s.job.phase !== "failed";
+  const lastLine = busyJob ? s.job.lines?.at(-1) : undefined;
+  return h(
+    "li",
+    { class: "snap-row" },
+    h("span", { class: "graph-hash mono" }, s.short),
+    h("span", { class: "snap-text" }, h("span", { class: "snap-subject" }, s.subject || "(no message)"), lastLine ? h("span", { class: "dim mono snap-line" }, lastLine) : null),
+    snapshotBadge(s),
+    url ? h("a", { href: url, target: "_blank", rel: "noreferrer", class: "mono snap-url" }, url.replace(/^https?:\/\//, "")) : null,
+    h(
+      "span",
+      { class: "snap-actions" },
+      live
+        ? btn("Stop", async (ev) => {
+            const button = ev.currentTarget;
+            await busy(button, "Stopping…", () => api("/api/dev/stop", { method: "POST", body: { dir: s.dir } }));
+            setTimeout(onChange, 600);
+          }, { small: true, iconName: "stop", name: `Stop ${s.name}` })
+        : busyJob
+          ? null
+          : btn("Run", async (ev) => {
+              const button = ev.currentTarget;
+              const r = await busy(button, "Starting…", () => api("/api/snapshots/run", { method: "POST", body: { dir: s.projectDir, hash: s.hash } }));
+              if (r) onChange();
+            }, { small: true, kind: "primary", iconName: "play", name: `Run ${s.name}` }),
+      busyJob
+        ? null
+        : btn("Remove", async (ev) => {
+            if (await removeSnapshotFlow(s, ev.currentTarget)) onChange();
+          }, { small: true, kind: "danger-ghost", iconName: "cleanup", name: `Remove ${s.name}` }),
+    ),
+    s.job?.error ? h("p", { class: "snap-error" }, s.job.error) : null,
+  );
+}
+
 function gitPage(root) {
   const fromLink = new URLSearchParams(location.hash.split("?")[1] ?? "").get("dir");
   let dir = fromLink || pref("gitDir", "");
@@ -2877,6 +3128,11 @@ function gitPage(root) {
   let historyList = null;
   let rebase = null; // the history being edited: { from, steps }
   let stopped = false;
+  // Visual diffs: { on, browser, target, capturing, last, folder, commits }, and each commit's entry by hash.
+  let visual = null;
+  let visualSig = "";
+  let visualBy = new Map();
+  const visualBar = h("div", { class: "visual-bar", "aria-live": "polite" });
   const drafts = gitDrafts;
 
   const live = h("p", { class: "visually-hidden", "aria-live": "polite" });
@@ -2897,6 +3153,26 @@ function gitPage(root) {
   const branchesBody = h("div", { class: "git-branches" });
   const history = h("div", { class: "card graph-card" }, loadingView("Reading the history…"));
   const undoBody = h("div", { class: "git-undo-body" });
+
+  // Run any commit: find one, then run the app as it was there, next to your own dev server.
+  let snapshots = []; // this project's snapshots, with their dev servers and set-up jobs
+  let snapSig = "";
+  let snapTimer = 0;
+  let searchList = null; // the last search's commits
+  let searchTimer = 0;
+  let searchSeq = 0;
+  const snapBody = h("ul", { class: "snap-list", "aria-label": "Snapshots of this project", "aria-live": "polite" });
+  const searchResults = h("div", { class: "commit-search-results" });
+  const commitSearch = h("input", {
+    class: "input commit-search-input",
+    type: "search",
+    placeholder: "Search commits: message, hash, author or file",
+    "aria-label": "Search commits: message, hash, author or file",
+    oninput: () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => runSearch(), 300);
+    },
+  });
 
   const columns = { changes: makeColumn("changes"), staged: makeColumn("staged") };
   const bin = h("div", { class: "git-bin", "aria-hidden": "true" }, icon("cleanup"), "Drop here to discard the changes");
@@ -2951,6 +3227,7 @@ function gitPage(root) {
   };
   append(
     dock,
+    dockZone("Run this commit", "play", "Run the app as it was at this commit, next to your own dev server", (d) => runCommit(d.hash)),
     dockZone("Revert", "refresh", "A new commit that undoes this one", (d) => act("revert", { hash: d.hash })),
     dockZone("Copy onto this branch", "copy", "Cherry-pick it onto the branch you're on", (d) => act("cherry-pick", { hash: d.hash })),
     dockZone("New branch here", "git", "Start a branch at this commit", (d) => newBranchAt(d.hash)),
@@ -2975,8 +3252,15 @@ function gitPage(root) {
     rebasePanel,
     h(
       "section",
+      { class: "section", "aria-labelledby": "git-run-title" },
+      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-run-title" }, "Run any commit"), h("p", { class: "dim git-section-hint" }, "The app as it was, beside yours, in its own folder: your working copy isn't touched.")),
+      h("div", { class: "card commit-search" }, h("label", { class: "commit-search-field" }, icon("log"), commitSearch), snapBody, searchResults),
+    ),
+    h(
+      "section",
       { class: "section", "aria-labelledby": "git-history-title" },
       h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-history-title" }, "History"), h("p", { class: "dim git-section-hint" }, "Drag a commit to revert, copy, branch, tag, edit or go back to it.")),
+      visualBar,
       history,
     ),
     h(
@@ -3686,6 +3970,7 @@ function gitPage(root) {
     amendBox.checked = false;
     drafts.delete(dir);
     newCommit = r.hash;
+    if (r.visual) void loadVisual();
     say(`${amend ? "Amended" : "Committed"} ${r.short}: ${r.subject}`);
     // A commit stays on this computer: pushing is a separate step, at the top or by dragging the branch.
     toast(`${amend ? "Amended" : "Committed"} ${r.short}: ${r.subject}.${refs?.remotes.length ? " It's only on this computer until you push." : ""}`);
@@ -4152,11 +4437,18 @@ function gitPage(root) {
       }
       return pill;
     });
+    const look = visualBy.get(c.hash);
     const row = h(
       "button",
       { type: "button", class: "graph-row", "aria-expanded": String(isOpen), onclick: () => toggleCommit(c, lanes) },
-      graphCell(c.row, lanes, { merge: c.parents.length > 1, author: c.author, head: isHead }),
-      h("span", { class: "graph-text" }, pills.length ? h("span", { class: "graph-refs" }, pills) : null, h("span", { class: "graph-subject" }, c.subject || "(no message)")),
+      graphCell(c.row, lanes, { merge: c.parents.length > 1, author: c.author, head: isHead, look: look?.changed === true }),
+      h(
+        "span",
+        { class: "graph-text" },
+        look ? visualThumb(look) : null,
+        pills.length ? h("span", { class: "graph-refs" }, pills) : null,
+        h("span", { class: "graph-subject" }, c.subject || "(no message)"),
+      ),
       h("span", { class: "graph-author" }, c.author),
       h("span", { class: "graph-hash mono" }, c.short),
       h("time", { class: "graph-time", datetime: new Date(c.at).toISOString(), title: new Date(c.at).toLocaleString() }, relativeTime(c.at)),
@@ -4211,6 +4503,7 @@ function gitPage(root) {
           h(
             "div",
             { class: "toolbar git-commit-actions" },
+            btn("Run this commit", (ev) => runCommit(d.hash, ev.currentTarget), { small: true, kind: "primary", iconName: "play", title: "Run the app as it was at this commit, next to your own dev server" }),
             btn("Revert", () => act("revert", { hash: d.hash }), { small: true, iconName: "refresh", title: "A new commit that undoes this one" }),
             btn(`Copy onto ${refs?.current ?? "this branch"}`, () => act("cherry-pick", { hash: d.hash }), { small: true, iconName: "copy", disabled: !onBranch }),
             btn("New branch here…", () => newBranchAt(d.hash), { small: true, kind: "ghost", iconName: "git" }),
@@ -4218,6 +4511,7 @@ function gitPage(root) {
             btn("Edit history from here…", () => openRebase(d.hash), { small: true, kind: "ghost", iconName: "log", disabled: !onBranch }),
             btn("Go back here…", () => goBackTo(d.hash, d.subject), { small: true, kind: "ghost", iconName: "left" }),
           ),
+          visualBy.has(c.hash) ? visualViewer(visualBy.get(c.hash)) : null,
           d.files.length ? liveDetail(diffBlock(d.patch, { truncated: d.truncated })) : h("p", { class: "dim" }, "No file changes."),
         );
       } catch (err) {
@@ -4225,6 +4519,357 @@ function gitPage(root) {
       }
     })();
     return box;
+  }
+
+  // ---------------------------------------------------------------- visual diff
+
+  const visualImages = new Map(); // "commit|name|kind|at" → Promise of a data URL
+
+  /** One capture's picture, fetched once: the dashboard reads it from ~/.dx/visual by commit and capture name. */
+  function visualImage(commit, name, kind = "shot") {
+    const k = `${commit}|${name ?? ""}|${kind}|${visualBy.get(commit)?.at ?? ""}`;
+    if (!visualImages.has(k)) {
+      if (visualImages.size > 80) visualImages.delete(visualImages.keys().next().value);
+      const p = api(`/api/visual/image?dir=${encodeURIComponent(dir)}&commit=${commit}&kind=${kind}${name ? `&name=${encodeURIComponent(name)}` : ""}`).then((r) => r.image);
+      p.catch(() => visualImages.delete(k));
+      visualImages.set(k, p);
+    }
+    return visualImages.get(k);
+  }
+
+  /** An <img> that fills in when its picture arrives. */
+  function visualImg(commit, name, kind, alt, cls = "visual-img") {
+    const img = h("img", { class: cls, alt, decoding: "async", draggable: "false" });
+    visualImage(commit, name, kind).then(
+      (src) => (img.src = src),
+      () => img.classList.add("visual-img-missing"),
+    );
+    return img;
+  }
+
+  function visualSummary(e) {
+    const ok = e.captures.filter((c) => !c.error);
+    if (!ok.length) return "No page could be captured";
+    if (e.changed === undefined) return `${plural(ok.length, "page")} captured; nothing to compare with yet`;
+    if (!e.changed) return `Looks the same as ${e.against.slice(0, 7)}`;
+    const top = ok.filter((c) => c.changed).sort((a, b) => (b.ratio ?? 0) - (a.ratio ?? 0))[0];
+    return `On ${top.path}: ${top.text.charAt(0).toLowerCase()}${top.text.slice(1)}`;
+  }
+
+  /** The small picture in a commit's row: the first page as it looked. */
+  function visualThumb(e) {
+    const title = visualSummary(e);
+    const cls = `graph-thumb${e.changed ? " changed" : ""}`;
+    if (!e.thumb) return h("span", { class: `${cls} graph-thumb-icon`, title }, icon("image"), h("span", { class: "visually-hidden" }, title));
+    const img = visualImg(e.commit, null, "thumb", title, cls);
+    img.title = title;
+    return img;
+  }
+
+  function renderVisualBar() {
+    if (!visual) return visualBar.replaceChildren();
+    const note = visual.capturing
+      ? "Screenshotting the pages you use most…"
+      : !visual.browser
+        ? "Visual diffs need Chrome, Edge, Chromium or Brave on this computer."
+        : !visual.target
+          ? "Start the dev server from dx to capture how the app looks."
+          : !visual.on
+            ? "Captures after each commit are off in Health & settings."
+            : visual.last
+              ? `Last capture: ${visual.last.message}`
+              : "Each commit is captured: the pages you use most, compared with the commit before.";
+    put(
+      visualBar,
+      h("span", { class: "dim visual-note" }, visual.capturing ? h("span", { class: "spinner", "aria-hidden": "true" }) : icon("image"), note),
+      btn("Capture now", (ev) => captureNow(ev.currentTarget), {
+        small: true,
+        kind: "ghost",
+        disabled: visual.capturing || !visual.target || !visual.browser,
+        title: "Screenshot the pages you use most, as the dev server shows them now, and compare them with the commit before's",
+      }),
+    );
+  }
+
+  async function captureNow(button) {
+    const r = await busy(button, "Starting…", () => api("/api/visual/capture", { method: "POST", body: { dir } }));
+    if (!r) return;
+    say("Capturing how the app looks…");
+    await loadVisual();
+  }
+
+  async function loadVisual() {
+    const forDir = dir;
+    let v;
+    try {
+      v = await api(`/api/visual?dir=${encodeURIComponent(dir)}`);
+    } catch {
+      return; // visual diffs are extra: the rest of the page works without them
+    }
+    if (forDir !== dir || stopped) return;
+    const wasCapturing = visual?.capturing;
+    visual = v;
+    renderVisualBar();
+    if (wasCapturing && !v.capturing && v.last) {
+      say(`Capture done: ${v.last.message}`);
+      toast(v.last.ok ? `How it looks, ${v.last.message}` : `Couldn't capture how it looks: ${v.last.message}`, v.last.ok ? "ok" : "error");
+    }
+    const sig = v.commits.map((c) => `${c.commit}:${c.at}`).join(",");
+    if (sig === visualSig) return;
+    visualSig = sig;
+    const before = visualBy;
+    visualBy = new Map(v.commits.map((c) => [c.commit, c]));
+    if (!graph?.commits.length || !historyList) return;
+    // Only the rows whose captures changed are drawn again.
+    const lanes = Math.min(MAX_LANES, Math.max(1, graph.width));
+    graph.commits.forEach((c, i) => {
+      if (before.get(c.hash)?.at === visualBy.get(c.hash)?.at) return;
+      historyList.querySelector(`[data-hash="${c.hash}"]`)?.replaceWith(graphRow(c, lanes, i));
+    });
+  }
+
+  /** Before and after for one commit: a wipe, side by side, or the changed pixels; Raw is the numbers and files. */
+  function visualViewer(e) {
+    let pick = (e.captures.find((c) => c.changed) ?? e.captures.find((c) => !c.error) ?? e.captures[0])?.name;
+    let view = pref("visualView", "wipe");
+    const body = h("div", { class: "visual-body" });
+    const section = h(
+      "section",
+      {
+        class: "visual",
+        "aria-label": "How it looks",
+        // Wiping and reading here shouldn't start dragging the commit.
+        onpointerdown: () => {
+          const li = section.closest(".graph-item");
+          if (!li) return;
+          li.draggable = false;
+          window.addEventListener("pointerup", () => (li.draggable = true), { once: true });
+        },
+      },
+      h("div", { class: "visual-head" }, h("strong", null, "How it looks"), h("span", { class: "dim" }, visualSummary(e))),
+      body,
+    );
+    const draw = () => {
+      const c = e.captures.find((x) => x.name === pick) ?? e.captures[0];
+      put(
+        body,
+        e.captures.length > 1
+          ? segmented("Page", e.captures.map((x) => [x.name, `${x.path}${x.viewport === "mobile" ? " (phone)" : ""}`]), pick, (v) => {
+              pick = v;
+              draw();
+            })
+          : null,
+        liveDetail((mode) =>
+          mode === "raw"
+            ? visualRaw(e, c)
+            : visualCapture(e, c, view, (v) => {
+                view = v;
+                setPref("visualView", v);
+                draw();
+              }),
+        ),
+      );
+    };
+    draw();
+    return section;
+  }
+
+  function visualCapture(e, c, view, setView) {
+    if (c.error) return h("p", { class: "visual-summary" }, icon("warn"), c.text);
+    const at = (hash) => h("span", { class: "mono" }, hash.slice(0, 7));
+    const summary = h(
+      "p",
+      { class: `visual-summary${c.changed ? " changed" : ""}` },
+      icon(c.changed ? "warn" : c.changed === false ? "check" : "image"),
+      h("span", null, c.text),
+      e.against && c.changed !== undefined ? h("span", { class: "dim" }, " · against ", at(e.against)) : null,
+    );
+    const after = (cls) => visualImg(e.commit, c.name, "shot", `${c.path} at ${e.commit.slice(0, 7)}`, cls);
+    if (!c.changed) return [summary, h("div", { class: "visual-frame" }, after())];
+    const before = (cls) => visualImg(e.against, c.name, "shot", `${c.path} at ${e.against.slice(0, 7)}`, cls);
+    const boxEl = () => {
+      if (!c.box) return null;
+      const b = h("div", { class: "visual-box", "aria-hidden": "true" });
+      b.style.left = `${(c.box.x / c.width) * 100}%`;
+      b.style.top = `${(c.box.y / c.height) * 100}%`;
+      b.style.width = `${(c.box.width / c.width) * 100}%`;
+      b.style.height = `${(c.box.height / c.height) * 100}%`;
+      return b;
+    };
+    const fig = (label, hash, img) => h("figure", { class: "visual-fig" }, h("div", { class: "visual-frame" }, img), h("figcaption", { class: "dim" }, label, " · ", at(hash)));
+    let stage;
+    if (view === "side") {
+      stage = h("div", { class: "visual-side" }, fig("Before", e.against, before()), fig("After", e.commit, after()));
+    } else if (view === "diff") {
+      stage = h("div", { class: "visual-frame" }, visualImg(e.commit, c.name, "diff", "The changed pixels in orange, over a faded copy of the page"), boxEl());
+    } else {
+      const top = after("visual-img visual-wipe-top");
+      const handle = h("div", { class: "visual-wipe-handle", "aria-hidden": "true" });
+      const set = (v) => {
+        top.style.clipPath = `inset(0 0 0 ${v}%)`;
+        handle.style.left = `${v}%`;
+      };
+      const range = h("input", { type: "range", min: "0", max: "100", value: "50", class: "visual-wipe-range", "aria-label": "Wipe between before (left) and after (right)", oninput: () => set(range.value) });
+      set(50);
+      stage = h(
+        "div",
+        { class: "visual-frame visual-wipe" },
+        before(),
+        top,
+        boxEl(),
+        range,
+        handle,
+        h("span", { class: "visual-tag visual-tag-before" }, "Before ", at(e.against)),
+        h("span", { class: "visual-tag visual-tag-after" }, "After ", at(e.commit)),
+      );
+    }
+    return [
+      summary,
+      segmented("Compare as", [["wipe", "Wipe"], ["side", "Side by side"], ["diff", "Changes"]], ["wipe", "side", "diff"].includes(view) ? view : "wipe", setView),
+      stage,
+    ];
+  }
+
+  function visualRaw(e, c) {
+    const folder = visual?.folder ?? "";
+    const sep = folder.includes("\\") ? "\\" : "/";
+    const file = (hash, suffix = "") => [folder, hash, `${c.name}${suffix}.png`].join(sep);
+    const text = JSON.stringify(
+      {
+        commit: e.commit,
+        against: e.against ?? null,
+        capturedAt: e.at,
+        reason: e.reason ?? null,
+        browser: e.browser ?? null,
+        page: `${e.baseUrl ?? ""}${c.path}`,
+        viewport: { name: c.viewport, width: c.width, height: c.height },
+        status: c.status ?? null,
+        changed: c.changed ?? null,
+        ratio: c.ratio ?? null,
+        box: c.box ?? null,
+        label: c.label ?? null,
+        error: c.error ?? null,
+        files: {
+          after: file(e.commit),
+          before: e.against && c.changed !== undefined ? file(e.against) : null,
+          diff: c.diff ? file(e.commit, ".diff") : null,
+        },
+      },
+      null,
+      2,
+    );
+    return h("section", { class: "detail-section" }, h("div", { class: "detail-head" }, h("strong", null, "The capture"), copyButton(text)), h("pre", { class: "log-snippet raw-text" }, text));
+  }
+
+  // ---------------------------------------------------------------- run any commit
+
+  async function runSearch() {
+    const q = commitSearch.value.trim();
+    const seq = ++searchSeq;
+    const forDir = dir;
+    if (!q) {
+      searchList = null;
+      return searchResults.replaceChildren();
+    }
+    try {
+      const list = await api(`/api/git/search?dir=${encodeURIComponent(dir)}&q=${encodeURIComponent(q)}&limit=30`);
+      if (seq !== searchSeq || forDir !== dir || stopped) return;
+      searchList = { q, list };
+      renderSearch();
+    } catch (err) {
+      if (seq === searchSeq) searchResults.replaceChildren(errorView(err));
+    }
+  }
+
+  function renderSearch() {
+    if (!searchList) return searchResults.replaceChildren();
+    const { q, list } = searchList;
+    if (!list.length) return put(searchResults, h("p", { class: "dim commit-search-empty" }, `No commit matches "${q}".`));
+    put(searchResults, h("ul", { class: "commit-results", "aria-label": `Commits matching ${q}` }, list.map(resultRow)));
+  }
+
+  function resultRow(c) {
+    const snap = snapshots.find((s) => s.hash === c.hash);
+    const files = c.files ?? [];
+    return h(
+      "li",
+      { class: "commit-result" },
+      h("span", { class: "graph-hash mono" }, c.short),
+      h(
+        "span",
+        { class: "commit-result-text" },
+        h("span", { class: "commit-result-subject" }, c.subject || "(no message)"),
+        files.length ? h("span", { class: "dim mono commit-result-files", title: files.join("\n") }, files.slice(0, 2).join(", "), files.length > 2 ? ` +${files.length - 2}` : "") : null,
+      ),
+      h("span", { class: "dim commit-result-meta" }, `${c.author} · `, h("time", { datetime: new Date(c.at).toISOString(), title: new Date(c.at).toLocaleString() }, relativeTime(c.at))),
+      h(
+        "span",
+        { class: "commit-result-actions" },
+        snap
+          ? snapshotBadge(snap)
+          : btn("Run", (ev) => runCommit(c.hash, ev.currentTarget), { small: true, kind: "primary", iconName: "play", title: "Run this commit: the app as it was, next to your own dev server", name: `Run commit ${c.short}` }),
+        btn("Show", () => showCommit(c.hash), { small: true, kind: "ghost", title: "Open it in the history below" }),
+        actionMenu(
+          "",
+          [
+            ["Revert", "refresh", () => act("revert", { hash: c.hash })],
+            [`Copy onto ${refs?.current ?? "this branch"}`, "copy", () => act("cherry-pick", { hash: c.hash }), !refs?.current],
+            ["New branch here…", "git", () => newBranchAt(c.hash)],
+            ["Tag…", "tag", () => newTagAt(c.hash)],
+            ["Edit history from here…", "log", () => openRebase(c.hash), !refs?.current],
+            ["Go back here…", "left", () => goBackTo(c.hash, c.subject)],
+          ],
+          { name: `More for commit ${c.short}` },
+        ),
+      ),
+    );
+  }
+
+  /** Opens a commit in the history and brings it into view. */
+  function showCommit(hash) {
+    const index = graph?.commits.findIndex((c) => c.hash === hash) ?? -1;
+    if (index < 0) return toast("That commit is older than the ones shown. Use Show older commits below the history.");
+    const lanes = Math.min(MAX_LANES, Math.max(1, graph.width));
+    if (openCommit !== hash) toggleCommit(graph.commits[index], lanes);
+    historyList?.querySelector(`[data-hash="${hash}"]`)?.scrollIntoView({ block: "center", behavior: reducedMotion.matches ? "auto" : "smooth" });
+  }
+
+  async function runCommit(hash, button) {
+    const run = () => api("/api/snapshots/run", { method: "POST", body: { dir, hash } });
+    let r;
+    if (button) r = await busy(button, "Starting…", run);
+    else r = await run().catch((err) => void toast(err.message, "error"));
+    if (!r) return;
+    const text = r.job ? `Setting up ${r.name}: ${r.job.step.toLowerCase()}…` : `${r.name} is running.`;
+    toast(text);
+    say(text);
+    snapSig = "";
+    await loadSnapshots();
+  }
+
+  async function loadSnapshots() {
+    const forDir = dir;
+    clearTimeout(snapTimer);
+    let list;
+    try {
+      list = await api(`/api/snapshots?dir=${encodeURIComponent(dir)}`);
+    } catch {
+      return;
+    }
+    if (forDir !== dir || stopped) return;
+    const sig = JSON.stringify(list);
+    if (sig !== snapSig) {
+      snapSig = sig;
+      snapshots = list;
+      renderSnapshots();
+      if (searchList) renderSearch();
+    }
+    // Being set up or starting: follow it closely.
+    if (list.some(snapshotPending)) snapTimer = setTimeout(loadSnapshots, 1000);
+  }
+
+  function renderSnapshots() {
+    put(snapBody, snapshots.map((s) => snapshotRow(s, { onChange: () => ((snapSig = ""), loadSnapshots()) })));
   }
 
   // ---------------------------------------------------------------- loading
@@ -4304,9 +4949,21 @@ function gitPage(root) {
       history.replaceChildren(loadingView("Reading the history…"));
       renderBranches();
       renderUndo();
+      snapshots = [];
+      snapSig = "";
+      searchList = null;
+      snapBody.replaceChildren();
+      searchResults.replaceChildren();
+      if (commitSearch.value.trim()) void runSearch();
     }
     statusSig = "";
-    await Promise.all([loadStatus(), loadGraph(), loadRefs(), loadUndo()]);
+    if (!keep) {
+      visual = null;
+      visualSig = "";
+      visualBy = new Map();
+      visualBar.replaceChildren();
+    }
+    await Promise.all([loadStatus(), loadGraph(), loadRefs(), loadUndo(), loadSnapshots(), loadVisual()]);
     if (keep && openFile) refreshOpenFile();
   }
 
@@ -4334,12 +4991,16 @@ function gitPage(root) {
   // Changes made in the editor or a terminal show up on their own; never in the middle of a drag.
   const timer = setInterval(() => {
     if (!document.hidden && !drag && !working && status) loadStatus({ quiet: true });
+    if (!document.hidden && !drag && status) void loadSnapshots();
+    if (!document.hidden && !drag && status) void loadVisual();
   }, 4000);
   const onFocus = () => !drag && !working && status && (loadStatus({ quiet: true }), loadRefs());
   window.addEventListener("focus", onFocus);
   return () => {
     stopped = true;
     clearInterval(timer);
+    clearTimeout(snapTimer);
+    clearTimeout(searchTimer);
     window.removeEventListener("focus", onFocus);
     drafts.set(dir, message.value);
   };
@@ -4363,27 +5024,126 @@ const ACTIVITY_VIEWS = [
   ["console", "Console"],
 ];
 
+/** An environment's badge: production stands out, so a click there isn't mistaken for one on staging. */
+function envBadge(env) {
+  if (!env || env === "local") return null;
+  return h("span", { class: `badge ${env === "production" ? "badge-warn" : "badge-accent"}`, title: `Recorded on a ${env} site in the dx browser` }, env);
+}
+
+/** The address to open a recorded site at: http for this computer, https elsewhere; none for a wildcard. */
+function siteUrl(host) {
+  if (host.startsWith("*.")) return null;
+  return /^(localhost|127(\.\d{1,3}){3}|\[::1\]|[^:]+\.localhost)(:\d+)?$/i.test(host) ? `http://${host}/` : `https://${host}/`;
+}
+
 function activityPage(root) {
-  let dir = pref("activityDir", "");
+  // What's shown: everything (""), one project ("p:<dir>") or a recorded site of its own ("s:<host>").
+  let sel = pref("activitySel", null) ?? (pref("activityDir", "") ? `p:${pref("activityDir", "")}` : "");
+  // Linked from the AI lane: #/activity?dir=…&who=ai
+  const linked = new URLSearchParams(location.hash.split("?")[1] ?? "");
+  if (linked.get("dir")) sel = `p:${linked.get("dir")}`;
+  // "By AI": only the agent's page checks, with its other calls through dx in between.
+  let who = (linked.get("who") ?? pref("activityWho", "")) === "ai" ? "ai" : "";
+  if (linked.has("dir") || linked.has("who")) {
+    // Remembered like a choice made here, and the address goes back to plain #/activity.
+    setPref("activitySel", sel);
+    setPref("activityWho", who);
+    history.replaceState(null, "", "#/activity");
+  }
+  let aiRuns = [];
+  let aiSig = "";
+  let dir = sel.startsWith("p:") ? sel.slice(2) : "";
+  let siteKey = sel.startsWith("s:") ? sel.slice(2) : "";
   let view = pref("activityView", "sessions");
   if (!ACTIVITY_VIEWS.some(([v]) => v === view)) view = "sessions";
   let since = pref("activitySince", "today");
+  let envFilter = "";
   let search = "";
   let events = [];
+  let shown = []; // events after the environment filter
   let lastId = 0;
   let projects = [];
+  let overviewData = { entries: [], sites: [], browser: { open: false, found: true, recording: true } };
+  let overviewAt = 0;
   let stopped = false;
   let searchTimer = 0;
   const replays = new Map(); // visit key -> what its last replay found
 
-  const holder = h("div", { class: "card" }, loadingView("Reading the history…"));
+  // Mock mode for the project shown: its set (without whole bodies) and the endpoint being edited.
+  let mocks = null;
+  let mockEdit = null; // { id, el }
+  const mockHolder = h("div", { class: "mock-holder" });
+
+  // A bug bundle someone sent, opened from a file: shown next to what replaying it finds now.
+  let bundleState = null; // { bundle, name, dir, use, job }
+  const bundleHolder = h("div", { class: "bundle-holder" });
+  const bundleInput = h("input", {
+    type: "file",
+    accept: ".json,application/json",
+    hidden: true,
+    "aria-label": "Bug bundle file",
+    onchange: () => {
+      const f = bundleInput.files?.[0];
+      bundleInput.value = "";
+      if (f) void openBundleFile(f);
+    },
+  });
+  const openBundle = btn("Open a bug bundle", () => bundleInput.click(), { iconName: "folder", title: "Open a .dxbug.json file a teammate sent and replay it on your own dev server. You can also drop the file on this page." });
+  const hasFiles = (ev) => [...(ev.dataTransfer?.types ?? [])].includes("Files");
+  const onDragOver = (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    root.classList.add("drop-active");
+  };
+  const onDragLeave = (ev) => {
+    if (!ev.relatedTarget || !root.contains(ev.relatedTarget)) root.classList.remove("drop-active");
+  };
+  const onDrop = (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    root.classList.remove("drop-active");
+    const f = ev.dataTransfer.files?.[0];
+    if (f) void openBundleFile(f);
+  };
+  root.addEventListener("dragover", onDragOver);
+  root.addEventListener("dragleave", onDragLeave);
+  root.addEventListener("drop", onDrop);
+  const commits = new Map(); // "dir|hash" -> the commit, null when the project doesn't have it, or "…" while asking
+
+  // Time travel: a moment among the events shown, what happened around it, and the commit HEAD was on then.
+  let moment = null; // ms, or null when off
+  let ttTimer = 0;
+  let ttSeq = 0;
+  let ttFound = null; // { at, dir, name, commit }
+  const ttRange = h("input", {
+    type: "range",
+    class: "tt-range",
+    min: "0",
+    max: "1000",
+    step: "1",
+    value: "1000",
+    "aria-label": "Time travel: pick a moment in the history",
+    oninput: () => scrub(false),
+    onchange: () => scrub(true),
+  });
+  const ttTime = h("span", { class: "tt-time mono", "aria-live": "polite" }, "Drag to a moment");
+  const ttInfo = h("span", { class: "tt-info" });
+  const ttOff = btn("", () => leaveMoment(), { small: true, kind: "ghost", iconName: "x", name: "Leave time travel" });
+  ttOff.hidden = true;
+  const ttBar = h("div", { class: "card tt", hidden: true }, h("span", { class: "tt-label" }, icon("activity"), "Time travel"), ttRange, ttTime, ttInfo, ttOff);
+
+  const holder = h("div", { class: "card activity-compact" }, loadingView("Reading the history…"));
   const hint = h("div", { class: "section", "aria-live": "polite" });
-  const overview = h("div", { class: "activity-projects" });
+  const navList = h("ul", { class: "activity-nav-list", "aria-label": "Projects and sites" });
+  const browserLine = h("div", { class: "activity-browser", "aria-live": "polite" });
+  const envHolder = h("div", { class: "activity-envs" });
+  let envKey = "";
   const viewPicker = segmented("View", ACTIVITY_VIEWS, view, (v) => ((view = v), setPref("activityView", v), render()));
   viewPicker.classList.add("segmented-wrap");
   const opened = new Set(); // API endpoints and errors opened, by key
   let openRows = new Set(); // single events opened, by id
-  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("activityDir", dir), load()) }, h("option", { value: "" }, "All projects"));
+  // Under 860px the list becomes this select.
+  const projectSelect = h("select", { class: "activity-nav-select", "aria-label": "Project or site", onchange: (e) => choose(e.target.value) });
   const searchInput = h("input", {
     class: "input input-wide",
     type: "search",
@@ -4398,31 +5158,279 @@ function activityPage(root) {
     "Clear history",
     async (ev) => {
       const button = ev.currentTarget;
-      const name = dir ? (projects.find((p) => p.dir === dir)?.name ?? "this project") : "every project";
+      const name = dir ? (projects.find((p) => p.dir === dir)?.name ?? "this project") : siteKey ? siteKey : "every project and site";
       const yes = await confirmDialog({ title: "Clear the history?", text: `This deletes the recorded requests, routes, clicks, console output and errors of ${name}. It can't be undone.`, confirm: "Clear history" });
       if (!yes) return;
-      const r = await busy(button, "Clearing…", () => api("/api/activity/clear", { method: "POST", body: dir ? { dir } : {} }));
+      const r = await busy(button, "Clearing…", () => api("/api/activity/clear", { method: "POST", body: dir ? { dir } : siteKey ? { site: siteKey } : {} }));
       if (!r) return;
       toast("History cleared");
       load();
     },
-    { kind: "danger-ghost", iconName: "cleanup" },
+    { kind: "danger-ghost", iconName: "cleanup", small: true },
+  );
+
+  // Record a site: its host, the project it belongs to, and which environment it is.
+  const siteForm = h("form", { class: "card card-pad site-form", hidden: true, onsubmit: (ev) => void addSite(ev) });
+  const hostInput = h("input", { class: "input", name: "host", required: true, placeholder: "staging.shop-website.dev", autocomplete: "off", spellcheck: "false" });
+  const siteProject = h("select", { class: "input", name: "project" }, h("option", { value: "" }, "No project"));
+  const envInput = h("input", { class: "input", name: "env", list: "activity-env-names", placeholder: "Guessed from the name", autocomplete: "off" });
+  const labelInput = h("input", { class: "input", name: "label", placeholder: "Optional", autocomplete: "off" });
+  append(
+    siteForm,
+    h("h2", { class: "site-form-title" }, "Record a site"),
+    h("p", { class: "dim" }, "The dx browser records this site like your local apps: requests and responses, routes, clicks, console and errors, with passwords and tokens masked. Nothing else you browse there is recorded."),
+    h(
+      "div",
+      { class: "form-grid" },
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Host"), hostInput, h("span", { class: "field-hint" }, "A name or name:port, no path. *.shop-website.dev for every subdomain.")),
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Project"), siteProject, h("span", { class: "field-hint" }, "Its activity shows under the project, next to your local runs.")),
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Environment"), envInput),
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Label"), labelInput),
+    ),
+    h("datalist", { id: "activity-env-names" }, ["staging", "production", "preview", "qa", "dev", "local"].map((v) => h("option", { value: v }))),
+    h("div", { class: "form-actions" }, btn("Record this site", null, { type: "submit", kind: "primary", iconName: "check" }), btn("Cancel", () => (siteForm.hidden = true), { kind: "ghost" })),
+  );
+
+  async function addSite(ev) {
+    ev.preventDefault();
+    const button = siteForm.querySelector("button[type=submit]");
+    const r = await busy(button, "Saving…", () =>
+      api("/api/sites/add", { method: "POST", body: { host: hostInput.value, dir: siteProject.value || undefined, env: envInput.value || undefined, label: labelInput.value || undefined } }),
+    );
+    if (!r) return;
+    siteForm.reset();
+    siteForm.hidden = true;
+    toast(`Recording ${r.host} (${r.env}) in the dx browser${r.projectName ? `, under ${r.projectName}` : ""}.`);
+    await loadOverview(true);
+  }
+
+  const openBrowser = btn("Open dx browser", (ev) => void browserOpen(ev.currentTarget), {
+    kind: "primary",
+    iconName: "external",
+    title: "A browser window with its own profile that records the sites you chose, and apps on this computer",
+  });
+  const recordSite = btn(
+    "Record a site",
+    () => {
+      siteForm.hidden = !siteForm.hidden;
+      if (!siteForm.hidden) hostInput.focus();
+    },
+    { iconName: "new", title: "Add a deployed site (staging, production) for the dx browser to record" },
   );
 
   append(
     root,
     pageHead(
       "Activity",
-      "What happened in your apps: each visit's steps, every API with its payloads, responses and times, errors and console output.",
-      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
-      segmented("Since", [["1h", "Last hour"], ["today", "Today"], ["7d", "7 days"]], since, (v) => ((since = v), setPref("activitySince", v), load())),
-      clear,
+      "What happened in your apps, here and deployed: each visit's steps, every API with its payloads and responses, errors and console output.",
+      openBrowser,
+      recordSite,
+      openBundle,
+      bundleInput,
     ),
-    overview,
-    h("div", { class: "card card-pad toolbar" }, viewPicker, searchInput),
-    hint,
-    holder,
+    siteForm,
+    h(
+      "div",
+      { class: "activity-layout" },
+      h(
+        "aside",
+        { class: "card activity-nav" },
+        browserLine,
+        h("label", { class: "field activity-nav-pick" }, h("span", { class: "visually-hidden" }, "Project or site"), projectSelect),
+        navList,
+      ),
+      h(
+        "div",
+        { class: "activity-main" },
+        h(
+          "div",
+          { class: "card card-pad toolbar activity-tools" },
+          viewPicker,
+          segmented("Since", [["1h", "Last hour"], ["today", "Today"], ["7d", "7 days"]], since, (v) => ((since = v), setPref("activitySince", v), load())),
+          segmented("Who", [["", "Everyone"], ["ai", "By AI"]], who, (v) => ((who = v), setPref("activityWho", v), void loadAiRuns().then(render))),
+          envHolder,
+          searchInput,
+          clear,
+        ),
+        bundleHolder,
+        mockHolder,
+        ttBar,
+        hint,
+        holder,
+      ),
+    ),
   );
+
+  function choose(value) {
+    sel = value;
+    dir = sel.startsWith("p:") ? sel.slice(2) : "";
+    siteKey = sel.startsWith("s:") ? sel.slice(2) : "";
+    envFilter = "";
+    envKey = "";
+    aiSig = "";
+    setPref("activitySel", sel);
+    setPref("activityDir", dir);
+    if (moment !== null) leaveMoment();
+    mockEdit = null;
+    renderNav();
+    load();
+    void loadMocks();
+  }
+
+  async function browserOpen(button, url) {
+    const r = await busy(button, "Opening…", () => api("/api/browser/open", { method: "POST", body: url ? { url } : {} }));
+    if (!r) return;
+    overviewData.browser = r;
+    renderBrowserLine();
+    toast(url ? `Opened ${new URL(url).host} in the dx browser` : "The dx browser is open. Sign-ins there stay in its own profile.");
+  }
+
+  async function browserClose(button) {
+    const r = await busy(button, "Closing…", () => api("/api/browser/close", { method: "POST" }));
+    if (!r) return;
+    overviewData.browser = r;
+    renderBrowserLine();
+  }
+
+  async function removeSite(button, s) {
+    const yes = await confirmDialog({
+      title: `Stop recording ${s.host}?`,
+      text: "The dx browser stops recording it. What was recorded stays in the history until you clear it or it gets old.",
+      confirm: "Stop recording",
+      danger: false,
+    });
+    if (!yes) return;
+    const r = await busy(button, "Removing…", () => api("/api/sites/remove", { method: "POST", body: { host: s.host } }));
+    if (!r) return;
+    toast(`Stopped recording ${s.host}`);
+    await loadOverview(true);
+  }
+
+  async function loadOverview(force = false) {
+    if (!force && Date.now() - overviewAt < 5000) return;
+    overviewAt = Date.now();
+    try {
+      overviewData = await api(`/api/activity/overview?since=${encodeURIComponent(since)}`);
+      if (!stopped) renderNav();
+    } catch {
+      // the list keeps what it had
+    }
+  }
+
+  function renderBrowserLine() {
+    const b = overviewData.browser ?? {};
+    openBrowser.hidden = !!b.open;
+    if (b.open) {
+      browserLine.replaceChildren(
+        h("span", { class: "activity-browser-state" }, h("span", { class: "dot", "aria-hidden": "true" }), `dx browser open${b.browser ? ` (${b.browser}` : ""}${b.pages !== undefined ? `, ${plural(b.pages, "tab")})` : b.browser ? ")" : ""}`),
+        btn("Close", (ev) => void browserClose(ev.currentTarget), { small: true, kind: "ghost", iconName: "x", name: "Close the dx browser" }),
+      );
+    } else if (!b.found) {
+      browserLine.replaceChildren(h("p", { class: "dim" }, "The dx browser needs Chrome, Edge, Chromium or Brave. dx doctor says how to install one."));
+    } else browserLine.replaceChildren();
+    if (b.recording === false) browserLine.append(h("p", { class: "dim" }, "The history is off, so nothing is recorded. Turn it on in Health & settings."));
+  }
+
+  /** The list on the left: everything, each project (with the sites linked to it), and sites of their own. */
+  function renderNav() {
+    renderBrowserLine();
+    const entries = overviewData.entries ?? [];
+    const sites = overviewData.sites ?? [];
+    const norm = (d) => d.toLowerCase();
+    const byDir = new Map();
+    const ensure = (d, name) => byDir.get(norm(d)) ?? byDir.set(norm(d), { dir: d, project: name, events: 0, problems: 0, last: null, envs: {}, sitesSeen: {}, linked: [] }).get(norm(d));
+    for (const e of entries) Object.assign(ensure(e.dir, e.project), { project: e.project, events: e.events, problems: e.problems, last: e.last, envs: e.envs, sitesSeen: e.sites });
+    for (const s of sites) {
+      if (s.project) ensure(s.project, s.projectName ?? s.project).linked.push(s);
+      else ensure(`site:${s.host}`, s.label || s.host).own = s;
+    }
+    if (dir && !byDir.has(norm(dir))) ensure(dir, projects.find((p) => p.dir === dir)?.name ?? dir);
+    if (siteKey && !byDir.has(norm(`site:${siteKey}`))) ensure(`site:${siteKey}`, siteKey);
+    const all = [...byDir.values()];
+    const local = all.filter((x) => !x.dir.startsWith("site:")).sort((a, b) => (Date.parse(b.last ?? 0) || 0) - (Date.parse(a.last ?? 0) || 0) || a.project.localeCompare(b.project));
+    const own = all.filter((x) => x.dir.startsWith("site:")).sort((a, b) => (Date.parse(b.last ?? 0) || 0) - (Date.parse(a.last ?? 0) || 0));
+    const total = entries.reduce((n, e) => n + e.events, 0);
+    const totalProblems = entries.reduce((n, e) => n + e.problems, 0);
+
+    const counts = (events, problems) =>
+      h("span", { class: "activity-nav-counts" }, h("span", { class: "dim" }, String(events)), problems ? h("span", { class: "badge badge-danger", title: plural(problems, "problem") }, String(problems)) : null);
+    const item = (value, title, events, problems, extra = [], sub = null) =>
+      h(
+        "li",
+        null,
+        h(
+          "button",
+          { type: "button", class: "activity-nav-item", "aria-current": sel === value ? "true" : undefined, onclick: () => choose(value), title: `Show ${title}` },
+          h("span", { class: "activity-nav-name" }, title),
+          extra,
+          counts(events, problems),
+        ),
+        sub,
+      );
+    const siteLine = (s, seen) =>
+      h(
+        "li",
+        { class: "activity-site" },
+        envBadge(s.env) ?? h("span", { class: "badge" }, s.env ?? "local"),
+        h("span", { class: "mono activity-site-host", title: s.label ? `${s.label} (${s.host})` : s.host }, s.label || s.host),
+        seen ? counts(seen.events, seen.problems) : h("span", { class: "dim" }, "0"),
+        siteUrl(s.host) ? btn("", (ev) => void browserOpen(ev.currentTarget, siteUrl(s.host)), { small: true, kind: "ghost", iconName: "external", name: `Open ${s.host} in the dx browser`, title: "Open in the dx browser" }) : null,
+        btn("", (ev) => void removeSite(ev.currentTarget, s), { small: true, kind: "ghost", iconName: "x", name: `Stop recording ${s.host}`, title: "Stop recording this site" }),
+      );
+    const seenFor = (x, host) => {
+      const list = Object.entries(x.sitesSeen ?? {}).filter(([k]) => (host.startsWith("*.") ? k.endsWith(host.slice(1)) : k === host || k.split(":")[0] === host));
+      return list.length ? { events: list.reduce((n, [, v]) => n + v.events, 0), problems: list.reduce((n, [, v]) => n + v.problems, 0) } : undefined;
+    };
+
+    navList.replaceChildren();
+    append(
+      navList,
+      item("", "All activity", total, totalProblems),
+      local.length ? h("li", { class: "activity-nav-head" }, "Projects") : null,
+      local.map((x) => {
+        const envs = Object.keys(x.envs ?? {}).filter((e) => e !== "local");
+        const mocked = projects.find((p) => p.dir.toLowerCase() === x.dir.toLowerCase())?.mocks;
+        const mockTag = mocked?.on ? h("span", { class: "badge badge-warn", title: `Mock mode is on: ${plural(mocked.enabled, "endpoint")} answered by dx` }, "Mocked") : null;
+        return item(`p:${x.dir}`, x.project, x.events, x.problems, [...envs.map(envBadge), mockTag], x.linked.length ? h("ul", { class: "activity-sites" }, x.linked.map((s) => siteLine(s, seenFor(x, s.host)))) : null);
+      }),
+      own.length ? h("li", { class: "activity-nav-head" }, "Sites") : null,
+      own.map((x) => {
+        const host = x.dir.slice(5);
+        const s = x.own;
+        const env = s?.env ?? Object.keys(x.envs ?? {})[0];
+        return item(
+          `s:${host}`,
+          x.project,
+          x.events,
+          x.problems,
+          [envBadge(env)],
+          s ? h("ul", { class: "activity-sites" }, siteLine(s, x.events ? { events: x.events, problems: x.problems } : undefined)) : null,
+        );
+      }),
+      !sites.length
+        ? h("li", { class: "activity-nav-empty dim" }, "Deployed sites you record show up here. ", h("button", { type: "button", class: "link-button", onclick: () => ((siteForm.hidden = false), hostInput.focus()) }, "Record a site"))
+        : null,
+    );
+
+    projectSelect.replaceChildren();
+    append(
+      projectSelect,
+      h("option", { value: "", selected: sel === "" }, `All activity (${total})`),
+      local.length ? h("optgroup", { label: "Projects" }, local.map((x) => h("option", { value: `p:${x.dir}`, selected: sel === `p:${x.dir}` }, `${x.project} (${x.events})`))) : null,
+      own.length ? h("optgroup", { label: "Sites" }, own.map((x) => h("option", { value: `s:${x.dir.slice(5)}`, selected: sel === `s:${x.dir.slice(5)}` }, `${x.project} (${x.events})`))) : null,
+    );
+  }
+
+  /** Filters for local and each environment, when the events shown have more than one. */
+  function renderEnvs() {
+    const envs = [...new Set(events.map((e) => e.env ?? "local"))].sort((a, b) => (a === "local" ? -1 : b === "local" ? 1 : a.localeCompare(b)));
+    if (envFilter && !envs.includes(envFilter)) envFilter = "";
+    const key = `${envs.join(",")}|${envFilter}`;
+    if (key === envKey) return;
+    envKey = key;
+    envHolder.replaceChildren();
+    if (envs.length > 1) envHolder.append(segmented("Environment", [["", "All"], ...envs.map((e) => [e, e === "local" ? "Local" : e])], envFilter, (v) => ((envFilter = v), (envKey = ""), render())));
+  }
 
   /**
    * A running app with nothing from its browser side is usually open at localhost:<port>,
@@ -4468,33 +5476,87 @@ function activityPage(root) {
   function query(extra = {}) {
     const q = new URLSearchParams({ limit: "2000", ...extra });
     if (dir) q.set("dir", dir);
+    else if (siteKey) q.set("site", siteKey);
     if (search) q.set("q", search);
     return q;
   }
 
-  async function load() {
+  /** The AI agent's calls through dx for what's shown, when "By AI" is on. True when they changed. */
+  async function loadAiRuns() {
+    if (who !== "ai" || siteKey) {
+      const changed = aiRuns.length > 0;
+      aiRuns = [];
+      aiSig = "";
+      return changed;
+    }
     try {
-      events = await api(`/api/activity?${query({ since })}`);
+      const r = await api(`/api/ai?limit=500${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`);
+      const sig = `${r.calls.length}|${r.calls[0]?.at ?? ""}`;
+      if (sig === aiSig) return false;
+      aiSig = sig;
+      aiRuns = r.calls;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The start of the time shown, in ms, as the server reads "1h", "today" and "7d". */
+  function sinceMs() {
+    const now = new Date();
+    if (since === "1h") return now.getTime() - 3600_000;
+    if (since === "7d") return now.getTime() - 7 * 86_400_000;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  }
+
+  function aiInWindow() {
+    const from = sinceMs();
+    const q = search.toLowerCase();
+    return aiRuns.filter((r) => Date.parse(r.at) >= from && (!q || `${r.text} ${r.args ?? ""}`.toLowerCase().includes(q)));
+  }
+
+  /** A headless page check is the agent's when one of its check_url or replay_visit calls was running then. */
+  function isAiEvent(e) {
+    if (e.from !== "check") return false;
+    const t = Date.parse(e.at);
+    return aiRuns.some((r) => {
+      if (r.tool !== "check_url" && r.tool !== "replay_visit") return false;
+      if (r.dir && r.dir.toLowerCase() !== String(e.dir).toLowerCase()) return false;
+      const end = Date.parse(r.at);
+      return t >= end - (r.ms ?? 0) - 3000 && t <= end + 5000;
+    });
+  }
+
+  let loadSeq = 0;
+  async function load() {
+    const seq = ++loadSeq;
+    void loadOverview(true);
+    try {
+      const [list] = await Promise.all([api(`/api/activity?${query({ since })}`), loadAiRuns()]);
+      if (seq !== loadSeq || stopped) return;
+      events = list;
       lastId = Math.max(lastId, ...events.map((e) => e.id));
       render();
       void updateHint();
     } catch (err) {
-      holder.replaceChildren(errorView(err, load));
+      if (seq === loadSeq) holder.replaceChildren(errorView(err, load));
     }
   }
 
   async function poll() {
     if (stopped) return;
-    if (document.visibilityState === "visible" && lastId) {
+    if (document.visibilityState === "visible" && (lastId || who === "ai")) {
       try {
-        const next = await api(`/api/activity?${query({ after: String(lastId) })}`);
+        const next = lastId ? await api(`/api/activity?${query({ after: String(lastId) })}`) : [];
         if (!stopped && next.length) {
           // In the order things happened: a page's clicks arrive a moment after the requests they caused.
           events = [...events, ...next].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id).slice(-2000);
           lastId = Math.max(lastId, ...next.map((e) => e.id));
+          if (who === "ai") await loadAiRuns();
           render();
           if (hint.childElementCount) void updateHint();
-        }
+          void loadOverview();
+        } else if (!stopped && who === "ai" && (await loadAiRuns())) render();
       } catch {
         // the next poll tries again
       }
@@ -4503,61 +5565,176 @@ function activityPage(root) {
   }
 
   function render() {
-    renderOverview();
-    if (!events.length) {
+    renderEnvs();
+    shown = envFilter ? events.filter((e) => (e.env ?? "local") === envFilter) : events;
+    if (who === "ai") shown = shown.filter(isAiEvent);
+    updateTimeTravel();
+    if (who === "ai" && !shown.length && !(view === "sessions" && aiInWindow().length)) {
+      holder.replaceChildren(
+        stateView(
+          "Nothing from your AI agent here",
+          siteKey
+            ? "AI agents work on your local apps through dx; recorded sites show what you did in the dx browser."
+            : "When an agent runs, checks or replays your app through dx's MCP tools, its page checks show here, with its other calls in between. The AI lane at the right edge follows it live.",
+          btn("Show everyone's", () => ((who = ""), setPref("activityWho", ""), route()), { small: true }),
+        ),
+      );
+      return;
+    }
+    if (!shown.length && who !== "ai") {
+      const site = siteKey ? (overviewData.sites ?? []).find((s) => s.host === siteKey) : undefined;
       holder.replaceChildren(
         stateView(
           search ? "Nothing matches" : "Nothing recorded yet",
           search
             ? "Try other words, or a longer time."
-            : "Start an app from the Projects page and open it in your browser. Its requests, routes, clicks, console output and errors show up here as they happen.",
-          search ? null : h("a", { class: "btn", href: "#/projects" }, "Go to projects"),
+            : siteKey
+              ? `Open ${siteKey} in the dx browser and use it: its requests, routes, clicks, console output and errors show up here.`
+              : "Start an app from the Projects page and open it in your browser, or open a deployed site in the dx browser. Its requests, routes, clicks, console output and errors show up here as they happen.",
+          search
+            ? null
+            : siteKey && site && siteUrl(site.host)
+              ? btn("Open in the dx browser", (ev) => void browserOpen(ev.currentTarget, siteUrl(site.host)), { kind: "primary", iconName: "external" })
+              : siteKey
+                ? null
+                : h("a", { class: "btn", href: "#/projects" }, "Go to projects"),
         ),
       );
       return;
     }
-    const many = !dir && new Set(events.map((e) => e.dir)).size > 1;
+    const many = !dir && !siteKey && new Set(shown.map((e) => e.dir)).size > 1;
     // Rows people opened stay open when new events come in.
     openRows = new Set([...holder.querySelectorAll("details[open][data-id]")].map((d) => d.dataset.id));
-    if (view === "apis") return renderApis(many);
-    if (view === "errors") return renderErrors(many);
-    if (view === "console") return renderConsole(many);
-    renderSessions(many);
+    if (view === "apis") renderApis(many);
+    else if (view === "errors") renderErrors(many);
+    else if (view === "console") renderConsole(many);
+    else renderSessions(many);
+    if (moment !== null) markMoment(false);
   }
 
-  /** Each project with its visits, API calls and problems; a click shows only that project. */
-  function renderOverview() {
-    if (dir) return overview.replaceChildren();
-    const byDir = new Map();
-    for (const e of events) {
-      const s = byDir.get(e.dir) ?? byDir.set(e.dir, { dir: e.dir, project: e.project, visits: new Set(), calls: 0, problems: 0, last: e.at }).get(e.dir);
-      if (e.visit) s.visits.add(e.visit);
-      if (e.type === "request") s.calls++;
-      if (isProblemEvent(e)) s.problems++;
-      s.last = e.at;
+  // ---------------------------------------------------------------- time travel
+
+  /** The first and last event's time, when they're at least a second apart. */
+  function spanOf() {
+    if (shown.length < 2) return null;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const e of shown) {
+      const t = Date.parse(e.at);
+      if (t < lo) lo = t;
+      if (t > hi) hi = t;
     }
-    const list = [...byDir.values()].sort((a, b) => Date.parse(b.last) - Date.parse(a.last));
-    overview.replaceChildren(
-      ...list.map((s) =>
-        h(
-          "button",
-          {
-            type: "button",
-            class: "card activity-project",
-            title: `Show only ${s.project}`,
-            onclick: () => {
-              dir = s.dir;
-              projectSelect.value = s.dir;
-              setPref("activityDir", dir);
-              load();
-            },
-          },
-          h("strong", null, s.project),
-          h("span", { class: "dim" }, `${plural(s.visits.size, "visit")} · ${plural(s.calls, "API call")} · ${relativeTime(Date.parse(s.last))}`),
-          s.problems ? h("span", { class: "badge badge-danger" }, plural(s.problems, "problem")) : h("span", { class: "badge badge-ok" }, "no problems"),
-        ),
+    return hi - lo >= 1000 ? [lo, hi] : null;
+  }
+
+  function clock(ms) {
+    const s = spanOf();
+    const days = s && new Date(s[0]).toDateString() !== new Date(s[1]).toDateString();
+    return new Date(ms).toLocaleString([], days ? { weekday: "short", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function updateTimeTravel() {
+    const s = spanOf();
+    ttBar.hidden = !s;
+    if (!s || moment === null) return;
+    moment = Math.min(s[1], Math.max(s[0], moment));
+    ttRange.value = String(Math.round(((moment - s[0]) / (s[1] - s[0])) * 1000));
+  }
+
+  function scrub(settle) {
+    const s = spanOf();
+    if (!s) return;
+    moment = s[0] + (Number(ttRange.value) / 1000) * (s[1] - s[0]);
+    ttTime.textContent = clock(moment);
+    ttOff.hidden = false;
+    markMoment(settle);
+    clearTimeout(ttTimer);
+    ttTimer = setTimeout(() => lookUp(moment), settle ? 0 : 250);
+  }
+
+  function leaveMoment() {
+    moment = null;
+    ttFound = null;
+    ttSeq++;
+    ttRange.value = "1000";
+    ttTime.textContent = "Drag to a moment";
+    ttInfo.replaceChildren();
+    ttOff.hidden = true;
+    markMoment(false);
+  }
+
+  /** How close to the moment an event must be to count as around it. */
+  function nearMs() {
+    const s = spanOf();
+    return s ? Math.max(30_000, (s[1] - s[0]) / 60) : 30_000;
+  }
+
+  /** Lights up the events around the moment; when the slider is let go, opens the visit there and scrolls to it. */
+  function markMoment(settle) {
+    const near = nearMs();
+    for (const el of holder.querySelectorAll("[data-at]")) el.classList.toggle("tt-near", moment !== null && Math.abs(Number(el.dataset.at) - moment) <= near);
+    for (const el of holder.querySelectorAll("details[data-from]")) {
+      const inside = moment !== null && moment >= Number(el.dataset.from) - near && moment <= Number(el.dataset.to) + near;
+      el.classList.toggle("tt-near", inside);
+      if (settle && inside) el.open = true;
+    }
+    if (settle) (holder.querySelector("li.tt-near") ?? holder.querySelector(".tt-near"))?.scrollIntoView({ block: "nearest", behavior: reducedMotion.matches ? "auto" : "smooth" });
+  }
+
+  /** The git project to look in: the one shown, or the one whose event is nearest the moment. */
+  function ttProject(at) {
+    const gits = new Map(projects.filter((p) => p.hasGit).map((p) => [p.dir, p]));
+    if (dir) return gits.get(dir);
+    if (siteKey) return undefined; // a site of its own has no repository here
+    let best;
+    let bestD = Infinity;
+    for (const e of shown) {
+      const p = gits.get(e.dir);
+      const d = Math.abs(Date.parse(e.at) - at);
+      if (p && d < bestD) [best, bestD] = [p, d];
+    }
+    return best;
+  }
+
+  async function lookUp(at) {
+    const seq = ++ttSeq;
+    const target = ttProject(at);
+    if (!target) return ttInfo.replaceChildren(h("span", { class: "dim" }, "No git project in the history at that moment."));
+    try {
+      const c = await api(`/api/git/at?dir=${encodeURIComponent(target.dir)}&at=${Math.round(at)}`);
+      if (seq !== ttSeq || stopped) return;
+      ttFound = { at, dir: target.dir, name: target.name, commit: c };
+      renderMoment();
+    } catch (err) {
+      if (seq === ttSeq) ttInfo.replaceChildren(h("span", { class: "dim" }, err.message));
+    }
+  }
+
+  function renderMoment() {
+    const { at, dir: d, name, commit: c } = ttFound;
+    if (!c) return ttInfo.replaceChildren(h("span", { class: "dim" }, `${name} had no commits yet at ${clock(at)}.`));
+    ttInfo.replaceChildren(
+      h(
+        "span",
+        { class: "tt-text", title: c.from === "reflog" ? "From git's record of where HEAD was" : "The last commit before then" },
+        dir ? null : h("span", { class: "badge" }, name),
+        ` At ${clock(at)} you were on `,
+        h("strong", { class: "mono" }, c.short),
+        " ",
+        h("span", { class: "tt-subject" }, c.subject || "(no message)"),
       ),
+      btn("Run it as it was then", (ev) => runThen(ev.currentTarget, d, c), {
+        small: true,
+        kind: "primary",
+        iconName: "play",
+        title: "Check that commit out in its own folder under ~/.dx/snapshots and run it, next to your own dev server",
+      }),
     );
+  }
+
+  async function runThen(button, d, c) {
+    const r = await busy(button, "Starting…", () => api("/api/snapshots/run", { method: "POST", body: { dir: d, hash: c.hash } }));
+    if (r) toast(`${r.job ? `Setting up ${r.name}` : `${r.name} is running`}. It's on the Projects page, with its output.`);
   }
 
   /** The address an API call is grouped by: ids, numbers and long hex in its path become :id. */
@@ -4581,10 +5758,11 @@ function activityPage(root) {
   /** Every API with its calls: how often, how fast, how many failed; open one for each call's payload and response. */
   function renderApis(many) {
     const groups = new Map();
-    for (const e of events) {
+    for (const e of shown) {
       if (e.type !== "request") continue;
-      const key = `${e.dir}|${endpointOf(e)}`;
-      const g = groups.get(key) ?? groups.set(key, { key, endpoint: endpointOf(e), project: e.project, service: e.service, calls: [] }).get(key);
+      // Staging's /api/cart and your own are told apart.
+      const key = `${e.dir}|${e.env ?? "local"}|${endpointOf(e)}`;
+      const g = groups.get(key) ?? groups.set(key, { key, endpoint: endpointOf(e), project: e.project, service: e.service, env: e.env, calls: [] }).get(key);
       g.calls.push(e);
     }
     if (!groups.size) return holder.replaceChildren(stateView("No API calls", "Requests your app makes to its API show up here, each endpoint with its calls, payloads, responses and times."));
@@ -4617,7 +5795,11 @@ function activityPage(root) {
                 h("span", { class: "badge mono" }, method),
                 h("span", { class: "mono" }, rest.join(" ")),
                 many ? h("span", { class: "badge" }, g.project) : null,
+                envBadge(g.env),
                 g.service ? h("span", { class: "badge" }, g.service) : null,
+                mocks?.endpoints.some((m) => m.enabled && `${m.method} ${m.path}` === g.endpoint)
+                  ? h("span", { class: `badge ${mocks.on ? "badge-warn" : ""}`, title: mocks.on ? "Answered by dx's mock mode while it's on" : "Has a mock; mock mode is off" }, mocks.on ? "mocked" : "mock ready")
+                  : null,
                 failed ? h("span", { class: "badge badge-danger" }, `${failed} failed`) : null,
               ),
               h("span", null, String(g.calls.length)),
@@ -4635,7 +5817,7 @@ function activityPage(root) {
   /** Errors grouped by what they say, most recent first, each with every time it happened. */
   function renderErrors(many) {
     const groups = new Map();
-    for (const e of events) {
+    for (const e of shown) {
       if (!isProblemEvent(e) || (e.type === "console" && e.level === "warn")) continue;
       const kind = e.type === "server-error" ? "Server" : e.type === "error" ? "Browser" : e.type === "console" ? "Console" : "Request";
       const message = e.type === "request" || e.type === "page" ? `${endpointOf(e)} → ${e.error ?? e.status}` : e.text.split("\n")[0].replace(/\d+/g, "#");
@@ -4652,6 +5834,9 @@ function activityPage(root) {
         list.map((g) => {
           const last = g.all[g.all.length - 1];
           const first = g.all[0];
+          // Exceptions, server errors and console errors can go to Claude (the newest time it happened), in git projects.
+          const fixable = (last.type === "error" || last.type === "server-error" || (last.type === "console" && last.level === "error")) && projects.find((p) => p.dir.toLowerCase() === last.dir.toLowerCase())?.hasGit;
+          const fixer = fixable ? fixControls(last.dir, "activity", last.id, last.text.split("\n")[0], g.key) : null;
           return h(
             "details",
             { class: "api-group", open: opened.has(g.key) || undefined, ontoggle: (e) => (e.target.open ? opened.add(g.key) : opened.delete(g.key)) },
@@ -4664,6 +5849,7 @@ function activityPage(root) {
               last.source ? h("span", { class: "dim mono" }, last.source) : null,
               h("span", { class: "dim" }, `${g.all.length > 1 ? `${g.all.length}× · ` : ""}${g.all.length > 1 ? `first ${relativeTime(Date.parse(first.at))}, ` : ""}last ${relativeTime(Date.parse(last.at))}`),
             ),
+            fixer ? h("div", { class: "error-fix" }, h("div", { class: "toolbar" }, fixer.button), fixer.panel) : null,
             h("ul", { class: "activity-list api-calls" }, [...g.all].reverse().slice(0, 20).map((e) => activityRow(e, false, openRows.has(String(e.id))))),
           );
         }),
@@ -4673,7 +5859,7 @@ function activityPage(root) {
 
   /** Console output, newest first; the same line repeated is one row with a count. */
   function renderConsole(many) {
-    const lines = events.filter((e) => e.type === "console");
+    const lines = shown.filter((e) => e.type === "console");
     if (!lines.length) return holder.replaceChildren(stateView("No console output", "console.log, info, warn and error from your app's pages show up here, with the file and line that wrote them."));
     const rows = [];
     for (const e of [...lines].reverse()) {
@@ -4698,12 +5884,14 @@ function activityPage(root) {
     // Keep what people opened open when new events come in; the newest visit, and visits with problems, start open.
     const seen = holder.querySelector("[data-group]") !== null;
     const open = new Set([...holder.querySelectorAll("details[open]")].map((d) => d.dataset.id ?? d.dataset.group));
-    const groups = visitsOf(events);
+    const groups = visitsOf(shown);
+    // "By AI": the agent's other calls through dx sit between its page checks, in time order.
+    const items = [...groups.map((g) => ({ at: Date.parse(g.events[0].at), g })), ...(who === "ai" ? aiInWindow().map((r) => ({ at: Date.parse(r.at), r })) : [])].sort((a, b) => a.at - b.at);
     const byDay = new Map();
-    for (const g of groups) {
-      const d = new Date(g.events[0].at);
+    for (const item of items) {
+      const d = new Date(item.at);
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      (byDay.get(key) ?? byDay.set(key, []).get(key)).push(g);
+      (byDay.get(key) ?? byDay.set(key, []).get(key)).push(item);
     }
     const newest = groups[groups.length - 1]?.key;
     holder.replaceChildren(
@@ -4712,9 +5900,24 @@ function activityPage(root) {
           "section",
           { class: "day" },
           h("h2", { class: "day-title" }, dayLabel(day)),
-          [...list].reverse().map((g) => visitView(g, many, seen ? open.has(g.key) : g.key === newest || g.problems > 0, open)),
+          [...list].reverse().map(({ g, r }) => (g ? visitView(g, many, seen ? open.has(g.key) : g.key === newest || g.problems > 0, open) : aiRunRow(r, many))),
         ),
       ),
+    );
+  }
+
+  /** One of the agent's calls, between the visits: what it did, when, and what it asked. */
+  function aiRunRow(r, many) {
+    const at = Date.parse(r.at);
+    return h(
+      "div",
+      { class: "ai-run", dataset: { at: String(at) } },
+      icon("ai"),
+      h("span", { class: "ai-run-time mono" }, new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+      h("span", { class: "ai-run-text" }, r.text),
+      many && r.project ? h("span", { class: "badge" }, r.project) : null,
+      r.ok ? null : h("span", { class: "badge badge-warn" }, "failed"),
+      r.args ? h("span", { class: "ai-run-args mono", title: "What the agent asked for (nothing secret is kept)" }, r.args) : null,
     );
   }
 
@@ -4778,7 +5981,12 @@ function activityPage(root) {
     const fromCheck = g.events.some((e) => e.from === "check") && !g.events.some((e) => e.from === "browser");
     const result = h("div", { class: "visit-result" }, replays.get(g.key) ?? null);
     const actions = [];
-    if (g.visit && clicks && !fromCheck) {
+    // Where it was: a deployed site in the dx browser, and which deployment answered when the site said so.
+    const siteEvent = g.events.find((e) => e.site && e.env && e.env !== "local");
+    const deploy = g.events.find((e) => e.deploy)?.deploy;
+    if (deploy) actions.push(deployView(g.dir, deploy));
+    // Only pages on this computer can be replayed, and only from a project.
+    if (g.visit && clicks && !fromCheck && !siteEvent && !g.dir.startsWith("site:")) {
       actions.push(
         btn("Replay", (ev) => replay(ev.currentTarget, g), {
           small: true,
@@ -4788,23 +5996,91 @@ function activityPage(root) {
         }),
       );
     }
+    const local = !siteEvent && !g.dir.startsWith("site:");
+    // The newest error of the visit, as a file a teammate can replay.
+    const lastProblem = [...g.events].reverse().find((e) => isProblemEvent(e) && e.level !== "warn");
+    if (local && lastProblem && g.kind !== "server") {
+      actions.push(
+        btn("Download bug bundle", (ev) => downloadBundle(ev.currentTarget, lastProblem), {
+          small: true,
+          iconName: "save",
+          title: "Save this visit's steps, requests and error as a .dxbug.json file a teammate can replay on their own dev server",
+          name: `Download a bug bundle for this visit to ${path || g.project}`,
+        }),
+      );
+    }
+    // The visit's API calls, as answers mock mode gives back.
+    if (local && g.visit && g.events.some((e) => e.type === "request" && e.from === "proxy" && !e.mocked)) {
+      actions.push(
+        btn("Make mocks", (ev) => makeMocks(ev.currentTarget, g.dir, { visit: g.visit }), {
+          small: true,
+          iconName: "template",
+          title: "Keep this visit's API answers as mocks, so the front end can run on them without the back end",
+          name: `Make mocks from this visit to ${path || g.project}`,
+        }),
+      );
+    }
     return h(
       "details",
-      { class: "visit", open: isOpen || undefined, dataset: { group: g.key } },
+      { class: "visit", open: isOpen || undefined, dataset: { group: g.key, from: String(Date.parse(first.at)), to: String(Date.parse(last.at)) } },
       h(
         "summary",
         { class: "visit-head" },
         h("span", { class: "time" }, first === last || time(first) === time(last) ? time(first) : `${time(first)}–${time(last)}`),
         h("strong", { class: "visit-title" }, title),
         many ? h("span", { class: "badge" }, g.project) : null,
+        siteEvent ? envBadge(siteEvent.env) : null,
+        siteEvent ? h("span", { class: "dim mono" }, siteEvent.site) : null,
         fromCheck ? h("span", { class: "badge" }, "headless check") : null,
         h("span", { class: "dim" }, `${plural(g.events.length, "event")}${clicks ? `, ${plural(clicks, "click")}` : ""}`),
         g.problems ? h("span", { class: "badge badge-danger" }, plural(g.problems, "problem")) : null,
       ),
       actions.length ? h("div", { class: "toolbar visit-actions" }, actions) : null,
       result,
-      h("ul", { class: "activity-list" }, [...g.events].reverse().map((e) => activityRow(e, many, open.has(String(e.id))))),
+      h("ul", { class: "activity-list" }, [...g.events].reverse().map((e) => activityRow(e, many, open.has(String(e.id)), true))),
     );
+  }
+
+  /**
+   * The deployment a site said answered (a header or meta tag it sent), and, when it names a
+   * commit the linked project has, Run this commit: that commit runs from ~/.dx/snapshots.
+   */
+  function deployView(d, deploy) {
+    const what = deploy.commit ? deploy.commit.slice(0, 10) : deploy.version ?? deploy.id;
+    const wrap = h(
+      "span",
+      { class: "deploy" },
+      h("span", { class: "badge", title: `From the site's ${deploy.from}${deploy.server ? `, served by ${deploy.server}` : ""}` }, icon("tag"), " ", h("span", { class: "mono" }, what)),
+      deploy.version && deploy.commit ? h("span", { class: "dim" }, deploy.version) : null,
+    );
+    const project = projects.find((p) => p.dir.toLowerCase() === d.toLowerCase());
+    if (!deploy.commit || !project?.hasGit) return wrap;
+    const key = `${d}|${deploy.commit}`;
+    const known = commits.get(key);
+    const runButton = (c) =>
+      btn("Run this commit", (ev) => runThen(ev.currentTarget, d, c), {
+        small: true,
+        kind: "primary",
+        iconName: "play",
+        title: `${c.short} ${c.subject || ""}: check it out under ~/.dx/snapshots and run it, next to your own dev server`,
+      });
+    if (known && known !== "…") wrap.append(runButton(known));
+    else if (known === null) wrap.append(h("span", { class: "dim", title: "The site names a commit this project's repository doesn't have (fetch, or it was built elsewhere)" }, "not in your repository"));
+    else if (known === undefined) {
+      commits.set(key, "…");
+      api(`/api/sites/commit?dir=${encodeURIComponent(d)}&hash=${encodeURIComponent(deploy.commit)}`).then(
+        // Drawn again with the answer: the list may have been redrawn in the meantime.
+        (c) => {
+          commits.set(key, c);
+          if (!stopped) render();
+        },
+        () => {
+          commits.set(key, null);
+          if (!stopped) render();
+        },
+      );
+    }
+    return wrap;
   }
 
   async function replay(button, g) {
@@ -4835,36 +6111,437 @@ function activityPage(root) {
     void load();
   }
 
+  // ---------------------------------------------------------------- bug bundles
+
+  async function downloadBundle(button, e) {
+    const r = await busy(button, "Preparing…", () => api(`/api/activity/bundle?dir=${encodeURIComponent(e.dir)}&id=${e.id}`));
+    if (!r) return;
+    downloadJson(r.file, r.bundle);
+    toast(`Saved ${r.file}: the steps, requests and error, without cookies, tokens or your folders. A teammate opens it on their Activity page to replay it.`, "ok", { ms: 7000 });
+  }
+
+  async function openBundleFile(file) {
+    if (file.size > 2 * 1024 * 1024) return toast("That file is too large for a bug bundle (over 2 MB).", "error");
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      return toast("That file isn't a dx bug bundle: it isn't JSON.", "error");
+    }
+    if (data?.format !== "dx-bug" || !data.error || typeof data.error !== "object") return toast("That file isn't a dx bug bundle.", "error");
+    if (data.version !== 1) return toast(`That bundle is version ${data.version}; this dx reads version 1. Update dx.`, "error");
+    const name = String(data.project?.name ?? "");
+    const match = projects.find((p) => !p.snapshot && p.name.toLowerCase() === name.toLowerCase());
+    bundleState = { bundle: data, name: file.name, dir: match?.dir ?? "", use: data.git ? "commit" : "working", job: null };
+    renderBundle();
+    bundleHolder.scrollIntoView({ block: "nearest", behavior: reducedMotion.matches ? "auto" : "smooth" });
+  }
+
+  /** A bundle's event, drawn with the usual rows: no folder of ours, so nothing opens or is sent from it. */
+  function foreignRow(ev, isOpen = false) {
+    const b = bundleState.bundle;
+    const e = { ...ev, text: String(ev.text ?? ev.type ?? ""), dir: "", project: String(b.project?.name ?? "") };
+    return activityRow(e, false, isOpen, true, { foreign: true });
+  }
+
+  function renderBundle() {
+    const s = bundleState;
+    if (!s) return bundleHolder.replaceChildren();
+    const b = s.bundle;
+    const steps = Array.isArray(b.steps) ? b.steps : [];
+    const events = Array.isArray(b.events) ? b.events : [];
+    const notes = Array.isArray(b.notes) ? b.notes.filter((n) => typeof n === "string") : [];
+    const project = projects.find((p) => p.dir === s.dir);
+    const canCommit = !!b.git?.commit && !!project?.hasGit;
+    if (!canCommit) s.use = "working";
+    const running = s.job && s.job.phase !== "done" && s.job.phase !== "failed";
+    const short = String(b.git?.commit ?? "").slice(0, 7);
+    const describe = (st) =>
+      st.goto ? `Go to ${st.goto}` : st.click ? `Click ${st.click}` : st.type !== undefined ? `Type into ${st.into ?? "the field"}` : st.press ? `Press ${st.press}` : st.waitFor ? `Wait for ${st.waitFor}` : "A step";
+
+    const select = h(
+      "select",
+      { class: "input", "aria-label": "Project to replay it on", disabled: running || undefined, onchange: (ev) => ((s.dir = ev.target.value), (s.use = b.git ? "commit" : "working"), renderBundle()) },
+      h("option", { value: "" }, "Pick a project"),
+      projects.filter((p) => !p.snapshot).map((p) => h("option", { value: p.dir, selected: p.dir === s.dir }, p.name)),
+    );
+    const where = segmented(
+      "Replay on",
+      canCommit ? [["commit", `Commit ${short}`], ["working", "Your working copy"]] : [["working", "Your working copy"]],
+      s.use,
+      (v) => (s.use = v),
+    );
+    const go = btn("Replay", (ev) => void replayBundle(ev.currentTarget), { kind: "primary", iconName: "play", disabled: !s.dir || running, title: "Run it (the commit as a snapshot, or your working copy), then do the steps in a headless browser on that dev server" });
+
+    bundleHolder.replaceChildren(
+      h(
+        "section",
+        { class: "card card-pad bundle", "aria-label": "Bug bundle" },
+        h(
+          "div",
+          { class: "bundle-head" },
+          h("div", null, h("p", { class: "bundle-kicker" }, `Bug bundle · ${s.name}`), h("h2", { class: "bundle-title" }, String(b.error.text ?? "").split("\n")[0] || "An error")),
+          btn("", () => ((bundleState = null), renderBundle()), { small: true, kind: "ghost", iconName: "x", name: "Close the bug bundle" }),
+        ),
+        h(
+          "p",
+          { class: "bundle-meta" },
+          h("span", { class: "badge" }, String(b.project?.name ?? "")),
+          b.git?.commit
+            ? h("span", { class: "badge mono", title: b.git.from === "head" ? "HEAD when it was exported" : "The commit HEAD was on when it happened" }, `${short}${b.git.branch ? ` on ${b.git.branch}` : ""}`)
+            : h("span", { class: "badge" }, "no commit"),
+          b.git?.dirty ? h("span", { class: "badge badge-warn", title: "The sender's working copy had changes that weren't committed" }, "uncommitted changes") : null,
+          h("span", { class: "dim" }, `${plural(steps.length, "step")}, ${plural(events.length, "event")}${b.createdAt ? `, made ${relativeTime(Date.parse(b.createdAt))}` : ""}`),
+        ),
+        h(
+          "div",
+          { class: "bundle-compare" },
+          h(
+            "div",
+            { class: "bundle-side" },
+            h("h3", { class: "bundle-side-title" }, "Then"),
+            h("ul", { class: "activity-list" }, foreignRow(b.error, true)),
+            steps.length ? h("ol", { class: "bullets bundle-steps" }, steps.map((st) => h("li", { class: "mono" }, describe(st)))) : h("p", { class: "dim" }, "No clicks before it: a replay loads the page."),
+            notes.map((n) => h("p", { class: "dim" }, n)),
+            events.length
+              ? h("details", { class: "bundle-events" }, h("summary", null, `Everything recorded (${events.length})`), h("ul", { class: "activity-list" }, [...events].reverse().slice(0, 300).map((ev) => foreignRow(ev))))
+              : null,
+          ),
+          h(
+            "div",
+            { class: "bundle-side" },
+            h("h3", { class: "bundle-side-title" }, "Now"),
+            h("div", { class: "bundle-controls" }, h("label", { class: "field" }, h("span", { class: "field-label" }, "Project"), select), h("div", { class: "field" }, h("span", { class: "field-label" }, "Run"), where), go),
+            !b.git?.commit
+              ? h("p", { class: "dim" }, "The bundle doesn't name a commit, so it replays on your working copy.")
+              : project && !project.hasGit
+                ? h("p", { class: "dim" }, `${project.name} isn't a git repository here, so it replays on your working copy.`)
+                : null,
+            bundleResult(s),
+          ),
+        ),
+      ),
+    );
+  }
+
+  function bundleResult(s) {
+    const job = s.job;
+    if (!job) return h("p", { class: "dim" }, "Its steps run in a headless browser against your own dev server for the project: the bundle's own address is never used.");
+    if (job.phase === "failed") return h("div", { class: "note note-danger", role: "alert" }, icon("warn"), h("p", null, job.error ?? "The replay failed."));
+    if (job.phase !== "done") return h("div", { class: "note", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), h("p", null, `${job.step}…`));
+    const v = job.verdict;
+    const p = job.result?.page;
+    const stepItems = (p?.steps ?? []).map((st) => h("li", null, h("span", { class: `badge ${st.ok ? "badge-ok" : "badge-danger"}` }, st.ok ? "ok" : "failed"), ` ${st.action}`, st.error ? h("span", { class: "dim" }, ` · ${st.error}`) : null));
+    const exceptions = (p?.exceptions ?? []).filter((m) => m.text.includes("\n"));
+    return h(
+      "div",
+      { class: "bundle-now" },
+      h(
+        "div",
+        { class: `note ${v.reproduced ? "note-warn" : "note-ok"}`, role: "status" },
+        icon(v.reproduced ? "warn" : "check"),
+        h("div", null, h("p", null, h("strong", null, v.summary)), h("p", { class: "dim" }, `On ${job.target}${job.url ? `, at ${new URL(job.url).pathname}` : ""}.`)),
+      ),
+      stepItems.length ? h("ol", { class: "bullets" }, stepItems) : null,
+      v.now.length ? h("ul", { class: "bullets" }, v.now.slice(0, 10).map((t) => h("li", { class: "mono" }, t))) : null,
+      exceptions.slice(0, 2).map((m) => liveDetail((mode) => stackBlock(m.text, "")(mode))),
+      h("p", { class: "dim" }, "The replay's own events are in the history too, as a headless check."),
+    );
+  }
+
+  async function replayBundle(button) {
+    const s = bundleState;
+    const r = await busy(button, "Starting…", () => api("/api/activity/bundle/replay", { method: "POST", body: { dir: s.dir, bundle: s.bundle, use: s.use } }));
+    if (!r || bundleState !== s) return;
+    s.job = r;
+    renderBundle();
+    const poll = async () => {
+      if (stopped || bundleState !== s) return;
+      try {
+        s.job = await api(`/api/activity/bundle/replay?id=${encodeURIComponent(s.job.id)}`);
+      } catch (err) {
+        s.job = { ...s.job, phase: "failed", error: err.message };
+      }
+      if (bundleState !== s) return;
+      renderBundle();
+      if (s.job.phase === "done" || s.job.phase === "failed") return void load();
+      setTimeout(poll, 1000);
+    };
+    setTimeout(poll, 800);
+  }
+
+  // ---------------------------------------------------------------- mock mode
+
+  async function loadMocks() {
+    const d = dir;
+    if (!d) {
+      mocks = null;
+      return renderMocks();
+    }
+    try {
+      const m = await api(`/api/mocks?dir=${encodeURIComponent(d)}`);
+      if (d !== dir || stopped) return;
+      mocks = m;
+      const p = projects.find((x) => x.dir === d);
+      if (p) p.mocks = m.endpoints.length ? { on: m.on, strict: m.strict, endpoints: m.endpoints.length, enabled: m.endpoints.filter((e) => e.enabled).length } : undefined;
+    } catch {
+      mocks = null;
+    }
+    renderMocks();
+  }
+
+  function renderMocks() {
+    if (!dir || !mocks) return mockHolder.replaceChildren();
+    const n = mocks.endpoints.length;
+    const enabled = mocks.endpoints.filter((e) => e.enabled).length;
+    const panel = h(
+      "details",
+      { class: "card mocks", open: mocks.on || !!mockEdit || pref("mocksOpen", "0") === "1" || undefined, ontoggle: (e) => setPref("mocksOpen", e.target.open ? "1" : "0") },
+      h(
+        "summary",
+        { class: "mocks-head" },
+        h("strong", null, "Mock mode"),
+        mocks.on
+          ? h("span", { class: "badge badge-warn" }, `On · Mocked: ${plural(enabled, "endpoint")}`)
+          : h("span", { class: "badge" }, n ? `Off · ${plural(n, "endpoint")} ready` : "Off"),
+        mocks.on && mocks.strict ? h("span", { class: "badge", title: "API calls with no mock get a 404" }, "strict") : null,
+      ),
+      h(
+        "div",
+        { class: "mocks-body" },
+        h(
+          "p",
+          { class: "dim" },
+          "While it's on, this project's API calls are answered by dx from what was recorded, so the front end runs without its back end. Pages and assets still come from the dev server. Values that were masked when recorded (•••) come back masked.",
+        ),
+        h(
+          "div",
+          { class: "toolbar" },
+          n
+            ? btn(mocks.on ? "Turn off" : "Turn on", (ev) => void mockMode(ev.currentTarget, { on: !mocks.on }), { small: true, kind: mocks.on ? "" : "primary", iconName: mocks.on ? "stop" : "play" })
+            : null,
+          n
+            ? h("label", { class: "check" }, h("input", { type: "checkbox", checked: mocks.strict, onchange: (e) => void mockMode(null, { strict: e.target.checked }) }), "Strict: API calls with no mock get a 404")
+            : null,
+          btn("Make mocks from the last hour", (ev) => void makeMocks(ev.currentTarget, dir, { since: "1h" }), { small: true, iconName: "template" }),
+          n ? btn("Remove all", (ev) => void removeAllMocks(ev.currentTarget), { small: true, kind: "danger-ghost", iconName: "cleanup" }) : null,
+        ),
+        n
+          ? h("ul", { class: "mock-list" }, mocks.endpoints.map(mockRow))
+          : h("p", { class: "dim" }, "No mocks yet. Use the app at its .localhost address, then make mocks from the last hour, or from one visit with its Make mocks button."),
+      ),
+    );
+    mockHolder.replaceChildren(panel);
+  }
+
+  function mockRow(e) {
+    const editing = mockEdit?.id === e.id;
+    return h(
+      "li",
+      { class: `mock-row${e.enabled ? "" : " mock-off"}` },
+      h("input", { type: "checkbox", checked: e.enabled, "aria-label": `Answer ${e.method} ${e.path} from its mock`, onchange: (ev) => void saveMock(e.id, { enabled: ev.target.checked }) }),
+      h("span", { class: "badge mono" }, e.method),
+      h("span", { class: "mono mock-path" }, `${e.path}${e.query ?? ""}`, e.bodyKey ? h("span", { class: "dim", title: e.requestBody ?? "" }, " (one request body)") : null),
+      h("span", { class: `badge ${e.offline || e.status >= 400 ? "badge-danger" : "badge-ok"}` }, e.offline ? "offline" : String(e.status)),
+      e.delayMs ? h("span", { class: "dim" }, `${e.delayMs} ms`) : null,
+      e.edited ? h("span", { class: "badge", title: "Changed by hand: making mocks again leaves it as it is" }, "edited") : null,
+      btn(editing ? "Close" : "Edit", () => void toggleMockEdit(e), { small: true, kind: "ghost", iconName: editing ? "x" : "code", name: `${editing ? "Close" : "Edit"} the mock for ${e.method} ${e.path}` }),
+      editing ? mockEdit.el : null,
+    );
+  }
+
+  async function toggleMockEdit(e) {
+    if (mockEdit?.id === e.id) {
+      mockEdit = null;
+      return renderMocks();
+    }
+    try {
+      const full = await api(`/api/mocks?dir=${encodeURIComponent(dir)}&id=${encodeURIComponent(e.id)}`);
+      mockEdit = { id: e.id, el: mockEditor(full) };
+      renderMocks();
+      mockEdit.el.querySelector("textarea")?.focus();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  function mockEditor(ep) {
+    const pretty = (text) => {
+      try {
+        return JSON.stringify(JSON.parse(text), null, 2);
+      } catch {
+        return text;
+      }
+    };
+    const status = h("input", { class: "input", type: "number", min: "100", max: "599", value: String(ep.status), "aria-label": "Status code" });
+    const delay = h("input", { class: "input", type: "number", min: "0", max: "30000", step: "100", value: String(ep.delayMs), "aria-label": "Delay in milliseconds" });
+    const type = h("input", { class: "input", value: ep.contentType, spellcheck: "false", autocomplete: "off", "aria-label": "Content type" });
+    const body = h("textarea", { class: "input mock-body", spellcheck: "false", autocomplete: "off", "aria-label": "Answer body", rows: "10" });
+    body.value = pretty(ep.body);
+    const problem = h("p", { class: "field-hint mock-problem", "aria-live": "polite" });
+    const preview = h("div", { class: "mock-preview" });
+    const save = btn("Save", () => void submit(), { kind: "primary", iconName: "check", small: true });
+    let timer = 0;
+    const check = () => {
+      const json = /json/i.test(type.value);
+      let error = "";
+      if (json && body.value.trim()) {
+        try {
+          JSON.parse(body.value);
+        } catch (err) {
+          error = `Not valid JSON: ${err.message}`;
+        }
+      }
+      if (new Blob([body.value]).size > 1024 * 1024) error = "A mock's body can be at most 1 MB.";
+      problem.textContent = error;
+      problem.classList.toggle("mock-problem-on", !!error);
+      save.disabled = !!error;
+      if (!error) preview.replaceChildren(liveDetail((mode) => bodyBlock("Answer", body.value, type.value)(mode)));
+    };
+    body.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(check, 300);
+    });
+    type.addEventListener("input", check);
+    check();
+
+    async function submit() {
+      const r = await busy(save, "Saving…", () =>
+        api("/api/mocks/update", { method: "POST", body: { dir, id: ep.id, status: Number(status.value), delayMs: Number(delay.value || 0), contentType: type.value, body: body.value } }),
+      );
+      if (!r) return;
+      mockEdit = null;
+      toast(`Saved the mock for ${ep.method} ${ep.path}`);
+      void loadMocks();
+    }
+    const preset = async (button, name, label) => {
+      const r = await busy(button, "…", () => api("/api/mocks/update", { method: "POST", body: { dir, id: ep.id, preset: name } }));
+      if (!r) return;
+      mockEdit = { id: ep.id, el: mockEditor(r) };
+      toast(`${ep.method} ${ep.path}: ${label}`);
+      void loadMocks();
+    };
+    return h(
+      "div",
+      { class: "mock-editor" },
+      h(
+        "div",
+        { class: "toolbar mock-presets", role: "group", "aria-label": "Quick presets" },
+        [
+          ["fail", "Fail with 500"],
+          ["empty", "Empty list"],
+          ["slow", "Slow (3 s)"],
+          ["offline", ep.offline ? "Offline (on)" : "Offline"],
+          ["reset", "Reset to recorded"],
+        ].map(([name, label]) => btn(label, (ev) => void preset(ev.currentTarget, name, label), { small: true, kind: name === "reset" ? "ghost" : "" })),
+      ),
+      h(
+        "div",
+        { class: "mock-fields" },
+        h("label", { class: "field" }, h("span", { class: "field-label" }, "Status"), status),
+        h("label", { class: "field" }, h("span", { class: "field-label" }, "Delay (ms)"), delay, h("span", { class: "field-hint" }, "Up to 30 000")),
+        h("label", { class: "field" }, h("span", { class: "field-label" }, "Content type"), type),
+      ),
+      ep.offline ? h("p", { class: "dim" }, "Offline: the connection is closed with no answer, as when the API is down. Reset to recorded turns it off.") : null,
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Body"), body, problem),
+      preview,
+      h(
+        "div",
+        { class: "form-actions" },
+        save,
+        btn("Remove this mock", (ev) => void removeOneMock(ev.currentTarget, ep), { small: true, kind: "danger-ghost", iconName: "cleanup" }),
+      ),
+    );
+  }
+
+  async function saveMock(id, patch) {
+    try {
+      await api("/api/mocks/update", { method: "POST", body: { dir, id, ...patch } });
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    void loadMocks();
+  }
+
+  async function mockMode(button, mode) {
+    const call = () => api("/api/mocks/mode", { method: "POST", body: { dir, ...mode } });
+    const r = button ? await busy(button, mode.on ? "Turning on…" : "Turning off…", call) : await call().catch((err) => toast(err.message, "error"));
+    if (r && mode.on !== undefined) toast(r.on ? `Mock mode is on: ${plural(r.endpoints, "endpoint")} answered by dx` : "Mock mode is off: every call goes to the dev server");
+    await loadMocks();
+    renderNav();
+  }
+
+  async function makeMocks(button, d, body) {
+    const r = await busy(button, "Making…", () => api("/api/mocks/make", { method: "POST", body: { dir: d, ...body } }));
+    if (!r) return;
+    toast(`${plural(r.endpoints, "mocked endpoint")}: ${r.added} new, ${r.replaced} updated${r.kept ? `, ${r.kept} you edited kept` : ""}.${r.on ? "" : " Turn mock mode on to use them."}`);
+    if (d === dir) {
+      if (!pref("mocksOpen", "") || pref("mocksOpen", "") === "0") setPref("mocksOpen", "1");
+      void loadMocks();
+    } else choose(`p:${d}`);
+  }
+
+  async function removeOneMock(button, ep) {
+    const yes = await confirmDialog({ title: `Remove the mock for ${ep.method} ${ep.path}?`, text: "Calls to it go to the dev server again. Make it again from the history any time.", confirm: "Remove mock" });
+    if (!yes) return;
+    const r = await busy(button, "Removing…", () => api("/api/mocks/remove", { method: "POST", body: { dir, id: ep.id } }));
+    if (!r) return;
+    mockEdit = null;
+    void loadMocks();
+  }
+
+  async function removeAllMocks(button) {
+    const yes = await confirmDialog({ title: "Remove every mock?", text: "This deletes the project's mocks and turns mock mode off. The activity history isn't touched.", confirm: "Remove all" });
+    if (!yes) return;
+    const r = await busy(button, "Removing…", () => api("/api/mocks/remove", { method: "POST", body: { dir, all: true } }));
+    if (!r) return;
+    mockEdit = null;
+    toast("Removed every mock");
+    await loadMocks();
+    renderNav();
+  }
+
   async function copyReport(button, e) {
     const r = await busy(button, "Copying…", async () => {
-      const report = await api(`/api/activity/report?dir=${encodeURIComponent(e.dir)}&id=${e.id}`);
+      const where = e.dir.startsWith("site:") ? `site=${encodeURIComponent(e.dir.slice(5))}` : `dir=${encodeURIComponent(e.dir)}`;
+      const report = await api(`/api/activity/report?${where}&id=${e.id}`);
       await navigator.clipboard.writeText(report.markdown);
       return report;
     });
     if (r) toast("Bug report copied: steps, requests and the error, as markdown");
   }
 
-  function activityRow(e, many, isOpen) {
+  /** One event. `foreign` is for a bundle's events: shown with the same viewers, without actions on this computer's history. */
+  function activityRow(e, many, isOpen, inVisit = false, { foreign = false } = {}) {
     const problem = isProblemEvent(e);
     const tone = problem ? (e.level === "warn" ? "badge-warn" : "badge-danger") : e.type === "action" || e.type === "route" ? "badge-accent" : "";
     const label = e.type === "console" && e.level && e.level !== "log" ? `Console ${e.level}` : ACTIVITY_LABELS[e.type] ?? e.type;
     const time = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    const firstLine = e.text.split("\n")[0];
+    const firstLine = e.mocked ? e.text.split("\n")[0].replace(/ \(mocked\)$/, "") : e.text.split("\n")[0];
     const head = [
       h("span", { class: "time" }, time),
       h("span", { class: `badge ${tone}` }, label),
       many ? h("span", { class: "badge" }, e.project) : null,
+      inVisit ? null : envBadge(e.env),
       e.service ? h("span", { class: "badge" }, e.service) : null,
-      h("span", { class: `activity-text${e.type === "request" || e.type === "page" || e.type === "console" ? " mono" : ""}` }, firstLine),
+      e.mocked ? h("span", { class: "badge badge-warn", title: "Answered by dx's mock mode from a recording, not by the dev server" }, "mocked") : null,
+      h("span", { class: `activity-text${e.type === "request" || e.type === "page" || e.type === "console" ? " mono" : ""}`, title: firstLine.length > 80 ? firstLine : undefined }, firstLine),
       e.ms !== undefined && (e.type === "request" || e.type === "page") ? h("span", { class: "dim" }, `${e.ms} ms`) : null,
     ];
     const details = [];
-    if (problem) {
+    if (problem && !foreign) {
       details.push(
         h(
           "p",
           { class: "activity-meta" },
           btn("Copy as bug report", (ev) => copyReport(ev.currentTarget, e), { small: true, iconName: "copy", title: "Copy the steps that led here, the requests and the error, as markdown for an issue or an AI chat" }),
+          e.dir.startsWith("site:") || e.level === "warn"
+            ? null
+            : btn("Download bug bundle", (ev) => downloadBundle(ev.currentTarget, e), {
+                small: true,
+                iconName: "save",
+                title: "Save the steps, requests and this error as a .dxbug.json file a teammate can replay on their own dev server",
+              }),
         ),
       );
     }
@@ -4877,7 +6554,7 @@ function activityPage(root) {
         liveDetail((mode) => [
           consoleBlock(e.text)(mode),
           e.source ? h("p", { class: "activity-meta" }, sourceButton(e)) : null,
-          e.stack && problem ? stackBlock(e.stack, e.dir)(mode) : null,
+          e.stack && problem ? stackBlock(e.stack, codeDir(e))(mode) : null,
         ]),
       );
     } else if (e.type === "error" || e.type === "server-error") {
@@ -4886,38 +6563,51 @@ function activityPage(root) {
         liveDetail((mode) => [
           // A stack's first frame says where already.
           e.source && (mode === "raw" || !e.stack || !parseStack(e.stack).frames.length) ? h("p", { class: "activity-meta" }, "Where: ", sourceButton(e)) : null,
-          e.stack ? stackBlock(e.stack, e.dir)(mode) : extra ? h("pre", { class: "log-snippet raw-text" }, extra) : null,
+          e.stack ? stackBlock(e.stack, codeDir(e))(mode) : extra ? h("pre", { class: "log-snippet raw-text" }, extra) : null,
         ]),
       );
     } else {
       if (e.text.includes("\n")) details.push(h("pre", { class: "log-snippet" }, e.text));
       if (e.source) details.push(h("p", { class: "activity-meta" }, sourceButton(e)));
     }
-    if (!details.length) return h("li", { class: "activity-row" }, head);
-    return h("li", null, h("details", { open: isOpen || undefined, dataset: { id: String(e.id) } }, h("summary", { class: "activity-row" }, head), h("div", { class: "activity-detail" }, details)));
+    const at = String(Date.parse(e.at));
+    if (!details.length) return h("li", { class: "activity-row", dataset: { at } }, head);
+    return h("li", { dataset: { at } }, h("details", { open: isOpen || undefined, dataset: { id: String(e.id) } }, h("summary", { class: "activity-row" }, head), h("div", { class: "activity-detail" }, details)));
   }
 
   /** The event's file and line as a button that opens your editor there, when it's one of the project's files. */
   function sourceButton(e) {
     const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(e.source);
     if (!m) return h("span", { class: "dim mono" }, e.source);
-    return openAt(e.dir, m[1], Number(m[2]), m[3] ? Number(m[3]) : undefined);
+    return openAt(codeDir(e), m[1], Number(m[2]), m[3] ? Number(m[3]) : undefined);
+  }
+
+  /** The project whose files a location can be opened in: none for a deployed site, whose files are its build's. */
+  function codeDir(e) {
+    return e.dir.startsWith("site:") || (e.env && e.env !== "local") ? "" : e.dir;
   }
 
   (async () => {
     try {
       projects = await api("/api/projects");
-      projectSelect.append(...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
-      if (dir && !projects.some((p) => p.dir === dir)) ((dir = ""), setPref("activityDir", ""));
+      siteProject.append(...projects.map((p) => h("option", { value: p.dir }, p.name)));
+      if (dir && !projects.some((p) => p.dir === dir)) ((dir = ""), (sel = ""), setPref("activitySel", ""), setPref("activityDir", ""));
     } catch {
-      // the list stays "All projects"
+      // the list shows what has history
     }
+    renderNav();
+    void loadMocks();
     await load();
     setTimeout(poll, 2000);
   })();
   return () => {
     stopped = true;
     clearTimeout(searchTimer);
+    clearTimeout(ttTimer);
+    root.classList.remove("drop-active");
+    root.removeEventListener("dragover", onDragOver);
+    root.removeEventListener("dragleave", onDragLeave);
+    root.removeEventListener("drop", onDrop);
   };
 }
 
@@ -4937,9 +6627,17 @@ function summaryPage(root) {
       toast("Couldn't copy. Select the text and copy it yourself.", "error");
     }
   }, { iconName: "copy", disabled: true });
+  const thisYear = new Date().getFullYear();
+  let storyYear = Number(pref("storyYear", String(thisYear)));
+  if (!(storyYear >= thisYear - 9 && storyYear <= thisYear)) storyYear = thisYear;
+  const yearSelect = h(
+    "select",
+    { class: "input", "aria-label": "Year", hidden: days !== "year", onchange: (e) => ((storyYear = Number(e.target.value)), setPref("storyYear", storyYear), load()) },
+    Array.from({ length: 10 }, (_, i) => thisYear - i).map((y) => h("option", { value: String(y), selected: y === storyYear }, String(y))),
+  );
   const save = btn("Save to file", async (e) => {
     if (days === "year") {
-      const r = await busy(e.currentTarget, "Saving…", () => api(`/api/summary/year?save=1&github=${github ? 1 : 0}&allAuthors=${everyone ? 1 : 0}`));
+      const r = await busy(e.currentTarget, "Saving…", () => api("/api/summary/story/save", { method: "POST", body: { year: storyYear, github, allAuthors: everyone } }));
       if (r) toast(`Saved as ${r.year}-in-review.md in ~/.dx/summaries`);
       return;
     }
@@ -4953,28 +6651,30 @@ function summaryPage(root) {
     h(
       "div",
       { class: "toolbar" },
-      segmented("Period", [[1, "Today"], [7, "7 days"], [30, "30 days"], ["year", "This year"]], days, (v) => ((days = v), setPref("summaryDays", v), load())),
+      segmented("Period", [[1, "Today"], [7, "7 days"], [30, "30 days"], ["year", "Your year"]], days, (v) => ((days = v), setPref("summaryDays", v), (yearSelect.hidden = v !== "year"), load())),
+      yearSelect,
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: github, onchange: (e) => ((github = e.target.checked), setPref("summaryGithub", github ? "1" : "0"), load()) }), "GitHub pull requests"),
       h("label", { class: "check" }, h("input", { type: "checkbox", onchange: (e) => ((everyone = e.target.checked), load()) }), "Everyone's commits"),
     ),
     holder,
   );
 
+  let loadSeq = 0;
   async function load() {
     copy.disabled = save.disabled = true;
-    holder.replaceChildren(loadingView(days === "year" ? "Reading a year of git history across your projects…" : "Reading git history across your projects…"));
+    holder.replaceChildren(loadingView(days === "year" ? `Reading ${storyYear}'s git history across your projects…` : "Reading git history across your projects…"));
+    const seq = ++loadSeq;
     try {
       if (days === "year") {
-        const y = await api(`/api/summary/year?github=${github ? 1 : 0}&allAuthors=${everyone ? 1 : 0}`);
+        const y = await api(`/api/summary/story?year=${storyYear}&github=${github ? 1 : 0}&allAuthors=${everyone ? 1 : 0}`);
+        if (seq !== loadSeq) return;
         markdown = y.markdown;
         copy.disabled = save.disabled = false;
-        holder.replaceChildren(
-          h("div", { class: "stats" }, stat(y.commits, y.commits === 1 ? "commit" : "commits", `in ${plural(y.projects, "project")}`), stat(y.activeDays, y.activeDays === 1 ? "day with commits" : "days with commits")),
-          h("div", { class: "card card-pad" }, h("pre", { class: "md-doc" }, y.markdown)),
-        );
+        holder.replaceChildren(yearStory(y, everyone));
         return;
       }
       const r = await api(`/api/summary?days=${days}&github=${github ? 1 : 0}&allAuthors=${everyone ? 1 : 0}`);
+      if (seq !== loadSeq) return;
       markdown = r.markdown;
       copy.disabled = save.disabled = false;
       holder.replaceChildren(...renderSummary(r.summary));
@@ -5087,6 +6787,229 @@ function summaryPage(root) {
     return h("section", { class: "section" }, h("h2", { class: "section-title" }, title), content);
   }
   load();
+}
+
+// ------------------------------------------------------------------ Your year
+
+const WEEKDAY_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function niceDate(date, withYear = false) {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString([], { day: "numeric", month: "long", ...(withYear ? { year: "numeric" } : {}) });
+}
+
+function hoursText(ms) {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 && hours < 10 ? `${hours}h ${minutes % 60}m` : `${hours.toLocaleString()}h`;
+}
+
+/** Counts a big number up from 0 when it scrolls into view; under reduced motion it's just there. */
+function countUp(el, value) {
+  el.textContent = value.toLocaleString();
+  if (reducedMotion.matches || value < 2 || !("IntersectionObserver" in window)) return;
+  el.textContent = "0";
+  const io = new IntersectionObserver((entries) => {
+    if (!entries.some((e) => e.isIntersecting)) return;
+    io.disconnect();
+    const start = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / 700);
+      el.textContent = Math.round(value * (1 - (1 - t) ** 3)).toLocaleString();
+      if (t < 1 && el.isConnected) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+  io.observe(el);
+}
+
+/**
+ * The year as a story, one card per thing worth telling: a big number or a small chart and a
+ * sentence. Drawn from what dx found on this computer; nothing is sent anywhere.
+ */
+function yearStory(y, everyone) {
+  const st = y.story;
+  const whose = everyone ? "everyone's" : "your";
+  if (!st.commits && !st.journal.entries) {
+    return h(
+      "div",
+      { class: "card" },
+      stateView(`Nothing recorded for ${y.year}`, `No commits of ${everyone ? "anyone's" : "yours"} and no journal entries in ${y.year} in your projects folders.`, h("a", { class: "btn", href: "#/journal" }, "Write in your journal")),
+    );
+  }
+  const reveal = !reducedMotion.matches && "IntersectionObserver" in window;
+  const io = reveal
+    ? new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          e.target.classList.remove("story-pending");
+          e.target.classList.add("story-reveal");
+          io.unobserve(e.target);
+        }
+      }, { rootMargin: "0px 0px -10% 0px" })
+    : null;
+  const big = (value, unit) => {
+    const num = h("span", { class: "story-num" });
+    countUp(num, value);
+    return h("p", { class: "story-big" }, num, unit ? h("span", { class: "story-unit" }, ` ${unit}`) : null);
+  };
+  const card = (label, ...content) => {
+    const el = h("section", { class: `card story-card${reveal ? " story-pending" : ""}` }, h("h2", { class: "story-label" }, label), content);
+    io?.observe(el);
+    return el;
+  };
+  const line = (...text) => h("p", { class: "story-line" }, text);
+  const bar = (share) => h("span", { class: "story-bar" }, h("span", { class: "story-bar-fill", style: { width: `${Math.max(3, Math.round(share * 100))}%` } }));
+
+  const cards = [];
+  cards.push(
+    h(
+      "section",
+      { class: "story-hero" },
+      h("h2", { class: "story-kicker" }, `Your ${y.year}${y.year === new Date().getFullYear() ? ", so far" : ""}`),
+      h("div", { class: "story-hero-title" }, big(st.commits, st.commits === 1 ? "commit" : "commits")),
+      line(`in ${plural(st.projects, "project")}, on ${plural(st.activeDays, "day")}${st.journal.entries ? `, with ${plural(st.journal.entries, "journal entry", "journal entries")}` : ""}.`),
+      h("p", { class: "story-private" }, icon("key"), `Made on this computer from ${whose} git history, your journal and dx's own records. Nothing leaves it.`),
+    ),
+  );
+
+  if (st.longestStreak) {
+    cards.push(
+      card(
+        "Longest streak",
+        big(st.longestStreak.days, st.longestStreak.days === 1 ? "day" : "days in a row"),
+        line(st.longestStreak.days > 1 ? `From ${niceDate(st.longestStreak.from)} to ${niceDate(st.longestStreak.to)}, a commit every day.` : "No two days in a row yet; plenty of time."),
+      ),
+    );
+  }
+  if (st.busiestWeek) {
+    cards.push(card("Busiest week", big(st.busiestWeek.commits, "commits"), line(`The week of ${niceDate(st.busiestWeek.from)} to ${niceDate(st.busiestWeek.to)}.`)));
+  }
+
+  // When you code: weekday × hour, shaded by how many commits.
+  if (st.peak) {
+    const max = Math.max(1, ...st.heat.flat());
+    const grid = h("div", { class: "heat", role: "img", "aria-label": `Commits by weekday and hour. Most on ${WEEKDAY_LONG[st.peak.weekday]}s at ${String(st.peak.hour).padStart(2, "0")}:00.` });
+    grid.append(h("span", { class: "heat-corner" }));
+    for (let hour = 0; hour < 24; hour++) grid.append(h("span", { class: "heat-hour" }, hour % 6 === 0 ? String(hour).padStart(2, "0") : ""));
+    st.heat.forEach((row, wd) => {
+      grid.append(h("span", { class: "heat-day" }, WEEKDAY_LONG[wd].slice(0, 3)));
+      row.forEach((n, hour) => {
+        const level = n === 0 ? 0 : Math.min(4, Math.ceil((n / max) * 4));
+        grid.append(h("span", { class: `heat-cell heat-${level}`, title: `${WEEKDAY_LONG[wd]} ${String(hour).padStart(2, "0")}:00: ${plural(n, "commit")}` }));
+      });
+    });
+    cards.push(
+      card(
+        "When you code",
+        grid,
+        h("div", { class: "heat-legend", "aria-hidden": "true" }, "Fewer", [0, 1, 2, 3, 4].map((l) => h("span", { class: `heat-cell heat-${l}` })), "More"),
+        line(`Most often on ${WEEKDAY_LONG[st.peak.weekday]}s around ${String(st.peak.hour).padStart(2, "0")}:00. ${Math.round(st.evenings * 100)}% of commits in the evening or at night, ${Math.round(st.weekends * 100)}% at weekends.`),
+      ),
+    );
+    cards[cards.length - 1].classList.add("story-wide");
+  }
+
+  if (st.months.length) {
+    const max = Math.max(...st.months.map((m) => m.commits));
+    cards.push(
+      card(
+        "The project of each month",
+        h(
+          "ul",
+          { class: "story-months" },
+          st.months.map((m) =>
+            h("li", null, h("span", { class: "story-month" }, m.month.slice(0, 3)), h("span", { class: "story-month-project" }, m.project ?? ""), bar(m.commits / max), h("span", { class: "story-count" }, String(m.commits))),
+          ),
+        ),
+        line(`${st.months.length === 1 ? "One month" : `${st.months.length} months`} with commits; ${[...st.months].sort((a, b) => b.commits - a.commits)[0].month} was the busiest.`),
+      ),
+    );
+    cards[cards.length - 1].classList.add("story-wide");
+  }
+
+  if (st.biggestDay) {
+    cards.push(card("Biggest single day", big(st.biggestDay.commits, "commits"), line(`${niceDate(st.biggestDay.date)}, in ${st.biggestDay.projects.join(", ")}.`)));
+  }
+
+  if (st.fixes.count) {
+    cards.push(
+      card(
+        "Bugs squashed",
+        big(st.fixes.count, st.fixes.count === 1 ? "fix" : "fixes"),
+        line(`${Math.round((st.fixes.count / Math.max(1, st.commits)) * 100)}% of the year's commits fix something. The latest:`),
+        h("ul", { class: "story-list" }, st.fixes.examples.slice(0, 3).map((c) => h("li", null, c.subject, h("span", { class: "dim" }, ` · ${c.project}, ${niceDate(c.date)}`)))),
+      ),
+    );
+  }
+
+  if (st.files.length) {
+    cards.push(
+      card(
+        "Most-touched files",
+        h("ol", { class: "story-list story-files" }, st.files.slice(0, 5).map((f) => h("li", null, h("span", { class: "mono story-file" }, f.path), h("span", { class: "dim" }, ` · ${f.project}, ${plural(f.commits, "commit")}`)))),
+        line(`${st.files[0].path} changed in ${plural(st.files[0].commits, "commit")}, more than any other file.`),
+      ),
+    );
+  }
+
+  if (st.languages.length) {
+    const total = st.languages.reduce((n, l) => n + l.files, 0);
+    cards.push(
+      card(
+        "Languages",
+        h("ul", { class: "story-langs" }, st.languages.slice(0, 6).map((l) => h("li", null, h("span", { class: "story-lang" }, l.language), bar(l.files / st.languages[0].files), h("span", { class: "story-count" }, `${Math.round((l.files / total) * 100)}%`)))),
+        line(`Mostly ${st.languages[0].language}, by files changed.`),
+      ),
+    );
+  }
+
+  if (st.devMs >= 60_000) {
+    const top = st.devProjects[0];
+    cards.push(card("Dev servers running", h("p", { class: "story-big" }, h("span", { class: "story-num" }, hoursText(st.devMs))), line(`Time dx ran your dev servers${top ? `, most of it for ${top.project} (${hoursText(top.ms)})` : ""}.`)));
+  }
+
+  if (st.first) {
+    const moment = (label, c) => h("div", { class: "story-moment" }, h("span", { class: "story-label" }, label), h("strong", null, c.subject || "(no message)"), h("span", { class: "dim" }, `${c.project} · ${niceDate(c.date)} at ${c.time}`));
+    cards.push(card("First and last", h("div", { class: "story-moments" }, moment("First commit", st.first), st.last && st.commits > 1 ? moment("Latest commit", st.last) : null)));
+  }
+
+  if (st.journal.words.length) {
+    const max = st.journal.words[0].count;
+    cards.push(
+      card(
+        "Your journal's words",
+        h("ul", { class: "story-words" }, st.journal.words.map((w) => h("li", { class: `story-word story-word-${Math.max(1, Math.ceil((w.count / max) * 3))}` }, w.word, h("span", { class: "dim" }, ` ${w.count}`)))),
+        line(`From ${plural(st.journal.entries, "journal entry", "journal entries")}.`),
+      ),
+    );
+  }
+
+  if (st.ai.calls || st.notes.ai) {
+    cards.push(
+      card(
+        "With your AI agent",
+        big(st.ai.calls, st.ai.calls === 1 ? "call" : "calls"),
+        line(`Made through dx${st.ai.projects ? ` in ${plural(st.ai.projects, "project")}` : ""}${st.notes.ai ? `, and ${plural(st.notes.ai, "note")} left for you` : ""}.`),
+      ),
+    );
+  }
+
+  if (y.github && "merged" in y.github && y.github.merged + y.github.reviewed) {
+    cards.push(card("Pull requests", big(y.github.merged, "merged"), line(`And ${plural(y.github.reviewed, "review")} of other people's.`)));
+  }
+
+  const notes = [];
+  if (st.skipped.length) notes.push(`Couldn't read ${st.skipped.join(", ")}.`);
+  if (y.github && "error" in y.github) notes.push(`No pull requests: ${y.github.error}.`);
+  return h(
+    "div",
+    { class: "story" },
+    cards,
+    notes.length ? h("div", { class: "note" }, icon("info"), h("div", null, notes.map((n) => h("p", null, n)))) : null,
+    h("p", { class: "dim" }, `Commits by ${st.author}, ${niceDate(st.from, true)} to ${niceDate(st.to, true)}. Copy as markdown or Save keeps the same numbers as text.`),
+  );
 }
 
 // ------------------------------------------------------------------ Cleanup
@@ -5407,6 +7330,7 @@ function healthPage(root) {
     const depth = h("select", { id: "cfg-depth" }, [1, 2, 3].map((d) => h("option", { value: d, selected: d === config.scanDepth }, d === 1 ? "Only the folders inside" : `${d} levels deep`)));
     const activityOn = h("input", { type: "checkbox", id: "cfg-activity", checked: config.activity !== false });
     const localhostOn = h("input", { type: "checkbox", id: "cfg-localhost", checked: config.localhostRecording !== false });
+    const visualOn = h("input", { type: "checkbox", id: "cfg-visual", checked: config.visualDiff !== false });
     const activityDays = h("select", { id: "cfg-activity-days" }, [1, 3, 7, 14, 30, 90].map((d) => h("option", { value: d, selected: d === (config.activityDays ?? 7) }, plural(d, "day"))));
     const activityMax = h("select", { id: "cfg-activity-max" }, [100, 250, 500, 1000, 2000, 5000].map((mb) => h("option", { value: mb, selected: mb === (config.activityMaxMB ?? 500) }, mb >= 1000 ? `${mb / 1000} GB` : `${mb} MB`)));
     const activityUse = h("span", { class: "field-hint" });
@@ -5421,7 +7345,7 @@ function healthPage(root) {
         class: "card card-pad section",
         onsubmit: async (e) => {
           e.preventDefault();
-          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
+          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
           const r = await busy(save, "Saving…", () => api("/api/config", { method: "POST", body }));
           if (r) toast("Settings saved");
         },
@@ -5456,6 +7380,13 @@ function healthPage(root) {
           h("label", { class: "toolbar", for: "cfg-activity-days" }, h("span", { class: "field-hint" }, "Keep it for"), activityDays),
           h("label", { class: "toolbar", for: "cfg-activity-max" }, h("span", { class: "field-hint" }, "At most"), activityMax),
           activityUse,
+        ),
+        h(
+          "div",
+          { class: "field" },
+          h("span", { class: "field-label" }, "Visual diffs"),
+          h("label", { class: "check", for: "cfg-visual" }, visualOn, "After each commit, screenshot the pages you use most and compare them with the commit before"),
+          h("span", { class: "field-hint" }, "Only while dx runs the project's dev server, with Chrome, Edge, Chromium or Brave. The last 30 commits are kept per project."),
         ),
       ),
       h("div", { class: "form-actions" }, save),
@@ -5551,6 +7482,175 @@ function healthPage(root) {
   load();
 }
 
+// ------------------------------------------------------------------ the AI lane
+
+/**
+ * What your AI agent is doing through dx, live, at the right edge of every page: its calls (from
+ * the MCP server, through ~/.dx/runs.jsonl) and the dev servers it started. Shown while an agent
+ * is active: a call in the last few minutes, or one of its servers running. Collapsed or open is
+ * remembered.
+ */
+const aiLane = { data: null, open: pref("aiLane", "open") !== "closed", sig: "", shown: false, timer: 0 };
+const aiLaneEl = h("aside", { class: "ai-lane", id: "ai-lane", hidden: true, "aria-label": "Your AI agent" });
+const aiLaneTab = h("button", { type: "button", class: "ai-lane-tab", hidden: true, "aria-controls": "ai-lane", "aria-expanded": "false", onclick: () => setAiLaneOpen(true) });
+document.body.append(aiLaneEl, aiLaneTab);
+
+/** Where a call happened: the project's dev server card, its Activity, the Git page… */
+function aiCallLink(c) {
+  const q = c.dir ? `?dir=${encodeURIComponent(c.dir)}` : "";
+  if (["check_url", "activity_log", "network_log", "replay_visit"].includes(c.tool)) return `#/activity${q}${q ? "&" : "?"}who=ai`;
+  if (c.tool.startsWith("git_")) return `#/git${q}`;
+  const pages = { visual_diff: "#/git", machine_info: "#/machine", list_ports: "#/ports", kill_port: "#/ports", check_env: "#/env", audit_dependencies: "#/deps", fix_dependencies: "#/deps", find_cleanup: "#/cleanup", work_summary: "#/summary", read_log: "#/journal", add_log_entry: "#/journal", dx_setup_check: "#/health" };
+  if (pages[c.tool]) return pages[c.tool];
+  return `#/projects${q}`;
+}
+
+function setAiLaneOpen(open) {
+  aiLane.open = open;
+  setPref("aiLane", open ? "open" : "closed");
+  drawAiLane();
+  if (open) aiLaneEl.querySelector(".ai-lane-close")?.focus();
+  else aiLaneTab.focus();
+}
+
+async function takeOverServer(button, s, after) {
+  const r = await busy(button, "Taking over…", () => api("/api/dev/takeover", { method: "POST", body: { dir: s.dir } }));
+  if (!r) return;
+  toast(`${s.project} is yours now. It keeps running when the agent is done; stop it from the Projects page.`);
+  void refreshAiLane(true);
+  if (after) await after();
+}
+
+async function interruptAgent(button) {
+  const servers = aiLane.data?.servers ?? [];
+  if (!servers.length) return;
+  const names = servers.map((s) => s.project);
+  const yes = await confirmDialog({
+    title: "Stop the agent's dev servers?",
+    text: [
+      `This stops ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`}, which your AI agent started.`,
+      "dx can't stop the agent itself: it runs in your AI tool. Tell it to stop there too, or it may start them again.",
+    ],
+    confirm: `Stop ${plural(names.length, "server")}`,
+  });
+  if (!yes) return;
+  const r = await busy(button, "Stopping…", () => api("/api/ai/interrupt", { method: "POST", body: { dirs: servers.map((s) => s.dir) } }));
+  if (!r) return;
+  toast(r.stopped.length ? `Stopped ${r.stopped.join(", ")}` : "They had already stopped.");
+  void refreshAiLane(true);
+  void updateRunningCount();
+}
+
+function drawAiLane() {
+  const d = aiLane.data;
+  const show = !!d?.active;
+  aiLaneEl.hidden = !show || !aiLane.open;
+  aiLaneTab.hidden = !show || aiLane.open;
+  document.body.classList.toggle("ai-lane-open", show && aiLane.open);
+  if (show && !aiLane.shown && aiLane.open) aiLaneEl.classList.add("ai-lane-enter");
+  aiLane.shown = show;
+  if (!show) return;
+  const recent = d.calls.filter((c) => Date.now() - Date.parse(c.at) < 5 * 60_000).length;
+  aiLaneTab.replaceChildren();
+  append(aiLaneTab, icon("ai"), h("span", null, "AI agent"), recent ? h("span", { class: "count" }, String(recent)) : null);
+  aiLaneTab.title = "Show what your AI agent is doing";
+  if (!aiLane.open) return;
+
+  const last = d.lastCallAt ? Date.parse(d.lastCallAt) : 0;
+  const working = last && Date.now() - last < 60_000;
+  const stopBtn = btn("Interrupt", (ev) => interruptAgent(ev.currentTarget), {
+    small: true,
+    kind: "danger-ghost",
+    iconName: "stop",
+    disabled: !d.servers.length,
+    title: d.servers.length
+      ? "Stop every dev server the agent started. dx can't stop the agent itself: it runs in your AI tool, so tell it to stop there."
+      : "The agent has no dev servers running. dx can't stop the agent itself: it runs in your AI tool, so tell it to stop there.",
+  });
+  stopBtn.classList.add("ai-lane-interrupt");
+  const close = btn("", () => setAiLaneOpen(false), { small: true, kind: "ghost", iconName: "right", name: "Collapse the AI lane" });
+  close.classList.add("ai-lane-close");
+  aiLaneEl.replaceChildren();
+  append(
+    aiLaneEl,
+    h(
+      "div",
+      { class: "ai-lane-head" },
+      h("div", { class: "ai-lane-title" }, h("span", { class: `dot ${working ? "dot-pulse ai-dot-on" : ""}`, "aria-hidden": "true" }), h("strong", null, "AI agent"), h("span", { class: "dim" }, working ? "working" : last ? `last call ${relativeTime(last)}` : "idle")),
+      stopBtn,
+      close,
+    ),
+    d.interrupted
+      ? h("p", { class: "ai-lane-note" }, icon("stop"), `You stopped the agent's servers${d.interrupted.stopped.length ? ` (${d.interrupted.stopped.join(", ")})` : ""} ${relativeTime(Date.parse(d.interrupted.at))}.`)
+      : null,
+    d.servers.length
+      ? h(
+          "div",
+          { class: "ai-lane-servers" },
+          h("h2", { class: "ai-lane-label" }, "Its dev servers"),
+          h(
+            "ul",
+            { class: "ai-lane-list" },
+            d.servers.map((s) =>
+              h(
+                "li",
+                { class: "ai-lane-server" },
+                h("a", { href: `#/projects?dir=${encodeURIComponent(s.dir)}`, class: "ai-lane-server-name" }, s.project),
+                h("span", { class: `badge ${s.status === "ready" ? "badge-ok" : "badge-warn"}` }, s.status === "ready" ? "Running" : "Starting"),
+                s.errorCount ? h("span", { class: "badge badge-danger" }, plural(s.errorCount, "error")) : null,
+                btn("Take over", (ev) => takeOverServer(ev.currentTarget, s), { small: true, kind: "ghost", iconName: "user", title: `Make ${s.project} yours: it's labelled as started from the dashboard and keeps running after the agent is done` }),
+              ),
+            ),
+          ),
+        )
+      : null,
+    h("h2", { class: "ai-lane-label" }, "What it did"),
+    d.calls.length
+      ? h(
+          "ol",
+          { class: "ai-lane-feed", "aria-live": "polite" },
+          d.calls.slice(0, 30).map((c) =>
+            h(
+              "li",
+              null,
+              h(
+                "a",
+                { class: `ai-call ${c.ok ? "" : "ai-call-failed"}`, href: aiCallLink(c), title: c.args ? `${c.tool}: ${c.args}` : c.tool },
+                icon(c.ok ? "check" : "warn"),
+                h("span", { class: "ai-call-text" }, c.text),
+                h("span", { class: "ai-call-meta" }, relativeTime(Date.parse(c.at)), typeof c.ms === "number" && c.ms >= 1000 ? ` · ${(c.ms / 1000).toFixed(1)}s` : ""),
+              ),
+            ),
+          ),
+        )
+      : h("p", { class: "dim ai-lane-empty" }, "No calls yet. Its servers are above."),
+    h("p", { class: "ai-lane-foot dim" }, "From dx's MCP tools. Nothing secret is kept: no .env values, query results or request bodies."),
+  );
+}
+
+/** Polls like the rest of the page; redraws only when something changed. */
+async function refreshAiLane(force = false) {
+  clearTimeout(aiLane.timer);
+  if (force || document.visibilityState === "visible") {
+    try {
+      const d = await api("/api/ai");
+      const sig = JSON.stringify([d.active, d.calls[0]?.at, d.calls.length, d.servers.map((s) => [s.dir, s.status, s.errorCount]), d.interrupted?.at, Math.floor(Date.now() / 30_000)]);
+      if (force || sig !== aiLane.sig) {
+        aiLane.sig = sig;
+        aiLane.data = d;
+        drawAiLane();
+      }
+    } catch {
+      // the dashboard went away; the page says so elsewhere
+    }
+  }
+  aiLane.timer = setTimeout(refreshAiLane, 4000);
+}
+aiLaneEl.addEventListener("animationend", () => aiLaneEl.classList.remove("ai-lane-enter"));
+aiLaneEl.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") setAiLaneOpen(false);
+});
+
 // ------------------------------------------------------------------ start
 
 const themeSelect = document.getElementById("theme");
@@ -5565,3 +7665,4 @@ themeSelect.addEventListener("change", () => (applyTheme(themeSelect.value), set
 window.addEventListener("hashchange", route);
 setInterval(updateRunningCount, 5000);
 route();
+void refreshAiLane();

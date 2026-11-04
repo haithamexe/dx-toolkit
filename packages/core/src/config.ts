@@ -50,8 +50,20 @@ export interface DxConfig {
    * tool it knows (vite, next, …), dx answers on the usual port and runs the server on another.
    */
   localhostRecording?: boolean;
+  /**
+   * After each commit, screenshot the pages you use most of a project whose dev server dx runs,
+   * and compare them with the commit before's (default true).
+   */
+  visualDiff?: boolean;
+  /** Also capture those pages at a phone's size, 390 × 844 (default false). */
+  visualMobile?: boolean;
   /** The terminal projects open in, by id (`dx terminal --list`); the first one found when unset. */
   terminal?: string;
+  /**
+   * Sites the dx browser records, besides addresses on this computer (`dx sites add`): a host
+   * (or host:port, or *.domain), the project it belongs to, and its environment.
+   */
+  sites?: { host: string; project?: string; env?: string; label?: string }[];
 }
 
 /** Folders people usually keep their code in, checked on first run. */

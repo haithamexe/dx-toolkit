@@ -166,3 +166,46 @@ export const errorsCommand: Command = {
     return total ? 1 : 0;
   },
 };
+
+export const fixCommand: Command = {
+  name: "fix",
+  summary: "Ask Claude Code for a fix to a dev server's newest error, and print the patch (nothing is applied)",
+  usage: [
+    "dx fix todo-app         the newest error of its dev server in the dashboard",
+    "",
+    "Sends the error, the code around it and your uncommitted changes to your Claude account (claude -p).",
+    "The patch is only printed: apply it from the Projects page (Ask Claude to fix), where Undo puts the files back.",
+  ].join("\n"),
+  async run(argv) {
+    const { positionals } = parseArgs({ args: argv, allowPositionals: true, options: {} });
+    if (!positionals[0]) throw new UsageError("Which project?");
+    const project = pick(positionals[0]);
+    const client = await findDashboard();
+    const [server] = client ? await client.get<{ project: string; errors: DevError[] }[]>(`/api/dev/errors?dir=${encodeURIComponent(project.dir)}`) : [];
+    const error = server?.errors[0];
+    if (!client || !server) {
+      info(`${project.name} isn't running in the dashboard. Start it with dx ui, or ask your AI tool to.`);
+      return 1;
+    }
+    if (!error) {
+      ok(`${project.name} has no errors right now.`);
+      return;
+    }
+    info(`Asking Claude about ${c.bold(error.message)}${c.dim(" (this can take a minute)")}`);
+    const r = await client.post<{ ok: boolean; id?: string; patch?: string; files?: string[]; explanation: string; reason?: string; answer: string }>(
+      "/api/fix/propose",
+      { dir: project.dir, source: "dev", id: error.id },
+      120_000,
+    );
+    if (!r.ok) {
+      warn(r.reason ?? "Claude's answer can't be applied.");
+      console.log(c.dim(r.answer));
+      return 1;
+    }
+    for (const line of (r.patch ?? "").replace(/\n$/, "").split("\n")) {
+      console.log(line.startsWith("+") && !line.startsWith("+++") ? c.green(line) : line.startsWith("-") && !line.startsWith("---") ? c.red(line) : line.startsWith("@@") ? c.cyan(line) : line);
+    }
+    if (r.explanation) console.log(`\n${r.explanation}`);
+    info(c.dim(`Nothing was changed. To apply it, open the error on the Projects page (dx ui) and use Ask Claude to fix there, or apply this patch yourself.`));
+  },
+};

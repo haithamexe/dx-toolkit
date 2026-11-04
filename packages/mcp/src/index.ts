@@ -46,13 +46,17 @@ import {
   resumeInfo,
   runTests,
   queryDatabase,
-  buildYearReview,
+  buildYearStory,
   formatYearReview,
   formatActivity,
   auditEnv,
   isProblem,
   parseSince,
   readActivity,
+  describeCapture,
+  describeVisualCommit,
+  listVisual,
+  visualImageFile,
   type ActivityEvent,
   type Replay,
   type DevError,
@@ -60,6 +64,7 @@ import {
   type Project,
 } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
+import { callRecord, recordCall, type CallResult } from "./calls.js";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 const server = new McpServer({ name: "dx", version });
@@ -68,6 +73,41 @@ const text = (value: unknown) => ({
   content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
 });
 const failure = (message: string) => ({ ...text(message), isError: true });
+
+// Every call is recorded (calls.ts says what's kept and what never is), so the user can watch
+// what their agent does in the dashboard's AI lane and in `dx runs`.
+let scanned: { at: number; projects: Project[] } | undefined;
+function projectNameOf(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || !raw) return undefined;
+  try {
+    if (!scanned || Date.now() - scanned.at > 30_000) scanned = { at: Date.now(), projects: scanProjects(loadConfig()) };
+    const { match, candidates } = findProjects(raw, scanned.projects);
+    return (match ?? (candidates.length === 1 ? candidates[0] : undefined))?.name;
+  } catch {
+    return undefined;
+  }
+}
+{
+  type Handler = (args: Record<string, unknown>, extra: unknown) => Promise<CallResult> | CallResult;
+  const register = server.registerTool.bind(server) as unknown as (name: string, config: unknown, handler: Handler) => unknown;
+  (server as unknown as { registerTool: (name: string, config: unknown, handler: Handler) => unknown }).registerTool = (name, config, handler) =>
+    register(name, config, async (args, extra) => {
+      const started = Date.now();
+      const input = args && typeof args === "object" ? args : {};
+      const record = (result: CallResult | undefined) => {
+        const project = projectNameOf(input.project ?? (name === "open_project" ? input.name : undefined));
+        recordCall(callRecord(name, input, result, Date.now() - started, project));
+      };
+      try {
+        const result = await handler(args, extra);
+        record(result);
+        return result;
+      } catch (err) {
+        record({ isError: true, content: [{ type: "text", text: (err as Error).message }] });
+        throw err;
+      }
+    });
+}
 
 server.registerTool(
   "list_projects",
@@ -290,7 +330,10 @@ server.registerTool(
   },
   async ({ days, year, all_authors, github }) => {
     try {
-      if (year !== undefined) return text(formatYearReview(await buildYearReview(year, { allAuthors: all_authors, github: github ?? true })));
+      if (year !== undefined) {
+        const { review, story } = await buildYearStory(year, { allAuthors: all_authors, github: github ?? true });
+        return text(formatYearReview(review, story));
+      }
       const summary = await buildSummary({ days: days ?? 7, allAuthors: all_authors, github: github ?? true });
       const skipped = summary.skipped.map((s) => `- ${s.project}: ${s.reason}`).join("\n");
       return text(formatSummary(summary) + (skipped ? `\nRepos that couldn't be read:\n${skipped}\n` : ""));
@@ -913,7 +956,8 @@ server.registerTool(
       "front-end route changes, clicks and form submits (never typed values), console output, uncaught errors in the browser, and the " +
       "dev server starting, stopping and printing errors. Passwords, tokens and cookies are masked. Use it to see what the user just did " +
       "and what went wrong (\"I clicked checkout and nothing happened\"), or to replay the steps that led to an error. Recorded for apps " +
-      "opened at their .localhost address while the dashboard runs, kept 7 days. By default: what's new since you last asked (the last " +
+      "opened at their .localhost address while the dashboard runs, and for deployed sites the user added (dx sites) and used in the dx " +
+      "browser, each event labelled with its site and environment (staging, production); kept 7 days. By default: what's new since you last asked (the last " +
       "30 minutes the first time).",
     inputSchema: {
       project: z.string().optional().describe("Project name, or part of it; every project when left out"),
@@ -926,17 +970,19 @@ server.registerTool(
       search: z.string().optional().describe("Only events mentioning this, in addresses, bodies and stacks too"),
       limit: z.number().int().min(1).max(1000).optional().describe("At most this many, the newest (default 100)"),
       bodies: z.boolean().optional().describe("Include payloads, responses and stacks (default true when 30 or fewer events)"),
+      site: z.string().optional().describe("Only what the dx browser recorded on this site, by host (staging.shop-website.dev); \"*.\" for subdomains"),
+      env: z.string().optional().describe("Only one environment: local (this computer), staging, production or a label the user gave"),
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
-  async ({ project: name, since, types, problems, search, limit, bodies }) => {
+  async ({ project: name, since, types, problems, search, limit, bodies, site, env }) => {
     let project: Project | undefined;
     if (name) {
       const found = pickProject(name);
       if (typeof found === "string") return failure(found);
       project = found;
     }
-    const key = project?.dir ?? "";
+    const key = `${project?.dir ?? ""}|${site ?? ""}|${env ?? ""}`;
     let sinceDate: Date | undefined;
     let after: number | undefined;
     if (since) {
@@ -944,7 +990,7 @@ server.registerTool(
       if (!sinceDate) return failure(`Can't read since "${since}": use 30m, 2h, 3d, today, yesterday, 14:30 or a date.`);
     } else if (seenActivity.has(key)) after = seenActivity.get(key);
     else sinceDate = new Date(Date.now() - 30 * 60_000);
-    const query = { dir: project?.dir, types, problems, search, limit: limit ?? 100, since: sinceDate, after };
+    const query = { dir: project?.dir, types, problems, search, limit: limit ?? 100, since: sinceDate, after, site, env };
     // The dashboard has the last second's events in memory; the files have everything else.
     const client = await findDashboard();
     let list: ActivityEvent[];
@@ -954,6 +1000,8 @@ server.registerTool(
       if (types?.length) q.set("types", types.join(","));
       if (problems) q.set("problems", "1");
       if (search) q.set("q", search);
+      if (site) q.set("host", site);
+      if (env) q.set("env", env);
       if (sinceDate) q.set("since", sinceDate.toISOString());
       if (after !== undefined) q.set("after", String(after));
       list = await client.get<ActivityEvent[]>(`/api/activity?${q}`);
@@ -1285,6 +1333,70 @@ server.registerTool(
         `  ${t.name}: ${!t.installed ? "not installed" : t.connected ? (t.current ? "connected" : "points at an old copy of dx (fix: dx setup)") : "not connected (fix: dx setup)"}`,
     );
     return text(`${lines.join("\n")}\n\nAI tools:\n${tools.join("\n")}`);
+  },
+);
+
+server.registerTool(
+  "visual_diff",
+  {
+    title: "Did a commit change how the app looks",
+    description:
+      "Screenshots of a project's most used pages per commit, compared with the commit before's: which pages changed, the share of " +
+      "pixels, where (\"around the Checkout button\"), and the diff image (changed pixels orange over a faded copy). dx captures after " +
+      "each commit made on the dashboard's Git page, or when HEAD moves, while it runs the project's dev server. capture: true takes a " +
+      "capture now (start_dev_server first). Use it after a change to check you didn't move something you didn't mean to.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      commit: z.string().regex(/^[0-9a-fA-F]{4,64}$/).optional().describe("A captured commit's hash; the newest capture when left out"),
+      capture: z.boolean().optional().describe("Capture HEAD now through the running dev server, then report"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name, commit, capture }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    if (capture) {
+      try {
+        const client = await ensureDashboard();
+        await client.post("/api/visual/capture", { dir: project.dir });
+        const end = Date.now() + 5 * 60_000;
+        let state: { capturing: boolean; last?: { ok: boolean; message: string } };
+        do {
+          await new Promise((r) => setTimeout(r, 1000));
+          state = await client.get(`/api/visual?dir=${encodeURIComponent(project.dir)}`);
+        } while (state.capturing && Date.now() < end);
+        if (state.last && !state.last.ok) return failure(`The capture failed: ${state.last.message}`);
+      } catch (err) {
+        return failure((err as Error).message);
+      }
+    }
+    const list = listVisual(project.dir);
+    const wanted = commit?.toLowerCase();
+    const e = wanted ? list.find((c) => c.commit.startsWith(wanted)) : list[0];
+    if (!e) {
+      return failure(
+        wanted
+          ? `${wanted} has no captures. Captured: ${list.slice(0, 10).map((c) => c.commit.slice(0, 7)).join(", ") || "none yet"}.`
+          : `No captures of ${project.name} yet. Start its dev server (start_dev_server), then call this with capture: true.`,
+      );
+    }
+    const lines = [
+      `${e.commit.slice(0, 7)} ${e.subject ?? ""}`.trim(),
+      `${describeVisualCommit(e)}${e.against ? ` (against ${e.against.slice(0, 7)})` : ""}. Captured ${new Date(e.at).toLocaleString()} from ${e.baseUrl ?? "the dev server"}.`,
+      ...e.captures.map((c) => `- ${c.path}${c.viewport === "mobile" ? " (phone)" : ""}: ${describeCapture(c)}${c.box ? ` [box x=${c.box.x} y=${c.box.y} ${c.box.width}×${c.box.height} of ${c.width}×${c.height}]` : ""}`),
+    ];
+    const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: lines.join("\n") }];
+    // The diff images of the pages that changed most (at most two), else the first page as it looks.
+    const changed = e.captures.filter((c) => c.diff).sort((a, b) => (b.ratio ?? 0) - (a.ratio ?? 0)).slice(0, 2);
+    const images = changed.length ? changed.map((c) => [c.name, "diff"] as const) : e.captures.filter((c) => !c.error).slice(0, 1).map((c) => [c.name, "shot"] as const);
+    for (const [capName, kind] of images) {
+      try {
+        content.push({ type: "image", data: readFileSync(visualImageFile(project.dir, e.commit, capName, kind)).toString("base64"), mimeType: "image/png" });
+      } catch {
+        // the text says it all
+      }
+    }
+    return { content };
   },
 );
 

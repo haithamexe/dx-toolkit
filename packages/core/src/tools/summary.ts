@@ -76,6 +76,8 @@ export async function buildSummary(options: SummaryOptions = {}): Promise<WorkSu
   const days = Math.max(1, Math.floor(options.days ?? 7));
   const now = options.now ?? new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
+  // A summary that ends on a day of its own (a past year) leaves out commits made after it.
+  const until = options.now ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999) : undefined;
   const config = options.config ?? loadConfig();
   const all = scanProjects(config);
   const repos = all.filter((p) => p.hasGit);
@@ -91,7 +93,7 @@ export async function buildSummary(options: SummaryOptions = {}): Promise<WorkSu
     try {
       const who = options.allAuthors ? [] : await gitIdentity(project.dir);
       who.forEach((w) => authors.add(w));
-      const commits = await commitsSince(project, start, who);
+      const commits = await commitsSince(project, start, who, until);
       if (commits.length) projects.push({ project: project.name, dir: project.dir, commits });
       if (commits.length || project.lastActive >= start.getTime()) {
         const files = await changedFiles(project.dir);
@@ -193,7 +195,7 @@ async function gitOutput(dir: string, args: string[]): Promise<string> {
 }
 
 /** Your name and email as git knows them for this repo (a repo can override the global ones). */
-async function gitIdentity(dir: string): Promise<string[]> {
+export async function gitIdentity(dir: string): Promise<string[]> {
   const read = async (key: string) => {
     try {
       const { stdout } = await run("git", ["-C", dir, "config", key], { windowsHide: true });
@@ -208,7 +210,7 @@ async function gitIdentity(dir: string): Promise<string[]> {
   return who;
 }
 
-async function commitsSince(project: Project, start: Date, authors: string[]): Promise<Commit[]> {
+async function commitsSince(project: Project, start: Date, authors: string[], until?: Date): Promise<Commit[]> {
   const args = [
     "-C",
     project.dir,
@@ -216,6 +218,7 @@ async function commitsSince(project: Project, start: Date, authors: string[]): P
     "--all",
     "--no-merges",
     `--since=${start.toISOString()}`,
+    ...(until ? [`--until=${until.toISOString()}`] : []),
     `--format=%H${FIELD}%aI${FIELD}%s`,
   ];
   // Several --author patterns match any of them: commits made under your name or your email.

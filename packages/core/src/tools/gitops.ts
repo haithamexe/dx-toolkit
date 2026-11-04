@@ -712,14 +712,61 @@ export async function gitConflict(dir: string, file: string): Promise<ConflictFi
 }
 
 export type ConflictChoice = "ours" | "theirs" | "both" | "both-theirs-first";
+/** What one conflict becomes: a side (or both), or text the user wrote in the merge editor. */
+export type ConflictResolution = ConflictChoice | { text: string };
+
+const CHOICES: ConflictChoice[] = ["ours", "theirs", "both", "both-theirs-first"];
+/** The most edited text taken for one file, all its blocks together. */
+export const CONFLICT_EDIT_MAX = 512 * 1024;
+
+/** A line git would take for a conflict marker: `<<<<<<<`, `|||||||`, `>>>>>>>` (then a space or the end), or `=======` alone. */
+export function hasConflictMarker(text: string): boolean {
+  return text.split("\n").some((l) => {
+    const bare = l.replace(/\r$/, "");
+    return /^(<{7}|\|{7}|>{7})( |$)/.test(bare) || bare === "=======";
+  });
+}
+
+/** The file's own line ending: CRLF when most of its lines end that way. */
+function fileUsesCrlf(c: ConflictFile): boolean {
+  let crlf = 0;
+  let lf = 0;
+  // The file's very last line (after its final line break) is "" either way: empty strings don't count.
+  const count = (lines: string[]) => {
+    for (const l of lines) {
+      if (l.endsWith("\r")) crlf++;
+      else if (l) lf++;
+    }
+  };
+  for (const p of c.parts) {
+    if (p.kind === "text") count(p.lines);
+    else {
+      count(p.ours);
+      count(p.theirs);
+      if (p.base) count(p.base);
+    }
+  }
+  return crlf > lf;
+}
+
+/** Edited text as the block's lines: the textarea's line breaks made the file's own, one closing line break dropped. */
+function editedLines(text: string, crlf: boolean): string[] {
+  let t = text.replace(/\r\n?/g, "\n");
+  if (!t) return [];
+  if (t.endsWith("\n")) t = t.slice(0, -1);
+  return t.split("\n").map((l) => (crlf ? `${l}\r` : l));
+}
 
 /**
- * Resolves each conflict of a file with Mine, Theirs or Both, rebuilt from the file's own text
- * (never from the request), then stages it. `side` takes one side of the whole file, binary too.
+ * Resolves each conflict of a file with Mine, Theirs, Both or text written in the merge editor,
+ * then stages it. The file is rebuilt from its own text (checked by the hash it was shown with):
+ * only the conflict blocks are replaced, never the lines around them. Edited text is capped and
+ * may not hold conflict markers. `side` takes one side of the whole file, binary too.
  */
-export async function gitResolve(dir: string, file: string, options: { hash?: string; choices?: ConflictChoice[]; side?: "ours" | "theirs" }): Promise<GitActionResult> {
+export async function gitResolve(dir: string, file: string, options: { hash?: string; choices?: ConflictResolution[]; side?: "ours" | "theirs" }): Promise<GitActionResult> {
   const root = await gitRoot(dir);
   const name = conflictPath(root, await gitStatusAt(root), file);
+  let edited = 0;
   if (options.side === "ours" || options.side === "theirs") {
     const r = await gitRun(root, ["checkout", `--${options.side}`, "--", name]);
     if (r.code !== 0) throw gitFailure(r, `Couldn't take that side of ${name}`);
@@ -729,21 +776,31 @@ export async function gitResolve(dir: string, file: string, options: { hash?: st
     if (c.hash !== options.hash) throw new GitError(`${name} changed since it was shown. Refresh and try again.`, 409);
     const blocks = c.parts.filter((p) => p.kind === "conflict").length;
     const choices = options.choices ?? [];
-    if (choices.length !== blocks || !choices.every((x) => ["ours", "theirs", "both", "both-theirs-first"].includes(x))) throw new GitError(`Pick a side for each of the ${blocks} conflicts.`);
+    const valid = (x: ConflictResolution) => (typeof x === "string" ? CHOICES.includes(x) : !!x && typeof x === "object" && typeof x.text === "string");
+    if (choices.length !== blocks || !choices.every(valid)) throw new GitError(`Pick a side, or write the result, for each of the ${blocks} conflicts.`);
+    const texts = choices.filter((x): x is { text: string } => typeof x === "object");
+    const bytes = texts.reduce((n, x) => n + Buffer.byteLength(x.text), 0);
+    if (bytes > CONFLICT_EDIT_MAX) throw new GitError(`The edited text is ${Math.ceil(bytes / 1024)} KB; at most ${CONFLICT_EDIT_MAX / 1024} KB is taken here. Use your editor for this one.`, 413);
+    const marked = choices.findIndex((x) => typeof x === "object" && hasConflictMarker(x.text));
+    if (marked >= 0) throw new GitError(`Conflict ${marked + 1}'s text still has a conflict marker (<<<<<<<, ======= or >>>>>>> at the start of a line). Take it out, or keep a side.`);
+    const crlf = fileUsesCrlf(c);
     let i = 0;
     const out: string[] = [];
     for (const p of c.parts) {
       if (p.kind === "text") out.push(...p.lines);
       else {
         const ch = choices[i++];
-        out.push(...(ch === "ours" ? p.ours : ch === "theirs" ? p.theirs : ch === "both" ? [...p.ours, ...p.theirs] : [...p.theirs, ...p.ours]));
+        if (typeof ch === "object") {
+          edited++;
+          out.push(...editedLines(ch.text, crlf));
+        } else out.push(...(ch === "ours" ? p.ours : ch === "theirs" ? p.theirs : ch === "both" ? [...p.ours, ...p.theirs] : [...p.theirs, ...p.ours]));
       }
     }
     fs.writeFileSync(inside(root, name), out.join("\n"));
   }
   const add = await gitRun(root, ["add", "--", name]);
   if (add.code !== 0) throw gitFailure(add, `Couldn't stage ${name}`);
-  return { ok: true, message: `${name} is resolved and staged.` };
+  return { ok: true, message: `${name} is resolved${edited ? ` (${edited === 1 ? "one block" : `${edited} blocks`} as you wrote ${edited === 1 ? "it" : "them"})` : ""} and staged.` };
 }
 
 // ------------------------------------------------------------------ the stash shelf
@@ -806,6 +863,32 @@ export async function gitStashDrop(dir: string, oid: string): Promise<GitActionR
 
 // ------------------------------------------------------------------ discard
 
+/**
+ * A copy of each file as it is now, byte for byte, as a blob in git's own store: what Undo writes
+ * back (a "files" step). A file that isn't there gets `null`, so Undo removes it again. `paths` are
+ * relative to the repository's top folder.
+ */
+export async function backupFiles(root: string, paths: string[], why = "so nothing was changed"): Promise<{ path: string; blob: string | null }[]> {
+  const backup: { path: string; blob: string | null }[] = [];
+  for (const p of paths) {
+    const full = inside(root, p);
+    const stat = fs.lstatSync(full, { throwIfNoEntry: false });
+    if (!stat || !stat.isFile()) {
+      backup.push({ path: p, blob: null });
+      continue;
+    }
+    const h = await gitRun(root, ["hash-object", "-w", "--stdin-paths", "--no-filters"], { input: `${p}\n` });
+    if (h.code !== 0) throw gitFailure(h, `Couldn't keep a copy of ${p}, ${why}`);
+    backup.push({ path: p, blob: h.stdout.trim() });
+  }
+  return backup;
+}
+
+/** Writes an entry to the Git page's undo journal, for a change made outside this file (Ask Claude to fix). */
+export function recordUndo(root: string, action: string, label: string, undo?: UndoStep, note?: string): UndoEntry {
+  return journal(root, action, label, undo, note);
+}
+
 /** Throws away changes to files in the working folder, keeping a copy in git so Undo brings them back. */
 export async function gitDiscard(dir: string, paths: string[]): Promise<GitActionResult> {
   const root = await gitRoot(dir);
@@ -818,19 +901,7 @@ export async function gitDiscard(dir: string, paths: string[]): Promise<GitActio
     if (f.conflicted) throw new GitError(`${p} has a conflict: resolve it instead.`);
     return f;
   });
-  // A copy of each file as it is now, as a blob in git's own store: that's what Undo writes back.
-  const backup: { path: string; blob: string | null }[] = [];
-  for (const f of files) {
-    const full = inside(root, f.path);
-    const stat = fs.lstatSync(full, { throwIfNoEntry: false });
-    if (!stat || !stat.isFile()) {
-      backup.push({ path: f.path, blob: null });
-      continue;
-    }
-    const h = await gitRun(root, ["hash-object", "-w", "--stdin-paths", "--no-filters"], { input: `${f.path}\n` });
-    if (h.code !== 0) throw gitFailure(h, `Couldn't keep a copy of ${f.path}, so it wasn't discarded`);
-    backup.push({ path: f.path, blob: h.stdout.trim() });
-  }
+  const backup = await backupFiles(root, files.map((f) => f.path), "so it wasn't discarded");
   const tracked = files.filter((f) => !f.untracked).map((f) => f.path);
   if (tracked.length) {
     const r = await gitRun(root, ["restore", "--worktree", "--pathspec-from-file=-", "--pathspec-file-nul"], { input: tracked.join("\0") });

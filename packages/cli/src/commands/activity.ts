@@ -30,9 +30,12 @@ export const activityCommand: Command = {
     "dx activity -t request,console  only these: request, page, route, action, console, error, server, server-error",
     "dx activity -q checkout         only events mentioning this (in addresses, bodies and stacks too)",
     "dx activity -b                  with request and response bodies, and stacks",
+    "dx activity --site <host>       only what the dx browser recorded on that site (dx sites lists them)",
+    "dx activity --env staging       only one environment (local is your own computer)",
     "dx activity --clear [project]   delete the history",
     "",
-    "Recorded by the dashboard for apps opened at their .localhost address (dx up prints it), and kept",
+    "Recorded by the dashboard for apps opened at their .localhost address (dx up prints it), and for",
+    "the sites you add with dx sites add when you use them in the dx browser (dx browser), and kept",
     "for 7 days in ~/.dx/activity, with passwords, tokens and cookies masked. Turn it off with",
     `"activity": false in ~/.dx/config.json; change how long it's kept with "activityDays".`,
   ].join("\n"),
@@ -51,6 +54,8 @@ export const activityCommand: Command = {
         limit: { type: "string", short: "n" },
         json: { type: "boolean" },
         clear: { type: "boolean" },
+        site: { type: "string" },
+        env: { type: "string" },
       },
     });
     const query = positionals.join(" ").trim();
@@ -73,7 +78,7 @@ export const activityCommand: Command = {
     const limit = values.limit ? Number(values.limit) : 200;
     if (!Number.isInteger(limit) || limit < 1) throw new UsageError("--limit takes a number, e.g. -n 50.");
 
-    const base = { dir: project?.dir, types: types as ActivityType[], problems: values.problems || values.errors, search: values.search };
+    const base = { dir: project?.dir, types: types as ActivityType[], problems: values.problems || values.errors, search: values.search, site: values.site, env: values.env };
     const first = readActivity({ ...base, since, limit });
     if (values.json) {
       console.log(JSON.stringify(first, null, 2));
@@ -115,7 +120,7 @@ function print(e: ActivityEvent, options: { bodies: boolean; project: boolean })
   const warnOnly = e.level === "warn";
   const label = LABEL[e.type].padEnd(7);
   const tag = bad ? (warnOnly ? c.yellow(label) : c.red(label)) : e.type === "action" || e.type === "route" ? c.cyan(label) : c.dim(label);
-  const who = [options.project ? e.project : "", e.service ? `[${e.service}]` : ""].filter(Boolean).join(" ");
+  const who = [options.project ? e.project : "", e.service ? `[${e.service}]` : "", e.env && e.env !== "local" ? `(${e.env})` : ""].filter(Boolean).join(" ");
   const ms = e.ms !== undefined && (e.type === "request" || e.type === "page") ? c.dim(`  ${e.ms} ms`) : "";
   const level = e.type === "console" && e.level && e.level !== "log" ? c.dim(`${e.level}: `) : "";
   console.log(`${c.dim(time)}  ${tag} ${who ? `${c.cyan(who)} ` : ""}${level}${firstLine(e.text)}${ms}`);

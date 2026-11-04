@@ -220,6 +220,9 @@ export async function gitRoot(dir: string): Promise<string> {
 // ------------------------------------------------------------------ graph
 
 const FORMAT = "%H%x1f%P%x1f%D%x1f%an%x1f%at%x1f%s%x1e";
+/** For snapshots.ts: the log format every commit list here uses (with --decorate=full), and its parser. */
+export const GIT_LOG_FORMAT = FORMAT;
+export const parseCommitLog = (text: string): GitCommit[] => parseCommits(text);
 
 function parseRefs(decorations: string): GitRef[] {
   const refs: GitRef[] = [];

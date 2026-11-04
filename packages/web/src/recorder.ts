@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type http from "node:http";
 import { fileURLToPath } from "node:url";
-import type { ActivityEvent } from "@dx/core";
+import { maskText, type ActivityEvent } from "@dx/core";
 import { activitySettings, recordActivity, type NewActivity } from "./activity.js";
 import type { LocalRoute } from "./dev.js";
 import { maskBody, type TrafficEntry } from "./traffic.js";
@@ -135,8 +135,9 @@ export function requestActivity(e: TrafficEntry, route: LocalRoute, userAgent = 
     project: route.project,
     service: route.service ?? e.service,
     type: e.kind === "page" ? "page" : "request",
-    text: `${e.method} ${e.path} → ${e.error ? `failed (${e.error})` : (e.status ?? "…")}`,
+    text: `${e.method} ${e.path} → ${e.error ? `failed (${e.error})` : (e.status ?? "…")}${e.mocked ? " (mocked)" : ""}`,
     level: failed ? "error" : undefined,
+    mocked: e.mocked || undefined,
     url: e.path,
     method: e.method,
     status: e.status,
@@ -150,11 +151,6 @@ export function requestActivity(e: TrafficEntry, route: LocalRoute, userAgent = 
     from: /HeadlessChrome/i.test(userAgent) ? "check" : "proxy",
     at: e.at,
   });
-}
-
-/** Credentials that end up in a console line or an error message: "token=abc", "Bearer abc". */
-function maskText(s: string): string {
-  return maskBody(s, "text/plain").replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, "$1 •••");
 }
 
 /** Whether to add the script to this answer: an HTML page, while history is kept, and a page policy that allows it. */

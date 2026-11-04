@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import { recordRun } from "@dx/core";
 import type { Command } from "./command.js";
-import { errorsCommand, firstRunSetup, logsCommand, setupCommand } from "./commands/ai.js";
+import { errorsCommand, firstRunSetup, fixCommand, logsCommand, setupCommand } from "./commands/ai.js";
 import { cleanCommand } from "./commands/clean.js";
 import { dbCommand } from "./commands/db.js";
 import { cloneCommand, envCommand } from "./commands/clone.js";
@@ -19,9 +19,14 @@ import { summaryCommand } from "./commands/summary.js";
 import { testCommand } from "./commands/test.js";
 import { trafficCommand } from "./commands/traffic.js";
 import { activityCommand } from "./commands/activity.js";
+import { browserCommand, sitesCommand } from "./commands/browser.js";
 import { terminalCommand } from "./commands/terminal.js";
 import { gitCommand } from "./commands/git.js";
 import { machineCommand } from "./commands/machine.js";
+import { runCommand } from "./commands/run.js";
+import { bugCommand } from "./commands/bug.js";
+import { mockCommand } from "./commands/mock.js";
+import { visualCommand } from "./commands/visual.js";
 import { configCommand, doctorCommand, runsCommand } from "./commands/system.js";
 import { uiCommand } from "./commands/ui.js";
 import { c, UsageError } from "./ui.js";
@@ -30,6 +35,7 @@ import { c, UsageError } from "./ui.js";
 const commands: Command[] = [
   uiCommand,
   goCommand,
+  runCommand,
   resumeCommand,
   upCommand,
   downCommand,
@@ -48,10 +54,16 @@ const commands: Command[] = [
   dbCommand,
   logsCommand,
   errorsCommand,
+  fixCommand,
   trafficCommand,
   activityCommand,
+  bugCommand,
+  mockCommand,
+  browserCommand,
+  sitesCommand,
   terminalCommand,
   gitCommand,
+  visualCommand,
   machineCommand,
   setupCommand,
   httpsCommand,

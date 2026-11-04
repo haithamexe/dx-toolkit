@@ -3,6 +3,7 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { localRoutes, type LocalRoute } from "./dev.js";
+import { answerFromMocks } from "./mocks.js";
 import { handleRecorderRequest, injector, requestActivity, shouldInject } from "./recorder.js";
 import { recordExchange } from "./traffic.js";
 
@@ -196,6 +197,8 @@ export interface RelayOptions {
  */
 export function relay(req: http.IncomingMessage, res: http.ServerResponse, o: RelayOptions): void {
   const { route } = o;
+  // Mock mode: the project's API answered from its recordings; pages and assets still go through.
+  if (route && answerFromMocks(req, res, route, o.label)) return;
   const rec = route ? recordExchange(req, route, o.label) : undefined;
   if (rec) req.on("data", (c: Buffer) => rec.request(c));
   let done = false;

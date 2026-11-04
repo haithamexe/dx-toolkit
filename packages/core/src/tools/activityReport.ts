@@ -100,7 +100,7 @@ export interface Replay {
  * empty; back and forward aren't replayed.
  */
 export function replayFromVisit(events: ActivityEvent[]): Replay | undefined {
-  const visit = byTime(events.filter((e) => e.from === "browser" || e.from === "check"));
+  const visit = byTime(events.filter((e) => e.from === "browser" || e.from === "check" || (e.from === "dx-browser" && e.type !== "request")));
   const start = visit.find((e) => e.page)?.page;
   if (!start) return undefined;
   const steps: PageStep[] = [];

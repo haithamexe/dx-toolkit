@@ -8,16 +8,16 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
   - the core tools;
-  - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, activity, terminal, git, machine, setup, https, config, runs, doctor`;
-  - the MCP server with 31 tools, 15 of them for running and checking apps;
+  - the `dx` command: `ui, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, visual, machine, browser, sites, setup, https, config, runs, doctor`;
+  - the MCP server with 32 tools, 15 of them for running and checking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
   - the dashboard with 12 pages (Projects, New project, Ports, Machine, Git, Activity, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
-  - the activity history (requests, routes, clicks, console, errors, kept 7 days) and opening projects in a terminal you pick;
+  - the activity history (requests, routes, clicks, console, errors, kept 7 days), for deployed sites too through the dx browser, and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.4.0. Under *Unreleased*: the Git page (staging board, commit graph, and git operations by drag and drop with undo) and `dx git`; the Machine page, `dx machine` and `machine_info`.
+- **Latest release**: 1.4.0. Under *Unreleased*: the Git page (staging board, commit graph, and git operations by drag and drop with undo) and `dx git`; the Machine page, `dx machine` and `machine_info`; Ask Claude to fix and `dx fix`; Run any commit (snapshots, time travel on the Activity page) and `dx run`; the dx browser and recorded sites (`dx browser`, `dx sites`) and the two-column Activity page; the AI lane (every MCP call recorded, Interrupt, Take over, By AI on the Activity page); Your year (the year as a story on the Summary page); visual diffs per commit on the Git page, `dx visual` and `visual_diff`.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -34,6 +34,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - `dx machine export` / `restore` for moving to a new computer;
   - a warning on the Projects page before Start when a project doesn't match this computer.
 - **Machine beyond Windows**: the process list (`ps`), services (`brew services`, `systemctl`) and update commands for macOS and Linux are written from each tool's documentation and covered by parsing tests, but have only run for real on Windows.
+- **The dx browser, not yet**: a visible window wasn't opened during development (the pipe, attaching and recording ran headless on Windows, with Chrome; Edge's pipe answered too); macOS and Linux only through the headless test on CI. Requests from service workers, and a page opened by a link in a new tab before dx has attached to it, can be missed. No WebSocket frames, and the `Set-Cookie` that DevTools' first response event leaves out isn't seen (it would be masked anyway).
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
@@ -54,6 +55,101 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Visual diff (`core/src/tools/visual.ts`, `web/src/visual.ts`, the Git page's graph)
+
+- **Compared in the browser, not in Node**: core has no PNG decoder and won't take a dependency, so both PNGs go into canvases in a blank tab of the same headless browser that took them, and `diffPixels` (a plain function whose source is sent to the page, and tested in Node on arrays) counts pixels whose largest channel difference is over 24, gives the box of the change, and paints the diff image (changed pixels orange over a washed-out grey copy). Fewer than 16 differing pixels isn't a change.
+- **The same page gives the same pixels**: `Emulation.setDeviceMetricsOverride` at 1280 x 800 (390 x 844 with `visualMobile`), scale 1; `prefers-reduced-motion: reduce`; a style added before the page's scripts (`Page.addScriptToEvaluateOnNewDocument`, with `Page.setBypassCSP` since it's the project's own dev server) that ends animations and transitions and hides the caret; after load and a quiet network, fonts ready, `getAnimations()` finished, scrolled to the top, focus dropped, two frames. Viewport-sized shots, not full page: a page's length changes with its content and would make every shot differ.
+- **Which pages**: the four most visited paths of the last day in the activity history (page loads and route changes on loopback, `#/route` kept, query strings not, dx's own checks left out), else `/`. They're loaded from the dev server's own address (the `.localhost` route's target), not through the localhost door, so a capture isn't a visit in the history.
+- **When**: after `POST /api/git/commit` succeeds, in the background (the response doesn't wait), and when HEAD moves: the Git page's status poll and a 30 s `rev-parse HEAD` per dev server dx runs. The first sighting of a HEAD only remembers it. One capture at a time per project; a request while one runs makes one more afterwards. **Capture now** works with the setting off.
+- **Against what**: the first parent's capture, else the newest earlier one, named in `against`. A capture is the app as the dev server showed it then, uncommitted changes included.
+- **Where the change is, in words**: the element at the box's centre in the live page, walked up to a button, link, heading, field, image, nav and so on, named by its aria-label, alt or short text ("the Checkout button"); otherwise the region ("near the top left", "across most of the page").
+- **Retention**: the newest 30 commits per project, by capture time; folders the index doesn't list are removed, and a capture is written to `<hash>.tmp-...` and renamed in, so a failed one never replaces a good one.
+- **Images reach the page as data URLs** in JSON (`GET /api/visual/image`), since every `/api/*` call needs the token header, which an `<img src>` can't send; the CSP already allowed `img-src 'self' data:`, so nothing was widened. The file is found by `visualImageFile` from a known git project, a hex commit the index has (a unique prefix of 7+ works), a capture name that commit lists, and a kind (shot, diff, thumb).
+
+### The AI lane (`mcp/src/calls.ts`, `web/src/ai.ts`, the lane in `web/public/app.js`)
+
+- **Every MCP call goes to `runs.jsonl`, not a ring in the dashboard**: as `mcp.<tool>` from source `mcp`, written by a wrapper around `server.registerTool`, so no tool can forget it. The run log already existed, works without the dashboard running (an agent's read-only calls never start it), survives restarts, and `dx runs` shows the same thing. The older semantic records (`go` when an agent starts a server, `resume` for a note) stay: the summary's time per project counts `go`.
+- **Nothing secret in a record**: arguments are summarised from a fixed list (project, path, url, port, flags…); bodies, headers, notes, journal text and database queries are only counted (`query=(38 chars)`); addresses go through `maskUrl`. From a result only numbers are read (a status, how many errors, tests passed/failed), and a failure's first line only for tools whose errors can't echo data (not `db_query`, `check_env`, `set_stack`, `add_log_entry`, `leave_note`).
+- **Active means a call in the last 5 minutes, or a server the agent started still running.** The page polls `/api/ai` every 4 s; the server reads the run log again only when its size or time changed.
+- **Interrupt stops servers, not the agent**: dx can't reach into the AI tool. It stops only dev servers dx runs whose `startedBy` is `ai`, and only those the confirm named (the page sends their dirs). The lane then says "You stopped the agent's servers" until the dashboard restarts.
+- **Take over only relabels** (`startedBy` becomes `dashboard`): same process, same port.
+- **The lane overlays the page below 1280px** (the page gets room for it above that), and is a bottom sheet under 860px; it collapses to a tab at the edge.
+- **"By AI" on the Activity page** matches a headless page check (`from: "check"`) to the agent's `check_url` or `replay_visit` call that was running then (the call's end minus its duration, with a few seconds' slack), since checks the user starts look the same. In Sessions, the agent's other calls sit between the visits in time order.
+
+### Your year (`core/src/tools/yearstory.ts`, the Summary page)
+
+- **Built on the year in review**: the same commits (each repo's `user.name` and `user.email`, `--fixed-strings`), plus one `git log --name-only` per repo for files and languages, counted only for the commits the review counted. Lock files aren't a language or a most-touched file.
+- **A summary that ends on a day of its own stops there** (`--until`, and the journal's end): before, a past year counted later commits and journal entries.
+- **When you code** uses the commit's author time in local time, weekday Monday first. "Evening" is 18:00 to 05:59.
+- **A fix** is a subject with fix/fixed/fixes/fixing, bug, bugfix, hotfix or crash as a word, so "prefix" and "fixtures" don't count.
+- **Dev server time** is the `go` runs' `ms` in the year, as the summary counts it.
+- **The page gets the story, not the commits**; the last one built is kept a minute, so Save right after viewing doesn't read git again. The heat map's shades are the accent mixed into `--surface-2` (`color-mix`), so they follow light and dark.
+
+### Bug bundles (`core/src/tools/bugbundle.ts`, `web/src/bugreplay.ts`)
+
+- **One JSON file, `{ format: "dx-bug", version: 1 }`**, built from `reportContext` (the events) and `replayFromVisit` (the steps), so a bundle says what Copy as bug report says, in a form that can run. At most 2 MB, 50 steps, 500 events.
+- **Nothing that names the sender's computer**: hosts and ports are dropped (paths only), only plain headers are kept (an allowlist: content-type, accept, cache-control…), bodies are masked again on export, and `pathStripper` makes the project folder relative (also as `file:///` and with JSON's doubled backslashes), the home folder `~`, and any other `C:\Users\<name>` or `/home/<name>` `~`.
+- **The commit is `commitAt` the error's time** (reflog first), HEAD when git can't say. "Dirty" is the working copy at export: what it was at the error isn't recorded.
+- **Read strictly on import** (`readBugBundle`): unknown top-level or step fields are refused, not dropped (a step field a replay doesn't know could be a new action); unknown event fields are dropped. A step's address on another computer is refused; a loopback one keeps only its path. The bundle's host is never used: `bundleUrl` resolves the start path on the importer's own dev server and checks the origin.
+- **Replays run as a job** the page polls (`GET /api/activity/bundle/replay?id`), since a snapshot can take minutes to install. Commit mode reuses `runSnapshot`; working-copy mode starts the project's dev server if it isn't running. The replay is `checkUrl` with steps, through the `.localhost` address so its requests are recorded.
+- **"Reproduced"** means the same message with numbers blanked (one containing the other counts, for overlays), or the same file and line; for a failed request, the same method, folded path and status. dx's recorder script is never taken as the place: a console error's top frame in a headless check is the recorder.
+- The dashboard reads up to 3 MB for this route (and `/api/mocks/update`); everything else stays at 1 MB.
+
+### Mock mode (`core/src/tools/mocks.ts`, `web/src/mocks.ts`)
+
+- **Inside `relay()`**, so the local domains proxy and the localhost door both mock, and only for dev servers dx runs: there is no route to a mock that isn't already a route to a dev server.
+- **Which calls**: whatever the mock set has an endpoint for. The set is made only from request events the proxy recorded (API calls by the network log's rule), never from mocked ones. GET with `Accept: text/html` (a page load) is never mocked, so the front end itself always runs for real.
+- **Matching**: method and folded path (the APIs view's folding, `foldPath`), then query and body only where the recorded calls differed by them; the newest wins otherwise, also for an unseen query. A body key is a hash of the masked body, so a live password still matches the recording's `•••`.
+- **Unmatched calls are forwarded** by default; strict mode answers an API-looking call (non-GET, `/api/`, `/graphql`, `/trpc/`, or a JSON Accept) with a 404 that says no mock matched.
+- **Offline is a closed connection**, not a status: that's what a front end sees when the API is down. Fail with 500 is the status case.
+- **Stored per project** in `~/.dx/mocks/<name>-<hash>.json` (0600, through a temp file and a rename); the proxy rereads it when its mtime or size changes, so `dx mock on` in a terminal applies at once. Edited endpoints are kept when mocks are made again; Reset unmarks them.
+- **Recorded as mocked**: the network log entry and the activity event carry `mocked: true` and the text ends "(mocked)", so the history doesn't pass a mock off as the server.
+
+### The dx browser and recorded sites (`core/src/tools/dxbrowser.ts`, `sites.ts`, `mask.ts`, `web/src/dxbrowser.ts`)
+
+- **A browser window dx starts, not an extension or a proxy**: it's the only no-setup way to see a deployed site's requests with their bodies, its console and its errors in the user's own Chrome-family browser. A proxy for https sites would need a certificate the system trusts, and an extension needs installing.
+- **Its own profile, `~/.dx/browser-profile`.** Sign-ins made there persist between runs and never mix with the user's everyday profile; Chrome refuses remote debugging on the default profile anyway. One window per profile: a second start is handed to the first by Chrome and exits at once, which dx reports as "already open".
+- **Over `--remote-debugging-pipe`, never a port.** DevTools messages go over file descriptors 3 and 4 (NUL-ended JSON, what Puppeteer's `pipe: true` does), so no other process on the machine can connect, and the browser closes when the dashboard that holds the pipe goes (checked: no browser process is left after the dashboard is killed). Verified on Windows with Chrome and Edge. The headless page check (`checkPage`) keeps its throwaway port and profile.
+- **Attached to every tab** (`Target.setAutoAttach` with `waitForDebuggerOnStart` and `flatten`, at the browser and in each page for out-of-process frames), with Network, Runtime, Page and Log on, then resumed. An address dx opens goes into a tab that is already set up (`about:blank` first, then `Page.navigate`), so its first page load is recorded.
+- **What's recorded is decided per address, by the tab's page**: a recorded site (`sites` in the config; an exact host before a wildcard, one with a port before one without) or this computer. Everything else is dropped as it arrives: no event, no body asked for. A recorded page's requests to other hosts are kept without bodies. Pages dx's own proxy or localhost door already record (`*.localhost` routes, a dev server's `recorded` address) and the dashboard itself are left alone, so nothing is recorded twice and the dashboard's token never is. A local address a dx dev server answers goes under that project.
+- **The same events as the recorder**, so every view, bug reports and the CLI work: `request`/`page` from Network (`getResponseBody` up to 32 KB for API answers, post data up to 16 KB), `console` from `Runtime.consoleAPICalled` (the dev server's chatter left out, as in the page), `error` from `Runtime.exceptionThrown`, `route` from `Page.navigatedWithinDocument`, and clicks and submits from a listener added with `Page.addScriptToEvaluateOnNewDocument` **in an isolated world** whose `Runtime.addBinding` only that world can see, so the page's own scripts can't call it. Its payload is checked like `/__dx/events`: known type, bounded, masked. Visits get the recorder's id format, so grouping works. Times come from the browser's own clock; route changes, which DevTools doesn't stamp, use its measured offset, so they sort with the rest.
+- **Masked before storing, by the same code**: `mask.ts` moved to core (`maskHeaders`, `maskBody`, `maskText`, `classify`), shared by the network log, the recorder and the dx browser; addresses also lose user:password and credential-looking query values (`?token=`, `?code=`). `x-dx-token` and `x-xsrf-token` joined the masked headers.
+- **Events carry `site`, `env` and `from: "dx-browser"`.** A site linked to a project writes into that project's folder; an unlinked one into `site:<host>` (a folder `site-<host>-<hash>`, not tied to the current directory). In the API, `?site=` reads that folder, `?host=` filters by site anywhere, `?env=` by environment ("local" is everything without one).
+- **The environment is guessed from the host when not given** (staging/stage/stg, preview, dev, qa, uat, test, sandbox, demo, with the top-level domain left out, so `shop-website.dev` is production; loopback is local) and stored with the site, so the user sees and can change it.
+- **Deployment detection is passive**: from the page's response headers (`x-commit`, `x-git-commit`, `x-commit-sha`, `x-version`, `x-app-version`, `x-vercel-deployment-url`, `x-vercel-id`, `server`) or, when there are none, its `<meta name="version|commit|build|...">`, read once the DOM is parsed (the page event waits up to 3 s for it). Hex of 7 to 40 characters is a commit, also inside a version (`1.4.0+3f2c9e1`). A server name alone isn't a deployment. **Run this commit** shows only when `resolveCommit` finds it in the linked project. dx never requests anything from a site by itself.
+- **Opening takes http(s) only**, without user:password; runs.jsonl gets the host, never the address. The dashboard owns the window like its dev servers: it closes with the dashboard, and a background dashboard doesn't stop for being idle while it's open. `DX_BROWSER_HEADLESS=1` runs it without a window (tests).
+
+### Activity page layout (`web/public/app.js` `activityPage`)
+
+- **Like opening a project**: projects and sites on the left from `GET /api/activity/overview` (counts per folder, environment and site since the chosen time, the recorded sites, and the dx browser's state), the selection's timeline on the right. The selection is one preference (`activitySel`: "", `p:<dir>` or `s:<host>`).
+- **Rows are one line** (ellipsis; the whole text is in the detail). The environment filter shows only when the events have more than one. APIs are grouped per environment too, so staging's `/api/cart` isn't averaged with yours.
+- **Deployed rows don't open your editor**: their files are the build's, not your project's. Replay stays local-only.
+
+### Run any commit (`core/src/tools/snapshots.ts`, `web/src/snapshots.ts`)
+
+- **A detached git worktree, not a clone or an archive**: `git worktree add --detach ~/.dx/snapshots/<project>-<short> <oid>` shares the repository's objects (fast, no network), never moves your branch or index, and `git worktree remove` undoes it. A project in a subfolder of its repository runs from that subfolder of the worktree.
+- **Registered in `~/.dx/snapshots.json`** (temp file and rename). Only registered snapshots under `~/.dx/snapshots` are known projects, and only for running, reading output and history, checks and opening; git routes and anything that writes files refuse them. An entry whose folder is gone is dropped from the list.
+- **Linked node_modules when the lock file matches** (`git rev-parse <oid>:<lock>` against `git hash-object`, then a line-ending-blind compare for core.autocrlf), a junction on Windows; also workspace packages' own node_modules a few levels down. Otherwise a frozen install (`npm ci`, `--frozen-lockfile`). Linked means shared: tools that cache inside node_modules (Vite's `node_modules/.vite`) share the cache with your own dev server.
+- **Removal unlinks every node_modules link first**, then `git worktree remove --force`, then deletes what's left, then `git worktree prune`. A test checks the project's own node_modules survives.
+- **Untracked `.env` files are copied in** (not example files, which are tracked; not over a file the commit has). They stay in the user's own `~/.dx`.
+- **Its own port**: `moveDevPort` with a free port when the tool is known, else `PORT=<free port>` (ready when that port opens, or at the address it prints). No localhost door: the usual port belongs to the project's own dev server. A stack runs as it is (its services may want the same ports).
+- **The run answers once the commit resolves**; the checkout and install go on in the background, and the page follows `GET /api/snapshots` (step, the install's last lines). A failed install keeps the snapshot so it can be retried or removed.
+- **Time travel reads the reflog** (`log -g --date=unix`, the newest entry at or before the moment), falling back to the last commit before then on HEAD. The slider spans the events shown; events within max(30 s, span/60) count as around it.
+- **Not yet**: snapshots stay until removed (no automatic clean-up); Python and other non-Node projects aren't set up beyond the checkout.
+
+### Ask Claude to fix (`core/src/tools/fixer.ts`, `claude.ts`, `web/src/fixes.ts`, `/api/fix/*`)
+
+- **Claude Code through `claude -p --max-turns 1`, like Write message**: the runner is shared (`claude.ts`), arguments fixed, prompt on stdin, 90 s timeout. The `claude` lookup is cached a minute, and looked up again when PATH changes (tests put a fake one first on PATH).
+- **The error is looked up on the server**: a dev-server error by the tracker's id (`devErrors`, the running or last run), an activity event by its id (`reportContext`; exceptions, server errors and console errors only). The page sends only the project, the source and the id.
+- **The prompt is built in core**: fixed instructions (a unified diff only, paths from the project root, the smallest change, then `EXPLANATION:`), the error and stack (8 KB), the file it names (whole up to 300 lines, else ±60 lines), up to 3 other project files from the stack (±30 lines), and `git diff HEAD` (40 KB). Files only inside the project, plain files (no links), under 512 KB, never under node_modules/.git/virtualenvs/build caches, never `.env*`, keys or lock files; those are also left out of the diff by pathspec.
+- **Claude's diff is rebuilt, not trusted**: dx parses it loosely (fenced or bare, `a/`/`b/` or not), rewrites the headers itself, works out each block's counts again, refuses renames and any path outside the project or in a blocked folder, then applies it to a throwaway index (`GIT_INDEX_FILE`) holding the touched files as they are now (`git apply --cached --recount`, plus `--unidiff-zero` when a block has no unchanged lines around it, or git insists it sits at the file's start or end). The patch kept and shown is `git diff-tree` of before and after, so it's exact and in git's format for `diffBlock()`. A patch that doesn't fit comes back as `ok: false` with why and Claude's whole answer.
+- **Git projects only**: the check and Undo both need git, and a temp copy of a non-git project would leave nothing to undo from. The server refuses with the reason; the page hides the button there.
+- **Kept in the web process by a random id**, 30 minutes, at most 20, for the project it was made for. Apply takes the id, never a patch; it's forgotten once applied or dismissed, and lost on restart.
+- **Apply checks, backs up, then journals**: each file must still hash to what Claude saw (409 otherwise), a raw copy of each goes into git's store (`backupFiles`, shared with Discard), `git apply` (no `--index`), then an undo-journal entry of kind `files` (`recordUndo`), so the Git page's Undo brings the files back (a created file is removed). Changes land unstaged, as cards on the board.
+- **Paths are the repository's**: for a project in a folder of a bigger repository, Claude writes project paths and dx prefixes them, so the patch matches the Git page.
+- **The panel outlives redraws**: the error lists redraw as output and events come in, so each error's panel is kept by key and moved into the new list.
+- **`dx fix` only prints**: it asks through the dashboard (the errors live there) and shows the patch; applying stays on the page, with its review and Undo.
 
 ### Machine (`core/src/tools/machine.ts`, `projectNeeds.ts`, `background.ts`, `versions.ts`)
 

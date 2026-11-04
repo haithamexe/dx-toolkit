@@ -434,6 +434,103 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
   return result;
 }
 
+/** One tab in a headless browser session (`withBrowser`). */
+export interface BrowserPage {
+  /** A DevTools protocol command to this tab. */
+  send<T = unknown>(method: string, params?: object, timeoutMs?: number): Promise<T>;
+  /** Runs an expression in the page and returns its value (promises are awaited); undefined when it threw. */
+  evaluate<T>(expression: string, timeoutMs?: number): Promise<T | undefined>;
+  /**
+   * Loads an address and waits for the load event, then for a quiet network (nothing in flight
+   * for 300 ms, at most `settleMs` + 3 s). Resolves to the document's status, or throws with why
+   * it couldn't load.
+   */
+  navigate(url: string, options?: { timeoutMs?: number; settleMs?: number }): Promise<number | undefined>;
+}
+
+export interface BrowserSession {
+  /** Which browser runs it. */
+  browser: string;
+  newPage(): Promise<BrowserPage>;
+}
+
+/**
+ * Runs `fn` with a headless browser that's closed afterwards, whatever happens. For tools that
+ * drive pages themselves (visual diffs); `checkPage` is the one for errors on a page.
+ */
+export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>, options: { width?: number; height?: number } = {}): Promise<T> {
+  const found = findBrowser();
+  if (!found) throw new Error(`No Chrome, Edge, Chromium or Brave was found. Install one: ${browserInstallFix()}`);
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "dx-browser-"));
+  let proc: ChildProcess | undefined;
+  let cdp: Cdp | undefined;
+  try {
+    const width = options.width ?? 1280;
+    const height = options.height ?? 800;
+    let launched: { proc: ChildProcess; ws: string };
+    try {
+      launched = await launch(found.path, profile, width, height, false);
+    } catch (err) {
+      if (!/sandbox/i.test((err as Error).message)) throw err;
+      launched = await launch(found.path, profile, width, height, true);
+    }
+    proc = launched.proc;
+    const conn = await Cdp.connect(launched.ws);
+    cdp = conn;
+    const newPage = async (): Promise<BrowserPage> => {
+      const { targetId } = await conn.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
+      const { sessionId } = await conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true });
+      const send = <R = unknown>(method: string, params: object = {}, timeoutMs?: number) => conn.send<R>(method, params, sessionId, timeoutMs);
+      const inflight = new Set<string>();
+      let lastNetwork = Date.now();
+      let loaded = false;
+      let status: number | undefined;
+      conn.on(sessionId, (method, p) => {
+        if (method === "Network.requestWillBeSent") {
+          inflight.add(p.requestId as string);
+          lastNetwork = Date.now();
+        } else if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+          inflight.delete(p.requestId as string);
+          lastNetwork = Date.now();
+        } else if (method === "Network.responseReceived") {
+          if (p.type === "Document" && status === undefined) status = (p.response as { status: number }).status;
+        } else if (method === "Page.loadEventFired") loaded = true;
+      });
+      await Promise.all([send("Page.enable"), send("Network.enable"), send("Runtime.enable")]);
+      const evaluate = async <R>(expression: string, timeoutMs?: number): Promise<R | undefined> => {
+        const r = await send<{ result: { value?: R }; exceptionDetails?: unknown }>("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, timeoutMs);
+        return r.exceptionDetails ? undefined : r.result.value;
+      };
+      const navigate = async (url: string, o: { timeoutMs?: number; settleMs?: number } = {}) => {
+        loaded = false;
+        status = undefined;
+        inflight.clear();
+        const nav = await send<{ errorText?: string }>("Page.navigate", { url });
+        if (nav.errorText) throw new Error(nav.errorText === "net::ERR_CONNECTION_REFUSED" ? "Nothing is listening at that address. Is the dev server running?" : nav.errorText);
+        const deadline = Date.now() + (o.timeoutMs ?? 30_000);
+        while (!loaded && Date.now() < deadline) await sleep(100);
+        if (!loaded) throw new Error(`The page didn't finish loading within ${Math.round((o.timeoutMs ?? 30_000) / 1000)}s.`);
+        const settle = o.settleMs ?? 1000;
+        const end = Math.min(deadline, Date.now() + settle + 3000);
+        const quietFrom = Date.now() + settle;
+        while (Date.now() < end && !(Date.now() >= quietFrom && inflight.size === 0 && Date.now() - lastNetwork > 300)) await sleep(100);
+        return status;
+      };
+      return { send, evaluate, navigate };
+    };
+    return await fn({ browser: found.name, newPage });
+  } finally {
+    try {
+      await cdp?.send("Browser.close", {}, undefined, 2000);
+    } catch {
+      // closing below anyway
+    }
+    cdp?.close();
+    if (proc && proc.exitCode === null) proc.kill();
+    removeLater(profile);
+  }
+}
+
 // Runs in the page: an element by CSS selector, or by its text with "text=…" (buttons and links
 // first, then any element whose own text matches, exactly before partly).
 const FIND = `(sel) => {

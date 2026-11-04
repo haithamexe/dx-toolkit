@@ -63,15 +63,59 @@ export interface ActivityEvent {
   truncated?: boolean;
   /** Bodies, headers and stack weren't kept: that day's history had reached its size limit. */
   trimmed?: boolean;
+  /** For a request: answered by dx's mock mode from a recording, not by the dev server. */
+  mocked?: boolean;
   /** For a click: how to find the control again (`#id`, `[data-testid=…]` or `text=Label`), for replaying it. */
   target?: string;
   /** file:line:column where it happened. */
   source?: string;
   stack?: string;
-  /** Where it was seen: the proxy, the page itself, the dev server, or a headless page check. */
-  from: "proxy" | "browser" | "server" | "check";
+  /** Where it was seen: the proxy, the page itself, the dev server, a headless page check, or the dx browser. */
+  from: "proxy" | "browser" | "server" | "check" | "dx-browser";
   /** One page load in one tab, so the events of a visit can be told apart. */
   visit?: string;
+  /** For the dx browser: the site it happened on (its host), e.g. staging.shop-website.dev. */
+  site?: string;
+  /** For the dx browser: which environment that site is, local, staging, production or a label of your own. */
+  env?: string;
+  /** For a page load: which deployment answered, when the site says so (a header, a meta tag). */
+  deploy?: Deployment;
+}
+
+/** What a site said about the deployment that answered: from its own response headers or meta tags, never fetched. */
+export interface Deployment {
+  /** A commit hash, when one was given. */
+  commit?: string;
+  /** A version or build name. */
+  version?: string;
+  /** The hosting platform's own deployment id or address (Vercel's, say). */
+  id?: string;
+  /** The server header: Vercel, Netlify, nginx… */
+  server?: string;
+  /** Where it was read: "x-commit header", "meta version". */
+  from: string;
+}
+
+/** An event before it has an id, a time and a project name (they're filled in when it's recorded). */
+export type ActivityInput = Omit<ActivityEvent, "id" | "at" | "project"> & { at?: string; project?: string };
+
+/** The `dir` events of a recorded site that isn't linked to a project carry: "site:staging.shop-website.dev". */
+export function siteDir(host: string): string {
+  return `site:${host.toLowerCase()}`;
+}
+
+export function isSiteDir(dir: string): boolean {
+  return dir.startsWith("site:");
+}
+
+/** Whether two event folders are the same: paths compared the way the system does, site names exactly. */
+export function sameActivityDir(a: string, b: string): boolean {
+  return dirKey(a) === dirKey(b);
+}
+
+function dirKey(dir: string): string {
+  if (isSiteDir(dir)) return dir.toLowerCase();
+  return norm(path.resolve(dir));
 }
 
 export interface ActivityQuery {
@@ -86,14 +130,18 @@ export interface ActivityQuery {
   until?: Date;
   /** Text to look for in the line, the address, the bodies and the stack (case is ignored). */
   search?: string;
+  /** Only what the dx browser recorded on this site (a host); "*." matches its subdomains. */
+  site?: string;
+  /** Only this environment: "local" is everything not recorded on a staging, production or other site. */
+  env?: string;
   /** The newest this many (default 200). */
   limit?: number;
 }
 
 /** The folder one project's history goes in: its name and a short hash of its path. */
 export function activityFolder(dir: string): string {
-  const key = process.platform === "linux" ? path.resolve(dir) : path.resolve(dir).toLowerCase();
-  const name = path.basename(dir).replace(/[^\w.-]+/g, "-").slice(0, 40) || "project";
+  const key = dirKey(dir);
+  const name = (isSiteDir(dir) ? `site-${dir.slice(5).toLowerCase()}` : path.basename(dir)).replace(/[^\w.-]+/g, "-").slice(0, 40) || "project";
   return dxPath("activity", `${name}-${crypto.createHash("sha1").update(key).digest("hex").slice(0, 8)}`);
 }
 
@@ -214,18 +262,80 @@ export function activityMatcher(q: ActivityQuery): (e: ActivityEvent) => boolean
   const search = q.search?.trim().toLowerCase();
   const sinceMs = q.since?.getTime();
   const untilMs = q.until?.getTime();
-  const sameDir = q.dir ? norm(path.resolve(q.dir)) : undefined;
+  const sameDir = q.dir ? dirKey(q.dir) : undefined;
+  const site = q.site?.trim().toLowerCase();
+  const siteMatches = (s: string | undefined) => !!s && (site!.startsWith("*.") ? s.endsWith(site!.slice(1)) : s === site || s.split(":")[0] === site);
   return (e) => {
     if (q.after !== undefined && e.id <= q.after) return false;
     const t = Date.parse(e.at);
     if (sinceMs !== undefined && t < sinceMs) return false;
     if (untilMs !== undefined && t > untilMs) return false;
-    if (sameDir && norm(path.resolve(e.dir)) !== sameDir) return false;
+    if (sameDir && dirKey(e.dir) !== sameDir) return false;
+    if (site && !siteMatches(e.site)) return false;
+    if (q.env && (e.env ?? "local") !== q.env.toLowerCase()) return false;
     if (q.types?.length && !q.types.includes(e.type)) return false;
     if (q.problems && !isProblem(e)) return false;
     if (search && !haystack(e).includes(search)) return false;
     return true;
   };
+}
+
+export interface ActivityOverviewEntry {
+  /** A project's folder, or site:<host> for a recorded site that isn't linked to one. */
+  dir: string;
+  project: string;
+  events: number;
+  problems: number;
+  visits: number;
+  last: string;
+  /** Per environment ("local" for what wasn't recorded on a site). */
+  envs: Record<string, { events: number; problems: number }>;
+  /** Per recorded site, for what the dx browser recorded. */
+  sites: Record<string, { env?: string; events: number; problems: number; last: string }>;
+}
+
+/** Every folder in the history with its counts since a moment: for the Activity page's list. */
+export function activityOverview(q: { since?: Date } = {}): ActivityOverviewEntry[] {
+  const sinceMs = q.since?.getTime();
+  const sinceDay = q.since ? localDay(q.since) : undefined;
+  const out: ActivityOverviewEntry[] = [];
+  for (const folder of allFolders()) {
+    let entry: ActivityOverviewEntry | undefined;
+    const visits = new Set<string>();
+    for (const day of days(folder)) {
+      if (sinceDay && day < sinceDay) continue;
+      for (const line of readLines(path.join(folder, `${day}.jsonl`))) {
+        let e: ActivityEvent;
+        try {
+          e = JSON.parse(line) as ActivityEvent;
+        } catch {
+          continue;
+        }
+        if (sinceMs !== undefined && Date.parse(e.at) < sinceMs) continue;
+        entry ??= { dir: e.dir, project: e.project, events: 0, problems: 0, visits: 0, last: e.at, envs: {}, sites: {} };
+        const bad = isProblem(e);
+        entry.events++;
+        if (bad) entry.problems++;
+        if (e.visit) visits.add(e.visit);
+        if (Date.parse(e.at) > Date.parse(entry.last)) entry.last = e.at;
+        const env = e.env ?? "local";
+        const en = (entry.envs[env] ??= { events: 0, problems: 0 });
+        en.events++;
+        if (bad) en.problems++;
+        if (e.site) {
+          const s = (entry.sites[e.site] ??= { env: e.env, events: 0, problems: 0, last: e.at });
+          s.events++;
+          if (bad) s.problems++;
+          if (Date.parse(e.at) > Date.parse(s.last)) s.last = e.at;
+        }
+      }
+    }
+    if (entry) {
+      entry.visits = visits.size;
+      out.push(entry);
+    }
+  }
+  return out.sort((a, b) => Date.parse(b.last) - Date.parse(a.last));
 }
 
 /** A failed request, an exception, a console error or warning, a server error. */
@@ -308,10 +418,10 @@ export function formatActivity(events: ActivityEvent[], options: { bodies?: bool
   for (const e of events) {
     if (options.visits && e.visit && e.visit !== visit) {
       visit = e.visit;
-      out.push(`── visit ${e.visit}${e.page ? ` on ${e.page}` : ""}${e.from === "check" ? " (a headless check)" : ""}`);
+      out.push(`── visit ${e.visit}${e.page ? ` on ${e.page}` : ""}${e.from === "check" ? " (a headless check)" : ""}${e.from === "dx-browser" ? " (in the dx browser)" : ""}`);
     }
     const time = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-    const who = [options.project ? e.project : "", e.service ? `[${e.service}]` : ""].filter(Boolean).join(" ");
+    const who = [options.project ? e.project : "", e.service ? `[${e.service}]` : "", e.site && e.env && e.env !== "local" ? `(${e.env} ${e.site})` : ""].filter(Boolean).join(" ");
     out.push(`${time}  ${LABELS[e.type].padEnd(7)} ${who ? `${who} ` : ""}${e.text}${e.ms !== undefined && e.type === "request" ? `  (${e.ms} ms)` : ""}`);
     if (!options.bodies) continue;
     if (e.source) out.push(`           at ${e.source}`);
@@ -334,7 +444,7 @@ const LABELS: Record<ActivityType, string> = {
 };
 
 function haystack(e: ActivityEvent): string {
-  return [e.text, e.url ?? "", e.page ?? "", e.requestBody ?? "", e.responseBody ?? "", e.stack ?? "", e.source ?? "", e.service ?? ""].join("\n").toLowerCase();
+  return [e.text, e.url ?? "", e.page ?? "", e.requestBody ?? "", e.responseBody ?? "", e.stack ?? "", e.source ?? "", e.service ?? "", e.site ?? "", e.env ?? ""].join("\n").toLowerCase();
 }
 
 function allFolders(): string[] {

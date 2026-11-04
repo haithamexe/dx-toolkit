@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { buildSummary, formatDuration, summariesDir, type SummaryOptions, type WorkSummary } from "./summary.js";
+import { hourRange, weekdayName, type YearStory } from "./yearstory.js";
 
 /** Saves it as ~/.dx/summaries/<year>-in-review.md. */
 export function saveYearReview(markdown: string, year: number): string {
@@ -105,7 +106,28 @@ function nice(date: string): string {
 
 const n = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
-export function formatYearReview(r: YearReview): string {
+const pct = (x: number) => `${Math.round(x * 100)}%`;
+
+/** The year story's extra numbers, as a markdown section. */
+function storyLines(st: YearStory): string[] {
+  const lines: string[] = [];
+  if (st.peak) {
+    lines.push(`- **When you code**: most often on ${weekdayName(st.peak.weekday)}s, ${hourRange(st.peak.hour)}; ${pct(st.evenings)} of commits in the evening or at night, ${pct(st.weekends)} at weekends`);
+  }
+  if (st.busiestWeek) lines.push(`- **Busiest week**: ${nice(st.busiestWeek.from)} to ${nice(st.busiestWeek.to)}, ${n(st.busiestWeek.commits, "commit")}`);
+  if (st.biggestDay) lines.push(`- **Biggest day**: ${nice(st.biggestDay.date)}, ${n(st.biggestDay.commits, "commit")} in ${st.biggestDay.projects.join(", ")}`);
+  if (st.fixes.count) lines.push(`- **Bugs squashed**: ${n(st.fixes.count, "commit")} that fix something`);
+  if (st.files[0]) lines.push(`- **Most-touched file**: ${st.files[0].project}/${st.files[0].path}, changed in ${n(st.files[0].commits, "commit")}`);
+  if (st.languages.length) lines.push(`- **Languages**: ${st.languages.slice(0, 5).map((l) => `${l.language} (${n(l.files, "file")})`).join(", ")}`);
+  if (st.devMs >= 60_000) lines.push(`- **Dev servers ran**: ${formatDuration(st.devMs)} in all${st.devProjects[0] ? `, most for ${st.devProjects[0].project} (${formatDuration(st.devProjects[0].ms)})` : ""}`);
+  if (st.first) lines.push(`- **First commit**: ${nice(st.first.date)} at ${st.first.time}, ${st.first.project}: ${st.first.subject || "(no message)"}`);
+  if (st.last && st.commits > 1) lines.push(`- **Last commit**: ${nice(st.last.date)} at ${st.last.time}, ${st.last.project}: ${st.last.subject || "(no message)"}`);
+  if (st.journal.words.length) lines.push(`- **Your journal's words**: ${st.journal.words.slice(0, 8).map((w) => `${w.word} (${w.count})`).join(", ")}`);
+  if (st.ai.calls) lines.push(`- **With your AI agent**: ${n(st.ai.calls, "call")} through dx${st.ai.projects ? ` in ${n(st.ai.projects, "project")}` : ""}`);
+  return lines.length ? ["## The year in numbers", "", ...lines, ""] : [];
+}
+
+export function formatYearReview(r: YearReview, story?: YearStory): string {
   const s = r.summary;
   const gh = s.github && "user" in s.github ? s.github : undefined;
   const out: string[] = [`# ${r.year} in review`, ""];
@@ -127,6 +149,7 @@ export function formatYearReview(r: YearReview): string {
   if (topMonth?.commits) facts.push(`- **Busiest month**: ${topMonth.month}, ${n(topMonth.commits, "commit")}`);
   if (r.projects[0]) facts.push(`- **Most worked on**: ${r.projects[0].project}, ${n(r.projects[0].commits, "commit")} over ${n(r.projects[0].activeDays, "day")}`);
   if (facts.length) out.push(...facts, "");
+  if (story) out.push(...storyLines(story));
 
   out.push("## Month by month", "", "| Month | Commits | Days | Mostly on | Journal |", "|---|---:|---:|---|---:|");
   for (const m of r.months) {

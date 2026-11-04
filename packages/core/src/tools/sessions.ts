@@ -67,6 +67,11 @@ function save(store: Store): void {
   fs.renameSync(tmp, dxPath(FILE));
 }
 
+/** Every project's session, for the year in review. */
+export function readSessions(): ProjectSession[] {
+  return Object.values(load());
+}
+
 export function readSession(dir: string): ProjectSession | undefined {
   return load()[key(dir)];
 }
