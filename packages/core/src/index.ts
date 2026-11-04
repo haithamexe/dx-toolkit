@@ -48,3 +48,8 @@ export * from "./tools/snapshots.js";
 export * from "./tools/mocks.js";
 export * from "./tools/bugbundle.js";
 export * from "./tools/visual.js";
+export * from "./tools/selfinstall.js";
+export * from "./tools/rules.js";
+export * from "./tools/yaml.js";
+export * from "./tools/openapi.js";
+export * from "./tools/aicli.js";

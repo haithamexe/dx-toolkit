@@ -41,7 +41,17 @@ export interface MockEndpoint {
   /** What was recorded, for Reset. */
   recorded: { status: number; contentType: string; body: string; at: string; eventId: number };
   updatedAt: string;
+  /** Where it came from: made from the history, kept by the cache, the API spec's example, made up from its schema, or written by Claude. */
+  source?: MockSource;
+  /** An API spec's path template (/users/{name}): matched instead of `path`, so any value fits. */
+  pattern?: string;
+  /** The spec's name for it (operationId or summary). */
+  operation?: string;
+  /** The example's name in the spec, for x-mock-response-name. */
+  example?: string;
 }
+
+export type MockSource = "recorded" | "cache" | "spec" | "generated" | "ai";
 
 export interface MockSet {
   format: "dx-mocks";
@@ -52,6 +62,11 @@ export interface MockSet {
   on: boolean;
   /** Also answer API calls that have no mock with a 404, instead of passing them to the dev server. */
   strict: boolean;
+  /** Keep every real API answer that passes through as a mock (source "cache"), until purged. */
+  cache?: boolean;
+  /** Its mock server runs (started again with the dashboard), and the port it had, so its address stays. */
+  server?: boolean;
+  serverPort?: number;
   endpoints: MockEndpoint[];
   updatedAt: string;
 }
@@ -61,7 +76,7 @@ export const MOCK_PRESETS: MockPreset[] = ["fail", "empty", "slow", "offline", "
 
 export const MOCK_BODY_MAX = 1024 * 1024;
 export const MOCK_DELAY_MAX = 30_000;
-export const MOCK_ENDPOINTS_MAX = 200;
+export const MOCK_ENDPOINTS_MAX = 500;
 
 export class MockError extends Error {
   constructor(
@@ -101,7 +116,7 @@ export function loadMocks(dir: string, project = path.basename(dir)): MockSet {
   try {
     const raw = JSON.parse(fs.readFileSync(mockFile(dir), "utf8")) as MockSet;
     if (raw?.format !== "dx-mocks" || !Array.isArray(raw.endpoints)) return emptySet(dir, project);
-    return { ...emptySet(dir, project), ...raw, on: raw.on === true, strict: raw.strict === true };
+    return { ...emptySet(dir, project), ...raw, on: raw.on === true, strict: raw.strict === true, cache: raw.cache === true || undefined };
   } catch {
     return emptySet(dir, project);
   }
@@ -215,8 +230,15 @@ export function mocksFromActivity(events: ActivityEvent[]): MockEndpoint[] {
 }
 
 /** Adds mocks made from `events` to the project's set: a newer recording replaces an older one, unless you edited it. */
-export function addMocks(dir: string, project: string, events: ActivityEvent[]): { set: MockSet; added: number; replaced: number; kept: number } {
-  const made = mocksFromActivity(events);
+export function addMocks(dir: string, project: string, events: ActivityEvent[], source: MockSource = "recorded"): { set: MockSet; added: number; replaced: number; kept: number } {
+  return putMocks(dir, project, mocksFromActivity(events).map((m) => ({ ...m, source })));
+}
+
+/**
+ * Adds endpoints (made from history, an API spec, or by Claude) to the project's set: one with
+ * the same id replaces the old one, unless that was edited by hand.
+ */
+export function putMocks(dir: string, project: string, made: MockEndpoint[]): { set: MockSet; added: number; replaced: number; kept: number } {
   const set = loadMocks(dir, project);
   set.project = project;
   let added = 0;
@@ -238,14 +260,41 @@ export function addMocks(dir: string, project: string, events: ActivityEvent[]):
   return { set, added, replaced, kept };
 }
 
-export function setMockMode(dir: string, project: string, mode: { on?: boolean; strict?: boolean }): MockSet {
+export function setMockMode(dir: string, project: string, mode: { on?: boolean; strict?: boolean; cache?: boolean }): MockSet {
   const set = loadMocks(dir, project);
+  set.project = project;
   if (mode.on !== undefined) {
-    if (mode.on && !set.endpoints.length) throw new MockError(`${project} has no mocks yet. Make them from its activity first (dx mock make, or the Activity page).`);
+    if (mode.on && !set.endpoints.length)
+      throw new MockError(`${project} has no mocks yet. Make them from its activity, its API spec, or turn on the cache first (dx mock make, the Activity page, or the Requests page).`);
     set.on = mode.on;
   }
   if (mode.strict !== undefined) set.strict = mode.strict;
+  if (mode.cache !== undefined) set.cache = mode.cache || undefined;
   return saveMocks(set);
+}
+
+/** Removes the mocks from one source (the cache, say), or all of them; edited ones go too. */
+export function purgeMocks(dir: string, source?: MockSource): { set: MockSet; removed: number } {
+  const set = loadMocks(dir);
+  const before = set.endpoints.length;
+  set.endpoints = source ? set.endpoints.filter((e) => (e.source ?? "recorded") !== source) : [];
+  if (!set.endpoints.length) set.on = false;
+  saveMocks(set);
+  return { set, removed: before - set.endpoints.length };
+}
+
+/** Whether an API spec's path template (/users/{id}/orders) fits a request's path. */
+export function templateMatches(pattern: string, url: string): boolean {
+  const p = pattern.split("?")[0].split("/");
+  const t = (url.split("?")[0].split("#")[0] || "/").split("/");
+  if (p.length !== t.length) return false;
+  return p.every((seg, i) => {
+    if (seg === t[i]) return true;
+    if (!seg.includes("{")) return false;
+    // {id}, or a part with one inside it: /files/{name}.json
+    const re = new RegExp(`^${seg.split(/\{[^}]+\}/).map((x) => x.replace(/[.+?^${}()|[\]\\*]/g, "\\$&")).join("[^/]+")}$`);
+    return re.test(t[i]);
+  });
 }
 
 export interface MockPatch {
@@ -366,19 +415,45 @@ export function mockNeedsBody(set: MockSet, method: string, url: string, service
 function candidates(set: MockSet, method: string, url: string, service?: string): MockEndpoint[] {
   const m = method.toUpperCase();
   const p = foldPath(url);
-  return set.endpoints.filter((e) => e.enabled && e.method === m && e.path === p && (!e.service || !service || e.service === service));
+  return set.endpoints.filter(
+    (e) => e.enabled && e.method === m && (e.pattern ? templateMatches(e.pattern, url) : e.path === p) && (!e.service || !service || e.service === service),
+  );
+}
+
+// Real answers beat an API spec's example, which beats data made up from its schema; Claude's data
+// was asked for, so it counts as real. Anything edited by hand wins.
+const SOURCE_RANK: Record<MockSource, number> = { generated: 0, spec: 1, recorded: 2, cache: 2, ai: 2 };
+
+/** Which answer a caller asks for, as with Postman's mock servers: x-mock-response-code / -name. */
+export interface MockWanted {
+  code?: number;
+  name?: string;
 }
 
 /**
- * The mock that answers a call: same method and folded path; of those, one whose query and body
- * match best (an exact match beats one recorded without them, which beats a different one), the
- * most recently changed on a tie. Undefined when none is for that path.
+ * The mock that answers a call: same method, and the same folded path or a spec template it fits.
+ * Of those: the status or example the caller asked for; an exact path over a template; query and
+ * body matching best (an exact match beats one recorded without them, which beats a different
+ * one); edited, then real answers over made-up ones; the most recently changed on a tie.
  */
-export function matchMock(set: MockSet, req: { method: string; url: string; body?: string; contentType?: string; service?: string }): MockEndpoint | undefined {
-  const list = candidates(set, req.method, req.url, req.service);
+export function matchMock(
+  set: MockSet,
+  req: { method: string; url: string; body?: string; contentType?: string; service?: string },
+  want: MockWanted = {},
+): MockEndpoint | undefined {
+  let list = candidates(set, req.method, req.url, req.service);
+  if (want.code !== undefined) list = list.filter((e) => e.status === want.code);
+  if (want.name) list = list.filter((e) => e.example === want.name || e.operation === want.name);
   if (!list.length) return undefined;
   const q = queryOf(req.url);
   const key = list.some((e) => e.bodyKey) ? bodyKeyOf(req.body, req.contentType ?? "") : undefined;
-  const score = (e: MockEndpoint) => (e.query === undefined ? 1 : e.query === q ? 2 : 0) + (e.bodyKey === undefined ? 1 : e.bodyKey === key ? 2 : 0);
+  const score = (e: MockEndpoint) =>
+    (e.pattern ? 0 : 8) +
+    (e.query === undefined ? 1 : e.query === q ? 2 : 0) +
+    (e.bodyKey === undefined ? 1 : e.bodyKey === key ? 2 : 0) +
+    (e.edited ? 4 : 0) +
+    SOURCE_RANK[e.source ?? "recorded"] +
+    // Without a code asked for, a success is the usual answer.
+    (want.code === undefined && e.status < 400 ? 1 : 0);
   return [...list].sort((a, b) => score(b) - score(a) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
 }

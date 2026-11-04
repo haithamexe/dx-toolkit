@@ -4,7 +4,9 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { handleApi, HttpError } from "./api.js";
-import { certCovers, ensureCert, loadConfig, projectHostNames, type CertFiles, type DxConfig } from "@dx/core";
+import { certCovers, dxPath, ensureCert, loadConfig, projectHostNames, type CertFiles, type DxConfig } from "@dx/core";
+import { releaseAll } from "./intercept.js";
+import { flushCache, listMockServers, startMockServer, stopAllMockServers } from "./mocks.js";
 import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
 import { DOMAIN_PORTS, startLocalDomains, type LocalDomains, type TlsOptions } from "./proxy.js";
 import { clearDashboardInfo, writeDashboardInfo } from "./link.js";
@@ -159,12 +161,14 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   const domainPorts = options.localDomainPorts ?? (config.localDomains === false ? false : config.localDomainsPort !== undefined ? [config.localDomainsPort] : DOMAIN_PORTS);
   if (domainPorts !== false) domains = await startLocalDomains({ dashboardPort: port, ports: domainPorts, tls: await localTls(config) }).catch(() => undefined);
   setLocalDomainsPort(domains?.port, domains?.httpsPort);
+  // Mock servers that were running when the dashboard last stopped start again, on the same port when it's free.
+  await restoreMockServers();
 
   writeDashboardInfo({ url, port, token, pid: process.pid, startedAt: new Date().toISOString(), background: !!options.background, localDomainsPort: domains?.port, httpsPort: domains?.httpsPort });
 
   const idleMs = (options.idleMinutes ?? 30) * 60_000;
   const idleTimer = setInterval(() => {
-    if (options.background && !anyDevServerRunning() && !dxBrowserOpen() && Date.now() - lastActivity > idleMs) options.onIdle?.();
+    if (options.background && !anyDevServerRunning() && !dxBrowserOpen() && !listMockServers().length && Date.now() - lastActivity > idleMs) options.onIdle?.();
   }, Math.min(60_000, Math.max(1000, idleMs / 4)));
   idleTimer.unref();
   // A commit made in a terminal under a dev server dx runs gets its visual diff too.
@@ -175,6 +179,10 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       clearInterval(idleTimer);
       stopHeadWatch();
       clearDashboardInfo();
+      // Anything held in Intercept goes on as it was; the cache's last answers are written down.
+      releaseAll();
+      flushCache();
+      await stopAllMockServers();
       await stopAllDevServers();
       // It records through this dashboard, so it goes with it, like the dev servers.
       await closeDxBrowser().catch(() => undefined);
@@ -190,6 +198,24 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   }
 
   return { url, port, token, localDomainsPort: domains?.port, close, closed };
+}
+
+/** Starts the mock servers whose sets say they were on, for projects that are still there. */
+async function restoreMockServers(): Promise<void> {
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(dxPath("mocks")).filter((f) => f.endsWith(".json"));
+  } catch {
+    return;
+  }
+  for (const f of files) {
+    try {
+      const set = JSON.parse(fs.readFileSync(dxPath("mocks", f), "utf8")) as { dir?: string; project?: string; server?: boolean };
+      if (set.server === true && set.dir && fs.existsSync(set.dir)) await startMockServer(set.dir, set.project ?? path.basename(set.dir)).catch(() => undefined);
+    } catch {
+      // a broken file: skipped
+    }
+  }
 }
 
 /** Listens on 127.0.0.1, moving to the next port when the wanted one is taken. */

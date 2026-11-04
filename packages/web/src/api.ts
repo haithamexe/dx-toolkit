@@ -172,7 +172,8 @@ import { clearTraffic, listTraffic } from "./traffic.js";
 import { forgetFix, rememberFix, storedFix } from "./fixes.js";
 import { removeSnapshotRun, runSnapshot, snapshotViews } from "./snapshots.js";
 import { bugReplayJob, startBugReplay } from "./bugreplay.js";
-import { forgetMocks } from "./mocks.js";
+import { forgetMocks, mockServerFor } from "./mocks.js";
+import { labRoutes } from "./labapi.js";
 import { closeDxBrowser, dxBrowserStatus, forgetSites, openDxBrowser } from "./dxbrowser.js";
 import {
   clearDevServer,
@@ -390,6 +391,7 @@ const routes: Record<string, Handler> = {
     }
     return {
       ...set,
+      server: mockServerFor(project.dir),
       endpoints: set.endpoints.map(({ body, recorded, ...e }) => ({ ...e, bytes: Buffer.byteLength(body), preview: body.slice(0, 2000), recordedAt: recorded.at, recordedStatus: recorded.status })),
     };
   },
@@ -406,12 +408,19 @@ const routes: Record<string, Handler> = {
   },
   "POST /api/mocks/mode": (req) => {
     const project = knownProject(req.body.dir, { snapshots: true });
+    const bool = (v: unknown) => (typeof v === "boolean" ? v : undefined);
     const set = mockCall(() =>
-      setMockMode(project.dir, project.name, { on: typeof req.body.on === "boolean" ? req.body.on : undefined, strict: typeof req.body.strict === "boolean" ? req.body.strict : undefined }),
+      setMockMode(project.dir, project.name, { on: bool(req.body.on), strict: bool(req.body.strict), cache: bool(req.body.cache) }),
     );
     forgetMocks();
-    recordRun("mock", true, `${project.name}: mock mode ${set.on ? "on" : "off"}${set.strict ? " (strict)" : ""}`, "web", { project: project.name });
-    return { on: set.on, strict: set.strict, endpoints: set.endpoints.length };
+    recordRun(
+      "mock",
+      true,
+      `${project.name}: mock mode ${set.on ? "on" : "off"}${set.strict ? " (strict)" : ""}${set.cache ? ", caching answers" : ""}`,
+      "web",
+      { project: project.name },
+    );
+    return { on: set.on, strict: set.strict, cache: !!set.cache, endpoints: set.endpoints.length };
   },
   "POST /api/mocks/update": (req) => {
     const project = knownProject(req.body.dir, { snapshots: true });
@@ -1126,7 +1135,7 @@ interface DepsJob {
 let depsJob: DepsJob = { running: false, done: 0, total: 0, current: "" };
 
 export async function handleApi(req: ApiRequest): Promise<unknown> {
-  const handler = routes[`${req.method} ${req.path}`];
+  const handler = routes[`${req.method} ${req.path}`] ?? labRoutes[`${req.method} ${req.path}`];
   if (!handler) throw new HttpError(404, `No such API: ${req.method} ${req.path}`);
   return handler(req);
 }
@@ -1137,7 +1146,7 @@ export async function handleApi(req: ApiRequest): Promise<unknown> {
  * ~/.dx/snapshots, and only while registered), for running it, reading its output and history,
  * and opening it; nothing that changes files or git takes one.
  */
-function knownProject(dir: unknown, { snapshots = false } = {}): Project {
+export function knownProject(dir: unknown, { snapshots = false } = {}): Project {
   const wanted = String(dir ?? "").toLowerCase();
   const project = scanProjects(loadConfig()).find((p) => p.dir.toLowerCase() === wanted);
   if (project) return project;

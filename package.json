@@ -16,11 +16,12 @@
     "watch": "tsc -b -w packages/core packages/web packages/cli packages/mcp",
     "clean": "tsc -b --clean packages/core packages/web packages/cli packages/mcp",
     "test": "npm run build && node --test \"packages/core/dist/__tests__/*.test.js\" \"packages/web/dist/__tests__/*.test.js\" \"packages/mcp/dist/__tests__/*.test.js\" \"packages/cli/dist/__tests__/*.test.js\"",
-    "link": "npm install -g ./packages/cli",
+    "link": "npm run build && node scripts/use.mjs local",
     "raycast:install": "npm install --prefix packages/raycast",
     "raycast:dev": "npm run dev --prefix packages/raycast",
     "ui": "node packages/cli/dist/index.js ui",
-    "release": "npm run build && node scripts/release.mjs"
+    "release": "npm run build && node scripts/release.mjs",
+    "unlink": "node scripts/use.mjs npm"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

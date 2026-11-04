@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 import { configPath, dxHome, dxPath, ensureDxHome, loadConfig } from "../config.js";
 import { listAiTools } from "./aiSetup.js";
@@ -7,6 +8,7 @@ import { browserInstallFix, findBrowser } from "./browser.js";
 import { githubToken } from "./github.js";
 import { certFiles, mkcertInstallFix } from "./https.js";
 import { listListeningPorts } from "./ports.js";
+import { findDxInstalls } from "./selfinstall.js";
 import { scanProjects } from "./projects.js";
 import { detectStack } from "./stacks.js";
 
@@ -187,6 +189,34 @@ export async function runDoctor(): Promise<Check[]> {
       status: wt ? "ok" : "warn",
       detail: wt ? wt : "not found; new terminal windows will open in plain cmd.exe",
     });
+  }
+
+  // Two installs of dx, or shims left by one that's gone, make npm install -g fail with EEXIST.
+  const dx = (() => {
+    try {
+      return findDxInstalls();
+    } catch {
+      return undefined;
+    }
+  })();
+  if (dx) {
+    if (dx.npm && dx.local) {
+      checks.push({
+        name: "dx install",
+        status: "warn",
+        detail: "installed twice, from npm and linked from a repository; the dx command is whichever npm set up last",
+        fix: "dx update --npm (the npm package), or npm run link in your dx-toolkit folder (your own build)",
+      });
+    } else if (dx.strayShims.length) {
+      checks.push({
+        name: "dx install",
+        status: "warn",
+        detail: `${dx.strayShims.map((f) => path.basename(f)).join(", ")} in ${dx.binDir} start a dx install that's gone, so npm install -g dx-devkit fails with EEXIST`,
+        fix: "npx -y dx-devkit@latest update",
+      });
+    } else {
+      checks.push({ name: "dx install", status: "ok", detail: dx.local ? `linked from ${dx.local}` : dx.npm ? "dx-devkit from npm" : "not installed globally (run from a folder)" });
+    }
   }
   return checks;
 }

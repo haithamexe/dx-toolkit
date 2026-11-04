@@ -59,6 +59,8 @@ export interface DxConfig {
   visualMobile?: boolean;
   /** The terminal projects open in, by id (`dx terminal --list`); the first one found when unset. */
   terminal?: string;
+  /** The coding agent CLI the AI buttons use, "claude" or "codex"; the first one installed when unset. */
+  aiCli?: "claude" | "codex";
   /**
    * Sites the dx browser records, besides addresses on this computer (`dx sites add`): a host
    * (or host:port, or *.domain), the project it belongs to, and its environment.

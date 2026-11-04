@@ -52,6 +52,7 @@ const ICONS = {
   new: "M12 5v14M5 12h14",
   ports: "M7 3v5M17 3v5M5 8h14v3a7 7 0 0 1-14 0zM12 18v3",
   machine: "M3 5h18v11H3zM8 20h8M12 16v4",
+  requests: "M4 8h13l-4-4M20 16H7l4 4",
   journal: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6",
   summary: "M4 19V9M10 19V5M16 19v-7M22 19H2",
   cleanup: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
@@ -934,6 +935,7 @@ const pages = [
   { id: "machine", label: "Machine", icon: "machine", render: machinePage },
   { id: "git", label: "Git", icon: "git", render: gitPage },
   { id: "activity", label: "Activity", icon: "activity", render: activityPage },
+  { id: "requests", label: "Requests", icon: "requests", render: requestsPage },
   { id: "env", label: "Env & secrets", icon: "key", render: envPage },
   { id: "journal", label: "Journal", icon: "journal", render: journalPage },
   { id: "summary", label: "Summary", icon: "summary", render: summaryPage },
@@ -1942,6 +1944,734 @@ function portsPage(root) {
     });
   }
   load();
+}
+
+// ------------------------------------------------------------------ Requests
+
+/** What another page hands the Requests page: a request to resend, or an endpoint to make a rule for. */
+let labDraft = null;
+function openLab(dir, tab, draft) {
+  labDraft = { dir, tab, draft };
+  setPref("labDir", dir);
+  setPref("labTab", tab);
+  location.hash = "#/requests";
+}
+
+const LAB_TABS = [
+  ["intercept", "Intercept"],
+  ["repeater", "Repeater"],
+  ["rules", "Rules"],
+  ["api", "API & mocks"],
+];
+const LAB_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+const MOCK_SOURCES = { recorded: "recorded", cache: "cached", spec: "spec example", generated: "made up", ai: "AI" };
+
+/** "name: value" lines ⇄ a header map. */
+function headersText(h) {
+  return Object.entries(h ?? {})
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+}
+function parseHeadersText(text) {
+  const out = {};
+  for (const line of text.split(/\r?\n/)) {
+    const i = line.indexOf(":");
+    if (!line.trim()) continue;
+    if (i < 1) throw new Error(`"${line.trim()}" isn't a header: write name: value`);
+    out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+/** JSON edits as lines: `user.name = "Ada"` sets (a JSON value, or text), `- user.token` removes. */
+function jsonEditsText(edits) {
+  return (edits ?? []).map((e) => (e.remove ? `- ${e.path}` : `${e.path} = ${JSON.stringify(e.value)}`)).join("\n");
+}
+function parseJsonEditsText(text) {
+  const out = [];
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith("-")) {
+      out.push({ path: t.slice(1).trim(), remove: true });
+      continue;
+    }
+    const i = t.indexOf("=");
+    if (i < 1) throw new Error(`"${t}" isn't a change: write path = value, or - path to remove it`);
+    const raw = t.slice(i + 1).trim();
+    let value;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      value = raw;
+    }
+    out.push({ path: t.slice(0, i).trim(), value });
+  }
+  return out;
+}
+
+function requestsPage(root) {
+  let dir = pref("labDir", "");
+  let tab = pref("labTab", "repeater");
+  if (!LAB_TABS.some(([t]) => t === tab)) tab = "repeater";
+  let projects = [];
+  let stopped = false;
+  let pollTimer = 0;
+  const draft = labDraft;
+  labDraft = null;
+  if (draft) ((dir = draft.dir), (tab = draft.tab));
+
+  const holder = h("div", { class: "section" });
+  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("labDir", dir), draw()) });
+  const tabs = segmented("Tool", LAB_TABS, tab, (v) => ((tab = v), setPref("labTab", v), draw()));
+  tabs.classList.add("segmented-wrap");
+  append(
+    root,
+    pageHead(
+      "Requests",
+      "Change what your app sends and gets back: hold requests to edit them, resend them, set rules, and give the app an API spec and a mock server of its own.",
+      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
+    ),
+    h("div", { class: "card card-pad toolbar" }, tabs),
+    holder,
+  );
+
+  (async () => {
+    try {
+      projects = await api("/api/projects");
+    } catch (err) {
+      holder.replaceChildren(errorView(err));
+      return;
+    }
+    if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
+    projectSelect.replaceChildren(...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    draw();
+  })();
+
+  function project() {
+    return projects.find((p) => p.dir === dir);
+  }
+  const q = () => `dir=${encodeURIComponent(dir)}`;
+
+  function draw() {
+    clearTimeout(pollTimer);
+    if (!dir) return holder.replaceChildren(h("div", { class: "card" }, stateView("No projects", "dx looks for projects in your projects folders.")));
+    ({ intercept: interceptTab, repeater: repeaterTab, rules: rulesTab, api: apiTab })[tab]();
+  }
+
+  // ---------------------------------------------------------------- Intercept
+
+  function interceptTab() {
+    const list = h("div", { class: "section", "aria-live": "polite" });
+    const editors = new Map(); // id -> card, kept while it's held so typing isn't lost
+    const empty = h(
+      "div",
+      { class: "card" },
+      stateView(
+        "Nothing is held",
+        "A rule with Hold set catches matching requests (or their answers) here, to edit before they go on. Held ones go on by themselves after a minute, so the app never hangs.",
+        btn("Make a rule", () => ((tab = "rules"), setPref("labTab", "rules"), tabs.querySelector('[data-v="rules"]')?.click()), { iconName: "new" }),
+      ),
+    );
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "section-head" },
+        h("p", { class: "dim" }, `Requests to ${project()?.name ?? "the project"} that a rule holds. They're kept in memory only, with their real headers and body, so you can edit them.`),
+        btn("Send all on", async (ev) => {
+          const b = ev.currentTarget;
+          const r = await busy(b, "Sending…", () => api("/api/lab/intercept/release", { method: "POST", body: { dir } }));
+          if (r) toast(`${plural(r.released, "request")} sent on unchanged`);
+        }, { small: true, kind: "ghost" }),
+      ),
+      list,
+    );
+    const poll = async () => {
+      if (stopped || tab !== "intercept") return;
+      try {
+        const held = await api(`/api/lab/intercept?${q()}`);
+        for (const [id, card] of editors) if (!held.some((x) => x.id === id)) (card.remove(), editors.delete(id));
+        for (const item of held) if (!editors.has(item.id)) editors.set(item.id, heldCard(item, () => (editors.get(item.id)?.remove(), editors.delete(item.id))));
+        if (!held.length) list.replaceChildren(empty);
+        else {
+          empty.remove();
+          for (const card of editors.values()) if (!card.isConnected) list.append(card);
+        }
+        for (const card of editors.values()) card.tick?.();
+      } catch {
+        // the next poll tries again
+      }
+      pollTimer = setTimeout(poll, 1000);
+    };
+    poll();
+  }
+
+  function heldCard(item, gone) {
+    const isReq = item.phase === "request";
+    const method = h("select", { "aria-label": "Method", disabled: !isReq }, LAB_METHODS.map((m) => h("option", { selected: m === item.method }, m)));
+    const url = h("input", { class: "input input-wide mono", value: item.url, "aria-label": "Address", disabled: !isReq });
+    const status = h("input", { class: "input lab-status", type: "number", min: 100, max: 599, value: item.status ?? "", "aria-label": "Status" });
+    const headers = h("textarea", { class: "input lab-text mono", rows: 6, "aria-label": "Headers, one name: value per line" });
+    headers.value = headersText(item.headers);
+    const body = h("textarea", { class: "input lab-text mono", rows: 8, "aria-label": "Body", disabled: !!item.binary });
+    body.value = item.binary ? "(not text: it can be sent on or dropped, not edited)" : item.body;
+    const left = h("span", { class: "dim" });
+    const send = async (button, action, edited) => {
+      let payload = { id: item.id, action };
+      if (edited) {
+        try {
+          payload = { ...payload, headers: parseHeadersText(headers.value), ...(item.binary ? {} : { body: body.value }) };
+        } catch (err) {
+          return toast(err.message, "error");
+        }
+        if (isReq) payload = { ...payload, method: method.value, url: url.value };
+        else if (status.value) payload.status = Number(status.value);
+      }
+      const r = await busy(button, action === "drop" ? "Dropping…" : "Sending…", () => api("/api/lab/intercept", { method: "POST", body: payload }));
+      if (r) (toast(action === "drop" ? "Dropped" : "Sent on"), gone());
+    };
+    const card = h(
+      "div",
+      { class: "card card-pad section lab-held" },
+      h(
+        "div",
+        { class: "toolbar" },
+        h("span", { class: `badge ${isReq ? "badge-accent" : "badge-warn"}` }, isReq ? "Request" : "Answer"),
+        h("strong", { class: "mono" }, `${item.method} ${item.url}`),
+        item.service ? h("span", { class: "badge" }, item.service) : null,
+        h("span", { class: "dim" }, `held by ${item.rule}`),
+        left,
+      ),
+      h("div", { class: "toolbar" }, isReq ? [method, url] : h("label", { class: "field" }, h("span", { class: "field-label" }, "Status"), status)),
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Headers"), headers),
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Body"), body),
+      h(
+        "div",
+        { class: "toolbar" },
+        btn("Send on as edited", (ev) => send(ev.currentTarget, "forward", true), { kind: "primary", iconName: "play" }),
+        btn("Send on unchanged", (ev) => send(ev.currentTarget, "forward", false), { kind: "ghost" }),
+        btn("Drop", (ev) => send(ev.currentTarget, "drop", false), { kind: "danger-ghost", iconName: "x", title: "Close the connection: the app gets no answer" }),
+      ),
+    );
+    card.tick = () => {
+      const s = Math.max(0, Math.round((Date.parse(item.expiresAt) - Date.now()) / 1000));
+      left.textContent = s ? `goes on by itself in ${s} s` : "going on…";
+    };
+    card.tick();
+    return card;
+  }
+
+  // ---------------------------------------------------------------- Repeater
+
+  function repeaterTab() {
+    const start = draft?.tab === "repeater" ? draft.draft : JSON.parse(pref(`labReq:${dir}`, "null") ?? "null") ?? { method: "GET", path: "/", headers: {}, body: "" };
+    const method = h("select", { "aria-label": "Method" }, LAB_METHODS.map((m) => h("option", { selected: m === start.method }, m)));
+    const path = h("input", { class: "input input-wide mono", value: start.path, "aria-label": "Path on the app, like /api/orders?page=2", placeholder: "/api/orders?page=2" });
+    const headers = h("textarea", { class: "input lab-text mono", rows: 5, "aria-label": "Headers, one name: value per line", placeholder: "content-type: application/json" });
+    headers.value = headersText(start.headers);
+    const body = h("textarea", { class: "input lab-text mono", rows: 8, "aria-label": "Body", placeholder: '{"qty": 2}' });
+    body.value = start.body ?? "";
+    const hidden = h("div");
+    const result = h("div", { class: "section", "aria-live": "polite" });
+    const historyList = h("ul", { class: "lab-history" });
+    const warnHidden = () => {
+      const has = headers.value.includes("•••") || body.value.includes("•••");
+      hidden.replaceChildren(
+        ...(has ? [h("div", { class: "note note-warn" }, icon("warn"), h("p", null, "Values shown as ••• were hidden by dx when it recorded them (tokens, cookies, passwords). Type the real ones before sending."))] : []),
+      );
+    };
+    headers.addEventListener("input", warnHidden);
+    body.addEventListener("input", warnHidden);
+    warnHidden();
+    const send = async (ev) => {
+      const button = ev.currentTarget;
+      let hs;
+      try {
+        hs = parseHeadersText(headers.value);
+      } catch (err) {
+        return toast(err.message, "error");
+      }
+      const req = { method: method.value, path: path.value.trim(), headers: hs, body: body.value };
+      setPref(`labReq:${dir}`, JSON.stringify({ ...req, headers: Object.fromEntries(Object.entries(hs).filter(([k]) => !/authorization|cookie|token|key/i.test(k))) }));
+      const r = await busy(button, "Sending…", () => api("/api/lab/send", { method: "POST", body: { dir, ...req, body: ["GET", "HEAD"].includes(req.method) && !req.body ? undefined : req.body } }));
+      if (!r) return;
+      showResult(r);
+      loadHistory();
+    };
+    const showResult = (r) => {
+      result.replaceChildren(
+        ...[
+          r.masked ? h("div", { class: "note note-warn" }, icon("warn"), h("p", null, "The body still had a value dx hid (•••), and it went as it is.")) : null,
+          h("div", { class: "card card-pad" }, requestDetail({ ...r, url: r.path, type: "request" }, { current: r.responseBody ? "response" : undefined })),
+        ].filter(Boolean),
+      );
+    };
+    const loadHistory = async () => {
+      try {
+        const list = await api(`/api/lab/history?${q()}`);
+        historyList.replaceChildren(
+          ...list.slice(0, 20).map((x) =>
+            h(
+              "li",
+              null,
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "lab-history-row",
+                  title: "Load it into the form (hidden values stay hidden: type them again)",
+                  onclick: () => {
+                    method.value = x.method;
+                    path.value = x.path;
+                    headers.value = headersText(x.requestHeaders);
+                    body.value = x.requestBody ?? "";
+                    warnHidden();
+                    showResult(x);
+                  },
+                },
+                h("span", { class: "mono" }, x.method),
+                h("span", { class: `badge ${x.error || x.status >= 400 ? "badge-danger" : "badge-ok"}` }, x.error ? "failed" : String(x.status)),
+                h("span", { class: "mono lab-history-path" }, x.path),
+                h("span", { class: "dim" }, `${x.ms} ms · ${relativeTime(Date.parse(x.at))}`),
+              ),
+            ),
+          ),
+        );
+        if (!list.length) historyList.replaceChildren(h("li", { class: "dim" }, "What you send shows here, for this dashboard session."));
+      } catch {
+        // shown when sending
+      }
+    };
+    holder.replaceChildren(
+      h(
+        "form",
+        { class: "card card-pad section", onsubmit: (e) => (e.preventDefault(), send({ currentTarget: e.submitter ?? e.target.querySelector("button[type=submit]") })) },
+        h("p", { class: "dim" }, `Sent to ${project()?.name ?? "the project"}'s dev server, the one dx runs, without rules or mocks: what you send is what it gets. Start it from the Projects page first.`),
+        h("div", { class: "toolbar" }, method, path, btn("Send", null, { kind: "primary", iconName: "play", type: "submit" })),
+        hidden,
+        h("label", { class: "field" }, h("span", { class: "field-label" }, "Headers"), headers),
+        h("label", { class: "field" }, h("span", { class: "field-label" }, "Body"), body),
+      ),
+      result,
+      h("section", { class: "section", "aria-labelledby": "lab-history-title" }, h("h2", { class: "section-title", id: "lab-history-title" }, "Sent"), h("div", { class: "card" }, historyList)),
+    );
+    loadHistory();
+  }
+
+  // ---------------------------------------------------------------- Rules
+
+  function rulesTab() {
+    const list = h("div", { class: "card" }, loadingView("Reading the rules…"));
+    const editor = h("div");
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "section-head" },
+        h("p", { class: "dim" }, "Rules change requests to the dev server and its answers as they pass through dx (at the project's .localhost address, or the address dx records). Mocked calls don't reach them."),
+        btn("New rule", () => edit({ on: true, method: draft?.draft?.method ?? "GET", path: draft?.draft?.path ?? "/api/" }), { kind: "primary", iconName: "new" }),
+      ),
+      editor,
+      list,
+    );
+    const load = async () => {
+      try {
+        const rules = await api(`/api/lab/rules?${q()}`);
+        if (!rules.length) return list.replaceChildren(stateView("No rules yet", "A rule can change a header or a JSON field, replace a body, change a status, add a delay, make a call fail, or hold it in Intercept."));
+        list.replaceChildren(
+          h(
+            "div",
+            { class: "table-wrap" },
+            h(
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null, h("th", { scope: "col" }, "On"), h("th", { scope: "col" }, "Rule"), h("th", { scope: "col" }, "Does"), h("th", { scope: "col", class: "num" }, "Matched"), h("th", { scope: "col" }, h("span", { class: "visually-hidden" }, "Actions")))),
+              h("tbody", null, rules.map((r) => ruleRow(r, load))),
+            ),
+          ),
+        );
+      } catch (err) {
+        list.replaceChildren(errorView(err, load));
+      }
+    };
+    const edit = (r) => {
+      editor.replaceChildren(ruleEditor(r, () => (editor.replaceChildren(), load())));
+      editor.querySelector("input")?.focus();
+    };
+    rulesTab.edit = edit;
+    if (draft?.tab === "rules") edit({ on: true, method: draft.draft.method, path: draft.draft.path, name: "" });
+    load();
+  }
+
+  function ruleSummary(r) {
+    const out = [];
+    if (r.request?.setHeaders || r.request?.removeHeaders) out.push("request headers");
+    if (r.request?.json) out.push(`request: ${r.request.json.map((j) => j.path).join(", ")}`);
+    if (r.request?.body !== undefined) out.push("request body replaced");
+    if (r.response?.status) out.push(`status ${r.response.status}`);
+    if (r.response?.setHeaders || r.response?.removeHeaders) out.push("answer headers");
+    if (r.response?.json) out.push(`answer: ${r.response.json.map((j) => j.path).join(", ")}`);
+    if (r.response?.body !== undefined) out.push("answer body replaced");
+    if (r.delayMs) out.push(`${r.delayMs} ms slower`);
+    if (r.fail) out.push({ 500: "fails with 500", timeout: "never answers", drop: "connection dropped" }[r.fail]);
+    if (r.intercept) out.push({ request: "holds the request", response: "holds the answer", both: "holds both" }[r.intercept]);
+    return out;
+  }
+
+  function ruleRow(r, reload) {
+    const toggle = h("input", {
+      type: "checkbox",
+      checked: r.on,
+      "aria-label": `${r.name} on`,
+      onchange: async (e) => {
+        const box = e.currentTarget;
+        try {
+          await api("/api/lab/rules", { method: "POST", body: { dir, rule: { ...r, on: box.checked } } });
+          toast(`${r.name} ${box.checked ? "on" : "off"}`);
+        } catch (err) {
+          box.checked = !box.checked;
+          toast(err.message, "error");
+        }
+      },
+    });
+    return h(
+      "tr",
+      null,
+      h("td", null, toggle),
+      h("td", null, h("strong", null, r.name), h("div", { class: "dim mono" }, `${r.method === "*" ? "any" : r.method} ${r.path}${r.service ? ` · ${r.service}` : ""}`)),
+      h("td", null, h("div", { class: "machine-badges" }, ruleSummary(r).map((s) => h("span", { class: `badge ${/fails|never|dropped/.test(s) ? "badge-danger" : /holds/.test(s) ? "badge-warn" : ""}` }, s)))),
+      h("td", { class: "num" }, r.hits),
+      h(
+        "td",
+        { class: "actions" },
+        btn("Edit", () => rulesTab.edit(r), { small: true, kind: "ghost" }),
+        btn("Delete", async (ev) => {
+          const b = ev.currentTarget;
+          if (!(await confirmDialog({ title: `Delete the rule ${r.name}?`, text: "Requests to its endpoint pass through unchanged again.", confirm: "Delete" }))) return;
+          const ok = await busy(b, "Deleting…", () => api("/api/lab/rules/remove", { method: "POST", body: { dir, id: r.id } }));
+          if (ok) reload();
+        }, { small: true, kind: "danger-ghost", iconName: "x" }),
+      ),
+    );
+  }
+
+  function ruleEditor(r, done) {
+    const field = (label, control, hint) => h("label", { class: "field" }, h("span", { class: "field-label" }, label), control, hint ? h("span", { class: "field-hint" }, hint) : null);
+    const text = (value, rows = 3, placeholder = "") => {
+      const t = h("textarea", { class: "input lab-text mono", rows, placeholder });
+      t.value = value ?? "";
+      return t;
+    };
+    const name = h("input", { class: "input", value: r.name ?? "", placeholder: "Empty cart" });
+    const method = h("select", null, ["*", ...LAB_METHODS].map((m) => h("option", { value: m, selected: m === (r.method ?? "*") }, m === "*" ? "Any method" : m)));
+    const path = h("input", { class: "input input-wide mono", value: r.path ?? "/api/", placeholder: "/api/orders/*" });
+    const reqSet = text(headersText(r.request?.setHeaders), 2, "x-role: admin");
+    const reqRemove = h("input", { class: "input mono", value: (r.request?.removeHeaders ?? []).join(", "), placeholder: "authorization, cookie" });
+    const reqJson = text(jsonEditsText(r.request?.json), 3, 'items.0.qty = 5\n- user.token');
+    const reqBody = text(r.request?.body, 3, "Leave empty to keep the body");
+    const status = h("input", { class: "input lab-status", type: "number", min: 100, max: 599, value: r.response?.status ?? "", placeholder: "200" });
+    const resSet = text(headersText(r.response?.setHeaders), 2, "cache-control: no-store");
+    const resRemove = h("input", { class: "input mono", value: (r.response?.removeHeaders ?? []).join(", ") });
+    const resJson = text(jsonEditsText(r.response?.json), 3, "items = []\ntotal = 0");
+    const resBody = text(r.response?.body, 3, "Leave empty to keep the body");
+    const delay = h("input", { class: "input lab-status", type: "number", min: 0, max: 30000, step: 100, value: r.delayMs ?? "", placeholder: "0" });
+    const fail = h("select", null, [["", "Answer"], ["500", "Fail with 500"], ["timeout", "Never answer"], ["drop", "Drop the connection"]].map(([v, t]) => h("option", { value: v, selected: v === (r.fail ?? "") }, t)));
+    const hold = h("select", null, [["", "Don't hold"], ["request", "The request"], ["response", "The answer"], ["both", "Both"]].map(([v, t]) => h("option", { value: v, selected: v === (r.intercept ?? "") }, t)));
+    const save = async (ev) => {
+      const b = ev.currentTarget;
+      let rule;
+      try {
+        const edits = (set, remove, json, body) => {
+          const e = {};
+          const s = parseHeadersText(set.value);
+          if (Object.keys(s).length) e.setHeaders = s;
+          const rm = remove.value.split(",").map((x) => x.trim()).filter(Boolean);
+          if (rm.length) e.removeHeaders = rm;
+          const j = parseJsonEditsText(json.value);
+          if (j.length) e.json = j;
+          if (body.value) e.body = body.value;
+          return Object.keys(e).length ? e : undefined;
+        };
+        const response = edits(resSet, resRemove, resJson, resBody);
+        rule = {
+          id: r.id,
+          on: r.on ?? true,
+          name: name.value.trim(),
+          method: method.value,
+          path: path.value.trim(),
+          service: r.service,
+          request: edits(reqSet, reqRemove, reqJson, reqBody),
+          response: status.value ? { ...(response ?? {}), status: Number(status.value) } : response,
+          delayMs: delay.value ? Number(delay.value) : undefined,
+          fail: fail.value || undefined,
+          intercept: hold.value || undefined,
+        };
+      } catch (err) {
+        return toast(err.message, "error");
+      }
+      const saved = await busy(b, "Saving…", () => api("/api/lab/rules", { method: "POST", body: { dir, rule } }));
+      if (saved) (toast(`Rule ${saved.name} saved`), done());
+    };
+    return h(
+      "div",
+      { class: "card card-pad section lab-rule" },
+      h("h2", { class: "section-title" }, r.id ? `Edit ${r.name}` : "New rule"),
+      h("div", { class: "lab-grid" }, field("Name", name), field("Method", method), field("Path", path, "* is one part, ** any number, ?key=value matches a query")),
+      h("fieldset", { class: "lab-set" }, h("legend", null, "Request"), h("div", { class: "lab-grid" }, field("Set headers", reqSet, "name: value per line"), field("Remove headers", reqRemove, "comma-separated")), field("Change JSON fields", reqJson, "path = value per line; - path removes it"), field("Replace the body", reqBody)),
+      h("fieldset", { class: "lab-set" }, h("legend", null, "Answer"), h("div", { class: "lab-grid" }, field("Status", status), field("Set headers", resSet), field("Remove headers", resRemove)), field("Change JSON fields", resJson, "path = value per line; - path removes it"), field("Replace the body", resBody)),
+      h("div", { class: "lab-grid" }, field("Delay, ms", delay, "added before it goes on"), field("Then", fail), field("Hold in Intercept", hold, "to edit it by hand")),
+      h("div", { class: "toolbar" }, btn("Save rule", save, { kind: "primary", iconName: "save" }), btn("Cancel", () => done(), { kind: "ghost" })),
+    );
+  }
+
+  // ---------------------------------------------------------------- API & mocks
+
+  function apiTab() {
+    const specCard = h("div", { class: "card card-pad section" }, loadingView("Looking for an API spec…"));
+    const serverCard = h("div", { class: "card card-pad section" }, loadingView("Reading the mocks…"));
+    const mapCard = h("div");
+    const endpoints = h("div");
+    holder.replaceChildren(specCard, serverCard, mapCard, endpoints);
+    let ai = [];
+    api("/api/lab/ai").then((x) => ((ai = x), loadMocks())).catch(() => undefined);
+
+    const loadSpec = async () => {
+      try {
+        const s = await api(`/api/lab/spec?${q()}`);
+        drawSpec(s);
+      } catch (err) {
+        specCard.replaceChildren(errorView(err, loadSpec));
+      }
+    };
+    const useSpec = async (button, body) => {
+      const r = await busy(button, "Reading…", () => api("/api/lab/spec", { method: "POST", body: { dir, ...body } }));
+      if (r) (toast(`${r.title}: ${plural(r.map.endpoints.length, "endpoint")}`), loadSpec());
+    };
+    const drawSpec = (s) => {
+      if (!s.spec) {
+        const paste = h("textarea", { class: "input lab-text mono", rows: 5, placeholder: "openapi: 3.0.3 …  (or the JSON)", "aria-label": "Paste an OpenAPI or Swagger spec" });
+        specCard.replaceChildren(
+          h("h2", { class: "section-title" }, "API spec"),
+          h("p", { class: "dim" }, "An OpenAPI (Swagger) spec maps every endpoint, checks real answers against it, and makes a mock server that answers from the first call."),
+          s.files.length
+            ? h("div", { class: "section" }, h("p", null, "Found in the project:"), h("div", { class: "toolbar" }, s.files.map((f) => btn(f, (ev) => useSpec(ev.currentTarget, { file: f }), { small: true, iconName: "check" }))))
+            : h("p", { class: "dim" }, "No openapi.json, openapi.yaml or swagger file in the project."),
+          h(
+            "div",
+            { class: "toolbar" },
+            btn("Read it from the running app", (ev) => useSpec(ev.currentTarget, {}), { small: true, iconName: "external", disabled: !s.running, title: s.running ? `Looks at ${s.urls.slice(0, 4).join(", ")}…` : "Start the project's dev server first" }),
+          ),
+          h("label", { class: "field" }, h("span", { class: "field-label" }, "Or paste it"), paste),
+          h("div", { class: "toolbar" }, btn("Use it", (ev) => paste.value.trim() && useSpec(ev.currentTarget, { text: paste.value }), { small: true })),
+        );
+        mapCard.replaceChildren();
+        return;
+      }
+      const sp = s.spec;
+      const map = sp.map;
+      const called = map.endpoints.filter((e) => e.calls).length;
+      const issues = map.endpoints.filter((e) => e.issues.length).length;
+      specCard.replaceChildren(
+        h("div", { class: "section-head" }, h("div", null, h("h2", { class: "section-title" }, `${sp.title} ${sp.version}`), h("p", { class: "dim" }, `${sp.kind} · from ${sp.source.replace(/^file:/, "").replace(/^url:/, "the app at ")}${sp.basePath ? ` · base ${sp.basePath}` : ""}`)), h("div", { class: "toolbar" }, btn("Make mocks from it", async (ev) => {
+          const b = ev.currentTarget;
+          const r = await busy(b, "Making…", () => api("/api/lab/spec/mocks", { method: "POST", body: { dir } }));
+          if (r) (toast(`${plural(r.endpoints, "mock")}: ${r.added} new, ${r.replaced} updated${r.kept ? `, ${r.kept} you edited kept` : ""}`), loadMocks());
+        }, { small: true, kind: "primary", iconName: "template" }), btn("Use another spec", async (ev) => {
+          const b = ev.currentTarget;
+          const ok = await busy(b, "…", () => api("/api/lab/spec/forget", { method: "POST", body: { dir } }));
+          if (ok) loadSpec();
+        }, { small: true, kind: "ghost" }))),
+        h("div", { class: "stats" }, statTile(map.endpoints.length, "endpoints in the spec"), statTile(`${called}`, "called in the last 7 days"), statTile(issues, issues === 1 ? "endpoint answering off-spec" : "endpoints answering off-spec"), statTile(map.undocumented.length, "calls not in the spec")),
+      );
+      mapCard.replaceChildren(
+        h(
+          "section",
+          { class: "section", "aria-labelledby": "lab-map-title" },
+          h("h2", { class: "section-title", id: "lab-map-title" }, "API map"),
+          h(
+            "div",
+            { class: "card table-wrap" },
+            h(
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null, h("th", { scope: "col" }, "Endpoint"), h("th", { scope: "col", class: "num" }, "Calls"), h("th", { scope: "col" }, "Answers"), h("th", { scope: "col" }, "Off the spec"))),
+              h(
+                "tbody",
+                null,
+                map.endpoints.map((e) =>
+                  h(
+                    "tr",
+                    null,
+                    h("td", null, h("span", { class: "mono" }, `${e.method} ${e.path}`), e.summary || e.operationId ? h("div", { class: "dim" }, e.summary ?? e.operationId) : null),
+                    h("td", { class: "num" }, e.calls || h("span", { class: "dim" }, "never")),
+                    h("td", null, h("div", { class: "machine-badges" }, e.statuses.map((st) => h("span", { class: `badge ${st >= 400 ? "badge-danger" : "badge-ok"}` }, String(st))))),
+                    h("td", null, e.issues.length ? h("ul", { class: "lab-issues" }, e.issues.map((i) => h("li", null, i))) : e.calls ? h("span", { class: "badge badge-ok" }, "fits") : null),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          map.undocumented.length
+            ? h("div", { class: "card card-pad" }, h("p", null, h("strong", null, "Called, but not in the spec")), h("ul", { class: "lab-issues" }, map.undocumented.map((u) => h("li", { class: "mono" }, `${u.method} ${u.path} · ${plural(u.calls, "call")}${u.lastStatus ? ` · last ${u.lastStatus}` : ""}`))))
+            : null,
+        ),
+      );
+    };
+
+    const loadMocks = async () => {
+      try {
+        const m = await api(`/api/mocks?${q()}`);
+        drawMocks(m);
+      } catch (err) {
+        serverCard.replaceChildren(errorView(err, loadMocks));
+      }
+    };
+    const mode = async (button, body, label) => {
+      const r = await busy(button, "…", () => api("/api/mocks/mode", { method: "POST", body: { dir, ...body } }));
+      if (r) (toast(label(r)), loadMocks());
+    };
+    const drawMocks = (m) => {
+      serverCard.replaceChildren();
+      const bySource = {};
+      for (const e of m.endpoints) bySource[e.source ?? "recorded"] = (bySource[e.source ?? "recorded"] ?? 0) + 1;
+      const s = m.server;
+      append(
+        serverCard,
+        h(
+          "div",
+          { class: "section-head" },
+          h("div", null, h("h2", { class: "section-title" }, "Mock server"), h("p", { class: "dim" }, "The project's mocks at an address of their own: they answer from the first call, with or without the dev server, like a Postman mock server.")),
+          btn(s ? "Stop" : "Start the mock server", async (ev) => {
+            const b = ev.currentTarget;
+            const r = await busy(b, "…", () => api("/api/mocks/server", { method: "POST", body: { dir, on: !s } }));
+            if (r) (toast(s ? "Mock server stopped" : `Mock server at ${r.url}`), loadMocks());
+          }, { kind: s ? "danger-ghost" : "primary", iconName: s ? "stop" : "play", disabled: !s && !m.endpoints.length, title: !m.endpoints.length ? "Make mocks first: from the spec, the cache or the history" : undefined }),
+        ),
+        s
+          ? h(
+              "div",
+              { class: "section" },
+              h("div", { class: "toolbar" }, h("span", { class: "badge badge-ok" }, "Running"), h("a", { class: "mono", href: s.url, target: "_blank", rel: "noreferrer" }, s.url), copyButton(s.url), h("span", { class: "dim" }, "or"), h("span", { class: "mono" }, `http://${s.host}`)),
+              h("p", { class: "dim" }, "Pick an answer per request like Postman: the header x-mock-response-code: 404, or x-mock-response-name: <example>. Pages on this computer can call it (CORS); sites elsewhere can't."),
+            )
+          : null,
+        h(
+          "div",
+          { class: "toolbar" },
+          h("label", { class: "check" }, h("input", { type: "checkbox", checked: !!m.cache, onchange: (e) => mode(e.currentTarget, { cache: e.currentTarget.checked }, (r) => (r.cache ? "Real answers are kept as mocks from now on" : "The cache stopped; what it kept stays")) }), "Keep real answers (cache)"),
+          h("label", { class: "check" }, h("input", { type: "checkbox", checked: !!m.on, disabled: !m.endpoints.length, onchange: (e) => mode(e.currentTarget, { on: e.currentTarget.checked }, (r) => (r.on ? "The app's API calls through dx are answered by the mocks" : "API calls go to the dev server again")) }), "Mock mode (answer the app's calls at its .localhost address)"),
+        ),
+        m.endpoints.length
+          ? h(
+              "div",
+              { class: "toolbar" },
+              h("span", { class: "dim" }, `${plural(m.endpoints.length, "mock")}:`),
+              Object.entries(bySource).map(([src, n]) =>
+                btn(`Purge ${n} ${MOCK_SOURCES[src] ?? src}`, async (ev) => {
+                  const b = ev.currentTarget;
+                  if (!(await confirmDialog({ title: `Remove the ${plural(n, `${MOCK_SOURCES[src] ?? src} mock`)}?`, text: "They're deleted from the project's mocks, edited ones too. The mock server and mock mode stop answering with them.", confirm: "Purge" }))) return;
+                  const r = await busy(b, "Purging…", () => api("/api/mocks/purge", { method: "POST", body: { dir, source: src } }));
+                  if (r) (toast(`${plural(r.removed, "mock")} purged`), loadMocks());
+                }, { small: true, kind: "danger-ghost", iconName: "cleanup" }),
+              ),
+            )
+          : h("p", { class: "dim" }, "No mocks yet: make them from the API spec above, turn on the cache and use the app, or make them from a visit on the Activity page."),
+      );
+      drawEndpoints(m);
+    };
+
+    const drawEndpoints = (m) => {
+      if (!m.endpoints.length) return endpoints.replaceChildren();
+      const sorted = [...m.endpoints].sort((a, b) => (a.pattern ?? a.path).localeCompare(b.pattern ?? b.path) || a.method.localeCompare(b.method) || a.status - b.status);
+      endpoints.replaceChildren(
+        h(
+          "section",
+          { class: "section", "aria-labelledby": "lab-mocks-title" },
+          h("h2", { class: "section-title", id: "lab-mocks-title" }, "Mocks"),
+          ai.length ? null : h("p", { class: "dim" }, "Install Claude Code or Codex (and sign in) to have it write realistic data for a mock."),
+          h(
+            "div",
+            { class: "card table-wrap" },
+            h(
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null, h("th", { scope: "col" }, "Endpoint"), h("th", { scope: "col" }, "Answer"), h("th", { scope: "col" }, "From"), h("th", { scope: "col" }, h("span", { class: "visually-hidden" }, "Actions")))),
+              h("tbody", null, sorted.flatMap((e) => mockRows(e))),
+            ),
+          ),
+        ),
+      );
+    };
+    const open = new Set();
+    const mockRows = (e) => {
+      const isOpen = open.has(e.id);
+      const main = h(
+        "tr",
+        null,
+        h("td", null, h("span", { class: "mono" }, `${e.method} ${e.pattern ?? e.path}`), e.operation || e.example ? h("div", { class: "dim" }, [e.operation, e.example && `example ${e.example}`].filter(Boolean).join(" · ")) : null),
+        h("td", null, h("span", { class: `badge ${e.status >= 400 ? "badge-danger" : "badge-ok"}` }, String(e.status)), e.enabled ? null : h("span", { class: "badge" }, "off"), h("div", { class: "dim mono lab-preview" }, e.preview.slice(0, 120))),
+        h("td", null, h("span", { class: `badge ${e.source === "ai" ? "badge-accent" : ""}` }, MOCK_SOURCES[e.source ?? "recorded"]), e.edited ? h("span", { class: "badge" }, "edited") : null),
+        h(
+          "td",
+          { class: "actions" },
+          ai.length && /json/i.test(e.contentType) ? btn("Write data", (ev) => aiData(ev.currentTarget, e), { small: true, iconName: "code", title:`${ai[0].name} writes realistic data for this answer, fitting the spec when there is one. Sends the endpoint, its schema and current body to your ${ai[0].name} account.` }) : null,
+          btn(isOpen ? "Close" : "Edit", () => (isOpen ? open.delete(e.id) : open.add(e.id), loadMocks()), { small: true, kind: "ghost" }),
+        ),
+      );
+      if (!isOpen) return [main];
+      const body = h("textarea", { class: "input lab-text mono", rows: 12, "aria-label": "Body" });
+      const status = h("input", { class: "input lab-status", type: "number", value: e.status, "aria-label": "Status" });
+      api(`/api/mocks?${q()}&id=${encodeURIComponent(e.id)}`).then((full) => (body.value = full.body)).catch(() => undefined);
+      return [
+        main,
+        h(
+          "tr",
+          { class: "row-detail" },
+          h(
+            "td",
+            { colspan: "4" },
+            h(
+              "div",
+              { class: "section" },
+              h("label", { class: "field" }, h("span", { class: "field-label" }, "Status"), status),
+              h("label", { class: "field" }, h("span", { class: "field-label" }, "Body"), body),
+              h(
+                "div",
+                { class: "toolbar" },
+                btn("Save", async (ev) => {
+                  const b = ev.currentTarget;
+                  const r = await busy(b, "Saving…", () => api("/api/mocks/update", { method: "POST", body: { dir, id: e.id, body: body.value, status: Number(status.value) } }));
+                  if (r) (toast("Saved"), open.delete(e.id), loadMocks());
+                }, { small: true, kind: "primary", iconName: "save" }),
+                btn(e.enabled ? "Turn off" : "Turn on", async (ev) => {
+                  const b = ev.currentTarget;
+                  const r = await busy(b, "…", () => api("/api/mocks/update", { method: "POST", body: { dir, id: e.id, enabled: !e.enabled } }));
+                  if (r) loadMocks();
+                }, { small: true, kind: "ghost" }),
+              ),
+            ),
+          ),
+        ),
+      ];
+    };
+    const aiData = async (button, e) => {
+      const note = window.prompt(`Anything ${ai[0].name} should know? (optional, e.g. "12 products, some out of stock")`, "");
+      if (note === null) return;
+      const r = await busy(button, "Writing…", () => api("/api/mocks/ai", { method: "POST", body: { dir, id: e.id, note, tool: ai[0].tool } }));
+      if (!r) return;
+      toast(r.issues.length ? `${r.tool} wrote it; off the spec: ${r.issues.join("; ")}` : `${r.tool} wrote new data for ${e.method} ${e.path}`, r.issues.length ? "error" : "ok");
+      loadMocks();
+    };
+    loadSpec();
+    loadMocks();
+  }
+
+  function statTile(value, label) {
+    return h("div", { class: "card stat" }, h("div", { class: "stat-value" }, value), h("div", { class: "stat-label" }, label));
+  }
+
+  return () => {
+    stopped = true;
+    clearTimeout(pollTimer);
+  };
 }
 
 // ------------------------------------------------------------------ Machine
@@ -6549,6 +7279,23 @@ function activityPage(root) {
     if (e.page && e.type !== "page") details.push(h("p", { class: "dim mono activity-meta" }, `on ${e.page}`));
     if (e.type === "request" || e.type === "page") {
       details.push(requestDetail(e));
+      if (e.type === "request" && !e.dir.startsWith("site:") && e.url?.startsWith("/"))
+        details.push(
+          h(
+            "p",
+            { class: "activity-meta toolbar" },
+            btn("Edit and resend", () => openLab(e.dir, "repeater", { method: e.method ?? "GET", path: e.url, headers: e.requestHeaders ?? {}, body: e.requestBody ?? "" }), {
+              small: true,
+              iconName: "refresh",
+              title: "Open it in the Repeater on the Requests page: change anything and send it to the dev server again",
+            }),
+            btn("Make a rule", () => openLab(e.dir, "rules", { method: e.method ?? "GET", path: (e.url ?? "/").split("?")[0] }), {
+              small: true,
+              iconName: "new",
+              title: "A rule for this endpoint on the Requests page: change its request or answer, slow it down, make it fail, or hold it",
+            }),
+          ),
+        );
     } else if (e.type === "console") {
       details.push(
         liveDetail((mode) => [

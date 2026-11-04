@@ -32,6 +32,8 @@ export interface TrafficEntry {
   truncated?: boolean;
   /** Answered by dx's mock mode, not the dev server. */
   mocked?: boolean;
+  /** Changed on its way by these rules ("edited by hand" when intercepted and changed). */
+  rules?: string[];
 }
 
 const MAX_ENTRIES = 1000;
@@ -69,8 +71,12 @@ export function recordExchange(req: http.IncomingMessage, route: { dir: string; 
   const resChunks: Buffer[] = [];
   let reqKept = 0;
   let resKept = 0;
+  let resTotal = 0;
+  let fullResponse: string | undefined;
   return {
     entry,
+    /** The whole answer (up to 512 KB), decoded and masked, for the response cache; undefined when it was larger or not text. */
+    fullResponse: () => fullResponse,
     request(chunk: Buffer) {
       entry.requestBytes += chunk.length;
       if (reqKept < CAPTURE) {
@@ -80,6 +86,7 @@ export function recordExchange(req: http.IncomingMessage, route: { dir: string; 
     },
     response(chunk: Buffer) {
       entry.responseBytes += chunk.length;
+      resTotal += chunk.length;
       if (resKept < CAPTURE) {
         resChunks.push(chunk);
         resKept += chunk.length;
@@ -101,7 +108,10 @@ export function recordExchange(req: http.IncomingMessage, route: { dir: string; 
       }
       if (entry.kind === "api" && isText(resType) && resChunks.length) {
         const raw = decode(Buffer.concat(resChunks), String(entry.responseHeaders["content-encoding"] ?? ""));
-        if (raw !== undefined) entry.responseBody = maskBody(cut(raw, KEEP_RESPONSE, entry), resType);
+        if (raw !== undefined) {
+          if (resTotal <= CAPTURE) fullResponse = maskBody(raw, resType);
+          entry.responseBody = maskBody(cut(raw, KEEP_RESPONSE, entry), resType);
+        }
       }
     },
   };
@@ -144,7 +154,7 @@ function isText(type: string): boolean {
   return /json|text\/|xml|graphql|x-www-form-urlencoded|javascript/i.test(type);
 }
 
-function decode(buf: Buffer, encoding: string): string | undefined {
+export function decode(buf: Buffer, encoding: string): string | undefined {
   try {
     if (/gzip/i.test(encoding)) return zlib.gunzipSync(buf, { finishFlush: zlib.constants.Z_SYNC_FLUSH }).toString("utf8");
     if (/deflate/i.test(encoding)) return zlib.inflateSync(buf, { finishFlush: zlib.constants.Z_SYNC_FLUSH }).toString("utf8");

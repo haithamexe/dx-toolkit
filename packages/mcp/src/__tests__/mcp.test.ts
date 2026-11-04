@@ -65,7 +65,7 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<{
 test("lists the running-app tools next to the others", async () => {
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name);
-  for (const name of ["start_dev_server", "stop_dev_server", "restart_dev_server", "dev_servers", "dev_logs", "dev_errors", "wait_for_rebuild", "check_url", "dx_setup_check", "list_projects", "run_tests", "network_log", "db_query", "activity_log", "replay_visit", "machine_info"]) {
+  for (const name of ["start_dev_server", "stop_dev_server", "restart_dev_server", "dev_servers", "dev_logs", "dev_errors", "wait_for_rebuild", "check_url", "dx_setup_check", "list_projects", "run_tests", "network_log", "db_query", "activity_log", "replay_visit", "machine_info", "api_map", "mock_server"]) {
     assert.ok(names.includes(name), name);
   }
 });

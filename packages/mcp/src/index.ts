@@ -34,6 +34,11 @@ import {
   cloneProject,
   fixDependencies,
   checkProjectNeeds,
+  findSpecFiles,
+  loadSpec,
+  mapApi,
+  readProjectSpec,
+  readSpec,
   checkTools,
   dockerInfo,
   installedTools,
@@ -249,6 +254,63 @@ server.registerTool(
       }
       if (want("docker")) out.docker = await dockerInfo();
       return text(out);
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "api_map",
+  {
+    title: "A project's API, from its OpenAPI spec",
+    description:
+      "The project's API spec (OpenAPI or Swagger, the one dx keeps for it, else a spec file found in the project) next to what the app really called in the last 7 days: " +
+      "each endpoint with its calls and statuses, answers that don't fit the spec (wrong types, missing fields, undeclared statuses), and calls the spec doesn't have. " +
+      "Use it to see an API's shape before writing code against it, or to check a backend change against the spec.",
+    inputSchema: { project: z.string().describe("Project name") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project }) => {
+    try {
+      const found = findProjects(project, scanProjects(loadConfig()));
+      const p = found.match ?? (found.candidates.length === 1 ? found.candidates[0] : undefined);
+      if (!p) return failure(found.candidates.length ? `Several projects match "${project}": ${found.candidates.map((x) => x.name).join(", ")}` : `No project matches "${project}".`);
+      let doc = loadSpec(p.dir)?.doc;
+      let source = loadSpec(p.dir)?.source;
+      if (!doc) {
+        const file = findSpecFiles(p.dir)[0];
+        if (!file) return text(`${p.name} has no API spec dx knows of: no openapi or swagger file in it. The user can add one on dx's Requests page (from a file, the running app, or pasted).`);
+        doc = readProjectSpec(p.dir, file);
+        source = `file:${file}`;
+      }
+      const spec = readSpec(doc);
+      const map = mapApi(spec, readActivity({ dir: p.dir, since: new Date(Date.now() - 7 * 86_400_000), limit: 5000 }));
+      return text({ title: spec.title, version: spec.version, kind: spec.kind, source, basePath: spec.basePath, endpoints: map.endpoints, undocumented: map.undocumented });
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "mock_server",
+  {
+    title: "Start or stop a project's mock server",
+    description:
+      "A project's mock server answers its API from dx's mocks (made from its OpenAPI spec, cached real answers, or recordings) at an address of its own, from the first call and without its back end running, like a Postman mock server. " +
+      "Use it when front-end work shouldn't wait for the back end. Pick an answer per request with the header x-mock-response-code: 404. Make mocks first on the Requests page or with dx mock spec.",
+    inputSchema: { project: z.string().describe("Project name"), on: z.boolean().optional().describe("false stops it (default: start)") },
+    annotations: { readOnlyHint: false, openWorldHint: false },
+  },
+  async ({ project, on = true }) => {
+    try {
+      const found = findProjects(project, scanProjects(loadConfig()));
+      const p = found.match ?? (found.candidates.length === 1 ? found.candidates[0] : undefined);
+      if (!p) return failure(`No project matches "${project}".`);
+      const dash = await ensureDashboard();
+      const r = (await dash.post("/api/mocks/server", { dir: p.dir, on })) as { url?: string; host?: string };
+      return text(on ? `${p.name}'s mock server: ${r.url} (or http://${r.host}). It answers from the mocks with or without the dev server.` : `${p.name}'s mock server stopped.`);
     } catch (err) {
       return failure((err as Error).message);
     }

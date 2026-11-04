@@ -3,7 +3,8 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { localRoutes, type LocalRoute } from "./dev.js";
-import { answerFromMocks } from "./mocks.js";
+import { answerFromMocks, cacheAnswer, handleMockServer, mockServerByHost } from "./mocks.js";
+import { relayWithRules, rulePlanFor } from "./apilab.js";
 import { handleRecorderRequest, injector, requestActivity, shouldInject } from "./recorder.js";
 import { recordExchange } from "./traffic.js";
 
@@ -121,6 +122,9 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
   }
 
   function forward(req: http.IncomingMessage, res: http.ServerResponse): void {
+    // <project>.mock.localhost: that project's mock server, answered here from its mocks.
+    const mockServer = mockServerByHost(hostname(req.headers.host));
+    if (mockServer) return handleMockServer(req, res, mockServer);
     const t = target(req);
     if (!t) return notFound(req, res);
     // Every exchange with a dev server is logged (network_log); the dashboard's own aren't.
@@ -199,6 +203,9 @@ export function relay(req: http.IncomingMessage, res: http.ServerResponse, o: Re
   const { route } = o;
   // Mock mode: the project's API answered from its recordings; pages and assets still go through.
   if (route && answerFromMocks(req, res, route, o.label)) return;
+  // The Requests page's rules: changed, held, slowed or failed on the way.
+  const plan = route ? rulePlanFor(req, route) : undefined;
+  if (plan && route) return void relayWithRules(req, res, { ...o, route }, plan);
   const rec = route ? recordExchange(req, route, o.label) : undefined;
   if (rec) req.on("data", (c: Buffer) => rec.request(c));
   let done = false;
@@ -208,6 +215,7 @@ export function relay(req: http.IncomingMessage, res: http.ServerResponse, o: Re
     if (!rec || !route) return;
     rec.end(error);
     requestActivity(rec.entry, route, String(req.headers["user-agent"] ?? ""));
+    cacheAnswer(route, rec.entry, rec.fullResponse());
   };
   const outgoing = { ...o.headers };
   // A page the recorder goes into is asked for uncompressed, so the tag can be added as it streams.

@@ -65,6 +65,8 @@ export interface ActivityEvent {
   trimmed?: boolean;
   /** For a request: answered by dx's mock mode from a recording, not by the dev server. */
   mocked?: boolean;
+  /** For a request: changed on its way by these dx rules (Requests page), or by hand in Intercept. */
+  rules?: string[];
   /** For a click: how to find the control again (`#id`, `[data-testid=…]` or `text=Label`), for replaying it. */
   target?: string;
   /** file:line:column where it happened. */

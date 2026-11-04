@@ -56,6 +56,28 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Decisions
 
+### The Requests page (`core/src/tools/rules.ts`, `openapi.ts`, `yaml.ts`, `aicli.ts`; `web/src/apilab.ts`, `intercept.ts`, `labapi.ts`, `mocks.ts`)
+
+- **Rules run in the proxy, after mock mode**: a mocked call never reaches the server or the rules. Page loads (GET with Accept: text/html) and `/__dx/` are left alone, so the recorder still goes into pages. With no rule matching, `relay()` streams as before; a matching rule reads the request (and, only when it edits or holds the body, the answer) whole, up to 8 MB.
+- **Rules stack in order**: delays add up, the first `fail` wins, every rule's edits apply. Hit counts are in memory, not in the rules file.
+- **Intercept holds in memory, 60 s, 50 at most**, then sends on unchanged: a forgotten hold never hangs the app. Turning a rule's hold off lets go of what it holds.
+- **The Repeater bypasses rules and mocks** (like Burp's): what you send is what the server gets. A header still showing `•••` is refused rather than sent; the history is masked.
+- **The mock server is the answer to "no back end"**, not a fallback: it answers from the first call from the project's mocks, at its own port (4010 and up, kept in the mock set so the address stays) and `<project>.mock.localhost`. A fallback that answered when the dev server was down was dropped: when dx stops a server it removes its route, so it would almost never fire.
+- **Answer selection like Postman**: `x-mock-response-code` / `x-mock-response-name` (and Prism's `Prefer: code=`). Otherwise: an exact path over a template, edited over real (recorded, cache, AI) over spec examples over made-up data, a success over an error.
+- **Spec templates match any value** (`/users/{name}` fits `/users/alice`): mocks from a spec carry `pattern`; recorded ones keep folded paths (`/orders/:id`).
+- **Made-up data is deterministic** (seeded by method, path and field) and reads by context: `name` under `/products` is a product, under `/users` a person; emails and links at example.com.
+- **The cache keeps whole answers** (the recorder now keeps up to 512 KB per answer for it; the network log still keeps 32 KB), masked like the history, written in batches a second apart, until purged by source.
+- **YAML is read by a small parser in core** (block maps and lists, scalars, quotes, `|`/`>`, flow collections), since core has no dependencies; anchors, aliases and tags are refused with "give the spec as JSON".
+- **AI data uses the coding CLI already installed** (Claude Code, else Codex; `aiCli` in the config picks), never an API key: `claude -p` or `codex exec --sandbox read-only --ephemeral` in an empty temp folder, prompt on stdin. Only the JSON in the answer is used.
+
+### Installing dx itself (`core/src/tools/selfinstall.ts`, `dx update`, `scripts/use.mjs`)
+
+- **npm alone gets stuck switching installs**: `npm install -g dx-devkit` fails with EEXIST while the repository's link (`@dx/cli`) or a half-removed install owns the `dx` shims, and on Windows a dx process running from the old install (the dashboard, an AI tool's dx server) makes the removal fail with EPERM. `--force` hides it and leaves the old copy behind.
+- **`switchDx` does it in order**: stop the dashboard, remove the other install, ask before stopping processes that still run from it, delete shims that start an install that's gone, then install. `dx update` (npm), `npm run link` (this folder) and `npm run unlink` (back to npm) all use it.
+- **A linked build is a junction on Windows**: only the link is ever removed, never recursively, which would delete the repository's own files.
+- **Shims are recognised by the install they start** (`node_modules/dx-devkit/` or `node_modules/@dx/cli/`), never by name alone, so another program's `dx` is left alone.
+- **`dx update` from a linked build** says so instead of replacing it; `--npm` switches. When `dx` won't start at all, `npx -y dx-devkit@latest update` runs the same code from npm's cache.
+
 ### Visual diff (`core/src/tools/visual.ts`, `web/src/visual.ts`, the Git page's graph)
 
 - **Compared in the browser, not in Node**: core has no PNG decoder and won't take a dependency, so both PNGs go into canvases in a blank tab of the same headless browser that took them, and `diffPixels` (a plain function whose source is sent to the page, and tested in Node on arrays) counts pixels whose largest channel difference is over 24, gives the box of the change, and paints the diff image (changed pixels orange over a washed-out grey copy). Fewer than 16 differing pixels isn't a change.
