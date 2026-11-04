@@ -29,8 +29,8 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
 
-      # Trusted publishing needs npm 11.5.1 or newer.
-      - run: npm install -g npm@latest
+      # Trusted publishing needs npm 11.5.1 or newer; kept on 11 so a new major can't change publishing under us.
+      - run: npm install -g npm@11 && npm --version
 
       - run: npm ci
 
@@ -58,10 +58,14 @@ jobs:
 
       - name: Publish to npm
         run: |
+          set -o pipefail
           if npm view "dx-devkit@$VERSION" version --prefer-online >/dev/null 2>&1; then
             echo "dx-devkit@$VERSION is already on npm."
-          else
-            npm publish ./release --provenance --access public
+          elif ! npm publish ./release --provenance --access public 2>&1 | tee "$RUNNER_TEMP/publish.log"; then
+            # npm's own error lines on the run's summary page, readable without opening the log.
+            reason=$(grep -iE "npm (error|err!)|E40[0-9]|OIDC|trusted|provenance" "$RUNNER_TEMP/publish.log" | tail -10 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=npm publish failed::${reason:-see the step's log}"
+            exit 1
           fi
 
       - name: Install it from npm and run it
