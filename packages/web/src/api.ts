@@ -47,6 +47,11 @@ import {
   ACTIVITY_TYPES,
   clearActivity,
   activityUsage,
+  addGitignoreRules,
+  auditEnv,
+  ensureEnvFile,
+  readEnvFile,
+  writeEnvFile,
   bugReport,
   DAY_LIMIT_BYTES,
   isLoopbackUrl,
@@ -242,6 +247,52 @@ const routes: Record<string, Handler> = {
       source: "web",
     }),
   "GET /api/env": (req) => checkEnv(knownProject(req.query.get("dir")).dir),
+  // The Env page: every project's .env files and .gitignore, then one project in full.
+  "GET /api/env/all": () =>
+    scanProjects(loadConfig()).map((p) => {
+      const a = auditEnv(p.dir);
+      return { name: p.name, ...a };
+    }),
+  "GET /api/env/project": (req) => {
+    const project = knownProject(req.query.get("dir"));
+    return { name: project.name, ...auditEnv(project.dir, { secrets: true }) };
+  },
+  "GET /api/env/file": (req) => {
+    const project = knownProject(req.query.get("dir"));
+    const name = String(req.query.get("name") ?? "");
+    try {
+      return { name, content: readEnvFile(project.dir, name) };
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  },
+  "POST /api/env/file": (req) => {
+    const project = knownProject(req.body.dir);
+    const name = String(req.body.name ?? "");
+    if (typeof req.body.content !== "string") throw new HttpError(400, "Send the file's content as text.");
+    try {
+      writeEnvFile(project.dir, name, req.body.content);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+    // Which file, never what's in it.
+    recordRun("env", true, `${project.name}: saved ${name}`, "web", { project: project.name });
+    return { ok: true, name };
+  },
+  "POST /api/env/create": (req) => {
+    const project = knownProject(req.body.dir);
+    const created = ensureEnvFile(project.dir);
+    if (!created) throw new HttpError(400, `${project.name} already has a .env, or no .env.example to make one from.`);
+    recordRun("env", true, `${project.name}: created .env from the example`, "web", { project: project.name });
+    return { ok: true, name: path.relative(project.dir, created).split(path.sep).join("/") };
+  },
+  "POST /api/env/gitignore": (req) => {
+    const project = knownProject(req.body.dir);
+    const patterns = Array.isArray(req.body.patterns) ? req.body.patterns.filter((p: unknown): p is string => typeof p === "string") : [];
+    const added = addGitignoreRules(project.dir, patterns);
+    recordRun("env", true, `${project.name}: .gitignore ${added.length ? `now ignores ${added.join(", ")}` : "already had them"}`, "web", { project: project.name });
+    return { added };
+  },
   "GET /api/unsaved": () => findUnsavedWork(),
   "POST /api/clone": async (req) => {
     const url = String(req.body.url ?? "");
@@ -504,6 +555,7 @@ const routes: Record<string, Handler> = {
       config.terminal = req.body.terminal || undefined;
     }
     if (typeof req.body.activity === "boolean") config.activity = req.body.activity;
+    if (typeof req.body.localhostRecording === "boolean") config.localhostRecording = req.body.localhostRecording;
     if (req.body.activityDays !== undefined) config.activityDays = clampInt(req.body.activityDays, 1, 365, config.activityDays ?? 7);
     if (req.body.activityMaxMB !== undefined) config.activityMaxMB = clampInt(req.body.activityMaxMB, 50, 100_000, config.activityMaxMB ?? 500);
     saveConfig(config);

@@ -76,7 +76,8 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 |---|---|
 | **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; **Check page** loads it in a headless browser and lists exceptions, console errors and failed requests; **Requests** shows what the app sent through its `.localhost` address and what came back; see servers your AI agent started; **work that isn't backed up** across all projects; **leave a note** on a project for next time; **check its .env** and look for committed keys; **run its tests** and see each failure with file, line, expected and actual; open a project in your editor, in **a terminal** (pick which one at the top of the page: Windows Terminal, PowerShell, Git Bash, iTerm2, Warp, Ghostty and others, whichever you have) or in File Explorer; run its dev server in a terminal window; save one as a template |
 | **New project** | Create a project from a template or a copy of another, with git and packages installed; or **clone a repository** and get it ready to run |
-| **Activity** | Everything that happened in your apps, newest first, live, grouped by visit: requests with their payloads and responses, pages and route changes, clicks, console output, browser errors, and the dev server starting, stopping and failing. Filter by project, kind or time, search payloads and messages, open an error at its line in your editor. **Copy as bug report** on any error; **Replay** a visit to click through it again in a headless browser. See [The activity history](#the-activity-history) |
+| **Activity** | Everything that happened in your apps, live, in four views: **Sessions** (each visit's steps: clicks, routes, requests, errors), **APIs** (each endpoint with its calls, payloads, responses, average and slowest time), **Errors** (grouped, with how often and where) and **Console**. Each project's visits, API calls and problems at the top. Search payloads and messages, open an error at its line in your editor, **Copy as bug report** on any error, **Replay** a visit in a headless browser. See [The activity history](#the-activity-history) |
+| **Env & secrets** | Every project's `.env` files (subfolders included): see them with values hidden until you ask, edit and save them, or open them in your editor. Warnings for `.env` files git would commit or already has, projects with no `.gitignore`, and keys in committed files; what `.gitignore` is missing to keep secrets out of git (OWASP), with a button that adds it |
 | **Ports** | See what's listening and stop it (it asks first, naming the process) |
 | **Journal** | Add what you did, read back 7, 30 or 90 days |
 | **Summary** | Your week: commits, pull requests, journal, where the time went, uncommitted work; copy it as markdown or save it. **This year** gives the year in review |
@@ -110,14 +111,17 @@ Every app you open at its `.localhost` address (the address `dx up`, `dx go` and
 
 See it on the **Activity** page, with `dx activity`, or ask your AI agent (`activity_log`). On the Activity page:
 
-- **Visits**: each page load in a tab, with everything that followed it: the clicks, the requests they set off, and the errors in the browser and on the server.
+- **Sessions**: each visit (one page load in a tab) with everything that followed it: the clicks, the requests they set off, and the errors in the browser and on the server.
+- **APIs**: every endpoint your app called (`GET /api/cart/:id`, ids folded together), with how many calls, how many failed, the average and slowest time, and each call's payload and response.
+- **Errors**: exceptions, console errors, failed requests and server errors, grouped by message, with how often, when first and last, and where in the code.
+- **Console**: your app's console output, newest first, repeats folded into one line with a count.
 - **Copy as bug report** on an error copies markdown for an issue or an AI chat: the steps that led there, what went wrong, each request with what was sent and returned, and the stack.
 - **Replay** a visit: dx opens the page it started on in a headless browser, clicks what you clicked in the same order, and lists what broke. Run it again after a fix to see the problem gone. Your AI agent can do the same with `replay_visit`. What you typed isn't recorded, so fields stay empty.
 
 Nothing to set up:
 
 - **How it's recorded.** Requests go through the local domains proxy, which logs them. For the browser side, the proxy adds one `<script>` tag to your app's HTML pages, served from your app's own address. Browser dev tools leave it out of stack traces, so `console.log` still shows your file and line. Requests the page makes to `localhost:<port>` or other addresses are recorded by that script.
-- **Only what you open at `.localhost`.** `localhost:5173` is the dev server directly, and nothing passes through dx there.
+- **At `localhost:5173` too, in any browser.** When dx starts an app whose tool it knows (Vite, Next.js, Astro, Nuxt, Angular, webpack, Gatsby, Create React App), dx answers at the app's usual address itself and runs the dev server on a free port behind it, so the address you always open is recorded. Live reload passes through. If the port is taken, or the dev script is something dx doesn't know (a custom command, several processes, a port of its own), the app runs as before and only its `.localhost` address is recorded. `"localhostRecording": false` turns this off.
 - **Private.** Passwords, tokens, cookies and API keys are masked before anything is written. It's kept in `~/.dx/activity`, readable by you only, for 7 days (`activityDays` in the settings).
 - **Bounded.** At most 500 MB in all (`activityMaxMB`), the oldest days going first. A project's day keeps everything up to 100 MB; past that, events are kept without their bodies, and past 200 MB only errors are kept. An app that polls every second can't fill your disk. Health & settings shows how much it takes. Only the page itself can add to its history; no other website can. `dx activity --clear` or **Clear history** deletes it.
 - **Off**: untick it in Health & settings, or set `"activity": false`. Pages are then served exactly as your dev server sends them.
@@ -189,7 +193,7 @@ dx up shop
 | `dx status` | Work that exists only on this computer: uncommitted changes, commits no remote has, stashes, repos with no remote; most at risk first |
 | `dx test todo-app` | Run its tests (vitest, jest, node:test, pytest, go test) and list each failure with its file, line, expected and actual; `-m cart` runs only the matching ones, `--changed` only those related to uncommitted changes |
 | `dx db shop "select * from orders"` | A read-only query against the project's development database in docker-compose (Postgres, MySQL/MariaDB, Redis); `dx db shop` lists the tables. No password needed: it runs inside the container |
-| `dx env todo-app` / `dx env --all` | Variables `.env.example` lists that your `.env` doesn't set, `.env` files git would commit, and API keys or tokens in tracked files |
+| `dx env todo-app` / `dx env --all` | Variables `.env.example` lists that your `.env` doesn't set, `.env` files git would commit, API keys or tokens in tracked files, and what `.gitignore` is missing to keep secrets out of git; `--gitignore` adds it |
 | `dx projects` / `dx ls todo` | List projects (most recent first) / search them |
 | `dx port` | Every listening port 1024+, with the process and its command line |
 | `dx port 3000` | What's on port 3000 |
@@ -353,6 +357,7 @@ Created on first run, with the code folders and editor dx found:
 
 - **`terminal`**: the terminal projects open in, by id (`dx terminal --list`). Without it: Windows Terminal, else Command Prompt, on Windows; Terminal on macOS; the system default on Linux.
 - **`activity`** / **`activityDays`** / **`activityMaxMB`**: `false` turns the activity history off (pages are then left exactly as the dev server sends them); a number of days to keep instead of 7; and how many megabytes it may take in all instead of 500.
+- **`localhostRecording`**: `false` stops dx answering at an app's usual `localhost:<port>`; the dev server then runs there itself, and only its `.localhost` address is recorded.
 - **`localDomains`** / **`localDomainsPort`**: `false` turns `*.localhost` addresses off; a number picks their port instead of 80 (or 1355).
 - **`aiToolsSeen`**: the AI tools dx has connected itself to once. A tool you disconnect stays disconnected. Set `"autoConnectAi": false` to stop dx connecting itself to new ones (`dx setup --undo` does both).
 
@@ -404,7 +409,7 @@ Ask your agent to work on a project and check its own work, for example *"Start 
 | `dev_servers`, `stop_dev_server`, `restart_dev_server` | What's running, and stopping or restarting it |
 | `set_stack` | Defines a stack dx can't find by itself, such as two repositories, by writing it to `.devrc.json` |
 | `clone_project` | Clones a repository and gets it ready: packages installed with the tool it uses, `.env` made from `.env.example`, and the variables that still need a value |
-| `check_env` | What a project's `.env` is missing compared with `.env.example`, `.env` files git would commit, and keys or tokens in tracked files |
+| `check_env` | What a project's `.env` is missing compared with `.env.example`, `.env` files git would commit, keys or tokens in tracked files, and the `.gitignore` rules that keep secrets out of git |
 | `run_tests` | Runs the project's tests and returns each failure with its name, file and line, and expected against actual; `match` reruns just the ones being fixed |
 | `network_log` | The requests the app made through its `.localhost` address, with status, timing and bodies (credentials masked): what the front end sent the API, and what came back |
 | `activity_log` | What happened in the app, in order: what the user clicked, the routes they went through, each request with its payload and response, console output and errors in the browser and on the server. Ask *"I clicked checkout and nothing happened, why?"* and the agent reads the steps that led there |

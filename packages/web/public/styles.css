@@ -905,6 +905,96 @@ summary.traffic-row {
 .traffic-path {
   overflow-wrap: anywhere;
 }
+/* ------------------------------------------------------------ env & secrets */
+.env-project > .env-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s3) var(--s5);
+  cursor: pointer;
+}
+.env-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  padding: 0 var(--s5) var(--s4);
+}
+.env-body:empty {
+  display: none;
+}
+.env-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.env-title {
+  font-size: var(--t-sm);
+  font-weight: 650;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.env-files,
+.env-rules {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+.env-files > li {
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+}
+.env-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+}
+.env-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.env-actions {
+  margin-left: auto;
+}
+.env-panel:empty {
+  display: none;
+}
+.env-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: 0 var(--s3) var(--s3);
+}
+.env-table th {
+  width: 1%;
+  white-space: nowrap;
+  text-align: left;
+}
+.env-value {
+  overflow-wrap: anywhere;
+}
+.env-editor {
+  width: 100%;
+  min-height: 120px;
+  padding: var(--s2) var(--s3);
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  line-height: 1.6;
+  resize: vertical;
+}
+.env-ok {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--ok);
+}
+
 /* ------------------------------------------------------------ activity */
 .activity-list {
   margin: 0;
@@ -954,6 +1044,99 @@ summary.activity-row {
   margin: 0;
   max-height: 320px;
   overflow: auto;
+}
+.activity-projects {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--s3);
+}
+.activity-projects:empty {
+  display: none;
+}
+.activity-project {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s1);
+  padding: var(--s3) var(--s4);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.activity-project:hover {
+  border-color: var(--border-strong);
+}
+.api-list {
+  display: flex;
+  flex-direction: column;
+}
+.api-group {
+  border-bottom: 1px solid var(--border);
+}
+.api-group:last-child {
+  border-bottom: 0;
+}
+.api-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5em 5.5em 5.5em 9em;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) var(--s4);
+  font-size: var(--t-sm);
+}
+summary.api-row,
+summary.error-row {
+  cursor: pointer;
+}
+.api-header {
+  color: var(--text-dim);
+  font-size: var(--t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+}
+.api-endpoint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  overflow-wrap: anywhere;
+}
+.api-slow {
+  color: var(--warn);
+}
+.api-calls {
+  padding: 0 var(--s4) var(--s2) var(--s6);
+}
+.error-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: var(--s2) var(--s4);
+  font-size: var(--t-sm);
+}
+.error-message {
+  flex: 1;
+  min-width: 12em;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.console-list {
+  padding: var(--s2) var(--s4);
+}
+@media (max-width: 860px) {
+  .api-row {
+    grid-template-columns: minmax(0, 1fr) 3em 5em;
+  }
+  .api-row > :nth-child(4),
+  .api-row > :nth-child(5) {
+    display: none;
+  }
+  .api-calls {
+    padding-left: var(--s4);
+  }
 }
 .visit {
   border-top: 1px solid var(--border);

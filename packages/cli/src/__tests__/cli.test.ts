@@ -82,10 +82,17 @@ test("env lists what .env is missing, and exits 1 while something is", () => {
   assert.equal(before.code, 1);
   assert.match(before.out, /No \.env yet/);
   fs.writeFileSync(path.join(todo, ".env"), "API_URL=http://localhost:4000\nPORT=5173\n");
-  const after = dx("env", "todo-app");
-  assert.equal(after.code, 0, after.out);
-  assert.match(after.out, /Every variable in \.env\.example has a value/);
-  assert.match(after.out, /No keys or tokens in tracked files/);
+  const filled = dx("env", "todo-app");
+  assert.match(filled.out, /Every variable in \.env\.example has a value/);
+  assert.match(filled.out, /No keys or tokens in tracked files/);
+  // The .gitignore rules that keep secrets out of git: listed, then added with --gitignore.
+  assert.equal(filled.code, 1, "still missing .gitignore rules");
+  assert.match(filled.out, /\.gitignore is missing what keeps secrets out of git/);
+  assert.match(filled.out, /\*\.pem\s+Private keys and certificates/);
+  const fixed = dx("env", "todo-app", "--gitignore");
+  assert.equal(fixed.code, 0, fixed.out);
+  assert.match(fixed.out, /todo-app: added .*\*\.pem.* to \.gitignore/);
+  assert.match(fixed.out, /\.gitignore covers \.env files, private keys, certificates and keystores/);
 });
 
 test("status lists repositories with no remote and uncommitted work", () => {
@@ -94,7 +101,8 @@ test("status lists repositories with no remote and uncommitted work", () => {
   const t = list.find((w) => w.project === "todo-app");
   assert.ok(t?.noRemote);
   assert.equal(t?.untracked, 1);
-  assert.match(dx("status").out, /todo-app \(main\)\s+no remote · 1 new file/);
+  // The .gitignore that dx env --gitignore changed above counts as a changed file.
+  assert.match(dx("status").out, /todo-app \(main\)\s+no remote · 1 changed file\(s\) · 1 new file/);
 });
 
 test("clone sets up a repository without opening it", () => {

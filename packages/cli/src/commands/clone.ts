@@ -1,6 +1,6 @@
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { checkEnv, cloneProject, findProjects, loadConfig, readProject, scanProjects, type EnvReport, type Project } from "@dx/core";
+import { addGitignoreRules, auditEnv, checkEnv, cloneProject, findProjects, loadConfig, readProject, recordRun, scanProjects, type EnvReport, type Project, type ProjectEnv } from "@dx/core";
 import type { Command } from "../command.js";
 import { goCommand } from "./go.js";
 import { c, info, ok, tildify, UsageError, warn } from "../ui.js";
@@ -78,30 +78,57 @@ export const envCommand: Command = {
     "dx env [project]    the project in this folder, or the one named",
     "dx env --all        every project",
     "dx env --json       as JSON",
+    "dx env --gitignore  add what .gitignore is missing to keep secrets out of git (with --all, to every project)",
     "",
     "Lists variables .env.example has that your .env files don't set, .env files git would commit,",
-    "and API keys, tokens and private keys in files git tracks.",
+    "API keys, tokens and private keys in files git tracks, and the .gitignore rules OWASP recommends",
+    "that the project doesn't have (.env files, private keys, certificates, keystores).",
   ].join("\n"),
   async run(argv) {
-    const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { all: { type: "boolean" }, json: { type: "boolean" } } });
+    const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { all: { type: "boolean" }, json: { type: "boolean" }, gitignore: { type: "boolean" } } });
     const projects = values.all ? scanProjects(loadConfig()) : [resolveOne(positionals.join(" "))];
-    const reports = projects.map((p) => ({ project: p.name, ...checkEnv(p.dir) }));
+    if (values.gitignore) {
+      for (const p of projects) {
+        const missing = auditEnv(p.dir).rules.filter((r) => !r.covered).map((r) => r.pattern);
+        if (!missing.length) continue;
+        const added = addGitignoreRules(p.dir, missing);
+        recordRun("env", true, `${p.name}: .gitignore now ignores ${added.join(", ")}`, "cli", { project: p.name });
+        ok(`${p.name}: added ${added.join(", ")} to .gitignore`);
+      }
+    }
+    const reports = projects.map((p) => ({ project: p.name, ...checkEnv(p.dir), gitignore: auditEnv(p.dir) }));
     if (values.json) {
-      console.log(JSON.stringify(reports, null, 2));
-      return reports.some(hasProblems) ? 1 : 0;
+      console.log(JSON.stringify(reports.map(({ gitignore, ...r }) => ({ ...r, hasGitignore: gitignore.gitignore, missingGitignoreRules: gitignore.rules.filter((x) => !x.covered).map((x) => x.pattern) })), null, 2));
+      return reports.some((r) => hasProblems(r) || gitignoreProblems(r.gitignore)) ? 1 : 0;
     }
     let shown = 0;
     for (const r of reports) {
-      if (values.all && !hasProblems(r)) continue;
+      if (values.all && !hasProblems(r) && !gitignoreProblems(r.gitignore)) continue;
       shown++;
       printReport(r.project, r);
+      printGitignore(r.gitignore);
     }
     if (values.all) {
       console.log(shown ? "" : `${c.green("✓")} No problems in ${reports.length} project(s).`);
     }
-    return reports.some(hasProblems) ? 1 : 0;
+    return reports.some((r) => hasProblems(r) || gitignoreProblems(r.gitignore)) ? 1 : 0;
   },
 };
+
+function gitignoreProblems(a: ProjectEnv): boolean {
+  return !a.gitignore || a.exampleIgnored || a.rules.some((r) => !r.covered);
+}
+
+function printGitignore(a: ProjectEnv): void {
+  const missing = a.rules.filter((r) => !r.covered);
+  if (!a.gitignore) warn("No .gitignore: git add . would commit everything, .env files and keys included.");
+  if (a.exampleIgnored) warn(".env.example is ignored too, so the list of variables isn't shared. Add !.env.example.");
+  if (missing.length) {
+    warn(`.gitignore is missing what keeps secrets out of git (OWASP):`);
+    for (const r of missing) console.log(`    ${r.pattern.padEnd(14)} ${c.dim(r.why)}`);
+    console.log(c.dim(`  dx env ${path.basename(a.dir)} --gitignore adds them.`));
+  } else if (a.gitignore) ok(".gitignore covers .env files, private keys, certificates and keystores");
+}
 
 function resolveOne(query: string): Project {
   if (!query || query === ".") {

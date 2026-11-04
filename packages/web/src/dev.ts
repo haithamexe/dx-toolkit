@@ -5,7 +5,9 @@ import {
   getProjectPort,
   isPortOpen,
   killProcess,
+  loadConfig,
   mainService,
+  moveDevPort,
   recordRun,
   rememberSession,
   serviceName,
@@ -16,7 +18,8 @@ import {
   type Stack,
   type StackService,
 } from "@dx/core";
-import { recordActivity } from "./activity.js";
+import { activitySettings, recordActivity } from "./activity.js";
+import { freePort, openFrontDoor, type FrontDoor } from "./frontdoor.js";
 
 /**
  * Dev servers run by the dashboard. A project runs as one process, or, when it has a stack, as
@@ -61,6 +64,8 @@ export interface DevServerInfo {
   services?: DevServerInfo[];
   stackSource?: string;
   note?: string;
+  /** dx answers at `url` itself, so a visit there is in the activity history too. */
+  recorded?: boolean;
 }
 
 interface Proc {
@@ -94,6 +99,18 @@ interface Proc {
   subUrls: Map<string, string>;
   /** docker compose up -d: done when it exits, ready when the published port opens. */
   docker?: { compose: string; hostPort?: number };
+  /** dx at the server's usual address (`port`), passing to where the server runs (`hidden`). */
+  front?: { door: FrontDoor; port: number; hidden: number };
+}
+
+/** Whether apps dx starts are recorded at localhost:<port> too (needs the activity history on). */
+function localhostRecording(): boolean {
+  if (!activitySettings().on) return false;
+  try {
+    return loadConfig().localhostRecording !== false;
+  } catch {
+    return true;
+  }
 }
 
 interface StackRun {
@@ -181,6 +198,7 @@ export function serverForPort(port: number): { dir: string; service?: string; pr
   for (const p of procs.values()) {
     if (!p.child && !p.docker) continue;
     const urls = p.split ? [...p.subUrls.entries()] : p.url ? [[p.service ?? "", p.url] as [string, string]] : [];
+    if (p.front) urls.push([p.service ?? "", `http://localhost:${p.front.port}`]);
     for (const [service, url] of urls) {
       if (portOf(url) !== port) continue;
       const run = p.stackKey ? stacks.get(p.stackKey) : undefined;
@@ -233,7 +251,7 @@ export function startDevServer(project: Project, startedBy: StartedBy = "dashboa
   if (!project.devCommand) throw new Error(`${project.name} has no dev command. Add one in .devrc.json: { "dev": "..." }`);
   const existing = procs.get(key(project.dir));
   if (existing && (existing.status === "starting" || existing.status === "ready")) return info(existing);
-  const p = spawnProc({
+  const spec: Spec = {
     key: key(project.dir),
     project: project.name,
     dir: project.dir,
@@ -241,8 +259,11 @@ export function startDevServer(project: Project, startedBy: StartedBy = "dashboa
     url: project.url,
     port: getProjectPort(project),
     startedBy,
-  });
-  return info(p);
+  };
+  // Recorded at localhost:<port> too, when its tool can be moved to another port.
+  const usual = spec.port;
+  if (usual && localhostRecording() && moveDevPort(project, 1)) return info(startBehindDoor(project, spec, usual));
+  return info(spawnProc(spec));
 }
 
 function startStack(project: Project, stack: Stack, startedBy: StartedBy): DevServerInfo {
@@ -358,6 +379,13 @@ interface Spec {
 }
 
 function spawnProc(spec: Spec): Proc {
+  const p = newProc(spec);
+  launch(p, spec);
+  return p;
+}
+
+/** A process that's starting, before its command runs. */
+function newProc(spec: Spec): Proc {
   const p: Proc = {
     ...spec,
     status: "starting",
@@ -370,6 +398,54 @@ function spawnProc(spec: Spec): Proc {
   };
   p.trackers.set("", trackerFor(p));
   procs.set(spec.key, p);
+  return p;
+}
+
+/**
+ * A project's dev server behind dx at its usual address (localhost:5173): dx takes that port,
+ * moves the server to a free one, and passes everything through, so your own browser's visit
+ * is recorded. When the port is taken or the tool can't be moved, it starts as it always did.
+ */
+function startBehindDoor(project: Project, spec: Spec, usual: number): Proc {
+  const p = newProc({ ...spec, url: undefined, port: undefined });
+  void (async () => {
+    let run = spec;
+    try {
+      if (!(await isPortOpen(usual))) {
+        const hidden = await freePort();
+        const moved = moveDevPort(project, hidden);
+        const door = moved
+          ? await openFrontDoor(usual, () =>
+              p.child && p.front ? { port: p.front.hidden, route: { url: `http://localhost:${p.front.hidden}`, dir: p.dir, project: p.project } } : undefined,
+            )
+          : undefined;
+        if (moved && door) {
+          p.front = { door, port: usual, hidden };
+          run = { ...spec, command: moved.command, env: { ...spec.env, ...moved.env }, url: `http://localhost:${hidden}`, port: hidden };
+          push(p, "dx", `Recording at http://localhost:${usual}: dx answers there and runs the dev server on port ${hidden}.`);
+        }
+      }
+    } catch {
+      // started as it always was
+    }
+    if (p.stopping) {
+      await closeDoor(p);
+      p.status = "stopped";
+      return;
+    }
+    launch(p, run);
+  })();
+  return p;
+}
+
+async function closeDoor(p: Proc): Promise<void> {
+  const door = p.front?.door;
+  p.front = undefined;
+  await door?.close();
+}
+
+function launch(p: Proc, spec: Spec): void {
+  Object.assign(p, { command: spec.command, url: spec.url, port: spec.port });
   push(p, "dx", `$ ${spec.command}`);
 
   const child = spawn(spec.command, {
@@ -392,6 +468,7 @@ function spawnProc(spec: Spec): Proc {
   child.once("exit", (code, signal) => {
     p.exitCode = code;
     p.child = undefined;
+    void closeDoor(p);
     const ms = Date.now() - Date.parse(p.startedAt);
     if (p.docker && !p.stopping) {
       // `docker compose up -d` finishes once the container runs; the service is ready when its port opens.
@@ -436,7 +513,6 @@ function spawnProc(spec: Spec): Proc {
       await watchReady(p);
     })();
   }
-  return p;
 }
 
 /**
@@ -449,7 +525,7 @@ async function watchReady(p: Proc): Promise<void> {
     if (p.port !== undefined && (await isPortOpen(p.port))) {
       if (p.status === "starting") {
         p.status = "ready";
-        push(p, "dx", `Ready at ${p.url}`);
+        push(p, "dx", `Ready at ${p.front ? `http://localhost:${p.front.port}` : p.url}`);
         if (!p.stackKey) recordRun("go", true, `${p.project} started from the dashboard`, "web", { project: p.project });
       }
       return;
@@ -490,6 +566,11 @@ export async function stopDevServer(dir: string): Promise<DevServerInfo | undefi
 }
 
 async function stopProc(p: Proc): Promise<void> {
+  // Still getting its port ready: it won't start.
+  if (!p.child && p.status === "starting" && !p.docker) {
+    p.stopping = true;
+    return;
+  }
   if (!p.child?.pid) return;
   p.stopping = true;
   push(p, "dx", "Stopping…");
@@ -706,6 +787,12 @@ function push(p: Proc, stream: DevLine["stream"], raw: string): void {
   // "Connecting to the API at http://localhost:4000" names another server, not this one's address.
   if (portInUseByOther(p, Number(m[2]))) return;
   const url = m[1].replace("[::1]", "localhost").replace("127.0.0.1", "localhost");
+  // A server that didn't take the port dx gave it: dx steps aside rather than answer for nothing.
+  if (p.front && p.status === "starting" && Number(m[2]) !== p.front.hidden && Number(m[2]) !== p.front.port) {
+    const usual = p.front.port;
+    void closeDoor(p);
+    push(p, "dx", `The dev server didn't take the port dx gave it, so localhost:${usual} isn't recorded this time.`);
+  }
   if (p.split) {
     if (service && !p.subUrls.has(service)) p.subUrls.set(service, url);
     return;
@@ -722,7 +809,10 @@ function push(p: Proc, stream: DevLine["stream"], raw: string): void {
 function info(p: Proc): DevServerInfo {
   const { project, dir, command, url, pid, status, startedBy, startedAt, stoppedAt, exitCode, lastLine, service, role } = p;
   const errorCount = errorsOf([p], {}).length;
-  const out: DevServerInfo = { project, dir, command, url, pid, status, startedBy, errorCount, startedAt, stoppedAt, exitCode, lastLine, service, role };
+  // Behind dx at its usual address, that's the one to open; the moved one is internal.
+  const shown = p.front ? `http://localhost:${p.front.port}` : url;
+  const out: DevServerInfo = { project, dir, command, url: shown, pid, status, startedBy, errorCount, startedAt, stoppedAt, exitCode, lastLine, service, role };
+  if (p.front) out.recorded = true;
   if (!p.stackKey && url && p.child) out.localUrl = localUrlOf(`${serviceName(project)}.localhost`);
   return out;
 }

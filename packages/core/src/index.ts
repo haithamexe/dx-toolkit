@@ -19,6 +19,8 @@ export * from "./tools/aiSetup.js";
 export * from "./tools/stacks.js";
 export * from "./tools/browser.js";
 export * from "./tools/envcheck.js";
+export * from "./tools/envaudit.js";
+export * from "./tools/devport.js";
 export * from "./tools/clone.js";
 export * from "./tools/sessions.js";
 export * from "./tools/status.js";

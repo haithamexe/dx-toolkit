@@ -42,6 +42,7 @@ import {
   buildYearReview,
   formatYearReview,
   formatActivity,
+  auditEnv,
   isProblem,
   parseSince,
   readActivity,
@@ -1111,6 +1112,19 @@ server.registerTool(
     if (r.notIgnored.length) parts.push(`.env files git doesn't ignore: ${r.notIgnored.join(", ")}. Add them to .gitignore.`);
     if (r.secrets.length) parts.push(`Keys and tokens in tracked files (move them to .env and revoke them):\n${r.secrets.map((s) => `- ${s.kind} in ${s.file}:${s.line} (${s.preview})`).join("\n")}`);
     else if (r.scanned) parts.push("No keys or tokens in tracked files.");
+    // The .gitignore rules OWASP recommends for keeping secrets out of git.
+    const audit = auditEnv(project.dir);
+    const missing = audit.rules.filter((x) => !x.covered);
+    const deeper = audit.files.filter((f) => !f.example && f.name.includes("/"));
+    if (deeper.length) parts.push(`.env files in subfolders: ${deeper.map((f) => `${f.name}${f.tracked ? " (committed)" : f.notIgnored ? " (not ignored)" : ""}`).join(", ")}`);
+    if (!audit.gitignore) parts.push("There is no .gitignore: git add . would commit everything, .env files and keys included.");
+    if (missing.length) {
+      parts.push(
+        `.gitignore is missing rules that keep secrets out of git (OWASP):\n${missing.map((x) => `- ${x.pattern}: ${x.why}`).join("\n")}\n` +
+          `The user can add them in the dashboard's Env & secrets page, or with: dx env ${project.name} --gitignore`,
+      );
+    } else if (audit.gitignore) parts.push(".gitignore covers .env files, private keys, certificates and keystores.");
+    if (audit.exampleIgnored) parts.push(".env.example is ignored too; add !.env.example so the list of variables is shared.");
     return text(`${project.name} (${project.dir})\n\n${parts.join("\n\n")}`);
   },
 );

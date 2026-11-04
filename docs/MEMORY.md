@@ -11,13 +11,13 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, activity, terminal, setup, https, config, runs, doctor`;
   - the MCP server with 30 tools, 15 of them for running and checking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
-  - the dashboard with 9 pages (Projects, New project, Ports, Activity, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - the dashboard with 10 pages (Projects, New project, Ports, Activity, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
   - the activity history (requests, routes, clicks, console, errors, kept 7 days) and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.3.0. Nothing under *Unreleased* yet.
+- **Latest release**: 1.3.0. Under *Unreleased*: Env & secrets, recording at `localhost:<port>`, the Activity views.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -26,7 +26,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **`dx https` end to end**: the proxy's https is tested with a throwaway openssl certificate; the real `mkcert -install` path hasn't been run on a maintainer machine (it changes the system trust store, so it needs the maintainer's go-ahead).
 - **Coverage in `dx test`**, and screenshot comparison before and after a change.
 - **Terminals beyond Windows**: Command Prompt, Windows PowerShell and Git Bash were opened for real on Windows; the macOS (iTerm2, Warp, Ghostty, kitty) and Linux launch commands are written from each one's documentation and haven't been run on those systems.
-- **Activity for `localhost:<port>`**: only pages opened at `.localhost` pass through dx. Recording the others would need the dev server's cooperation (a Vite/Next plugin) or a browser extension.
+- **The localhost door for stacks**: single-project dev servers are recorded at `localhost:<port>`; a stack's front end isn't moved yet. Next.js, Astro, Nuxt, Angular, webpack and Gatsby are moved by the documented flag but only Vite was tried for real.
 - **MongoDB in `dx db`**: only Postgres, MySQL/MariaDB and Redis today.
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
@@ -34,6 +34,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - **1.3.0** adds the activity history (with Replay and bug reports), opening projects in a terminal you pick, `dx test`, the network log, browser flows, `dx db` and the year in review.
   - **1.2.0** adds browser errors, `dx clone`, resume and notes, `dx status`, `dx env`, `dx https` and `dx deps --fix`.
   - **1.1.0** is the first on npm, as `dx-devkit`. npm refused `dxkit` as too close to existing names (degit, pdfkit). A free name (`npm view <name>` gives E404) can still be refused: the look-alike check only runs on a real publish, and short names fail it most.
+  - **Nothing is released until the maintainer says the features are done.** New work is built, committed and tested locally first; the maintainer's own `dx` runs this repository's build (`npm run link`) so they try each feature before it goes out. No release or npm publish after a single feature.
   - **To release**: add each change to `CHANGELOG.md` under *Unreleased*. When a release is asked for, the agent doing it carries it through, publishing included:
     1. wait for CI to be green on the last commit;
     2. bump every `package.json` (and the lockfile), and move *Unreleased* to a dated `## X.Y.Z` section with a one-line intro;
@@ -65,6 +66,30 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Replay** rebuilds steps from a visit (`replayFromVisit`): the page the first event was on, each click by the target the page recorded (`[data-testid]`, a unique `#id`, else `text=Label`), and, where a click changed the address within 3 s, a wait for the new address. Typed values aren't recorded, so forms are submitted as the page has them; back and forward are left out. It runs through `checkUrl` with steps, so a replay is a headless check like any other, and shows in the history as one.
 - **A route change within a second of a click is that click's**, not the back button: Chrome fires `popstate` for a `#hash` link too.
 - **Bug reports** take the error's visit (or, without one, the project) from 10 minutes before to 5 s after, keeping only problems and requests after it.
+
+### Env & secrets (`core/src/tools/envaudit.ts`)
+
+- **The rules are OWASP's secrets-management advice made concrete**: `.env`, `.env.*` (with `!.env.example` and any other example file the project has), `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `id_rsa*`, `id_ed25519*`. Each is tested against the project's own root `.gitignore` with a small matcher (`matchesGitignore`) that reads lines the way git does. Not git itself: a global excludes file would hide what teammates don't have.
+- **What git would actually do with each file** comes from git (`ls-files`, `check-ignore`), since nested `.gitignore` files count there.
+- **Missing rules count as one problem**, not one each: one button adds them all.
+- **Values are shown only on request**: the list carries names, sizes and counts; View fetches the file and hides each value until you click; Edit shows the whole text. A save keeps the file's own permissions and line endings.
+- **The key scan runs on request per project** (it reads every tracked file); the page's list doesn't wait for it.
+
+### The localhost door (`core/src/tools/devport.ts`, `web/src/frontdoor.ts`)
+
+- **dx takes the app's usual port and moves the dev server**, rather than asking for a browser extension or a framework plugin: it's the only way that records `localhost:5173` in any browser with nothing to set up.
+- **Only tools dx knows how to move**: the dev script must be one command whose tool takes a port flag (vite `--port --strictPort`, next `-p`, astro, nuxt, ng, webpack, gatsby, react-router) or `PORT` (react-scripts), with no port of its own. Anything else (a custom `dev` in `.devrc.json`, `concurrently`, `node server.js`) runs as before: a server that ignores the flag would fight dx for the port.
+- **Order**: check the usual port is free, take a free hidden port from the system, open the door, then start the server with the moved command. If the server prints an address that isn't the hidden port, the door closes and the app runs where it says.
+- **The Host header passes through unchanged**, so the server's links and redirects keep pointing at the usual address; Location headers naming the hidden port are rewritten anyway.
+- **The dashboard shows the usual address**, with `recorded: true`; the hidden one is internal (`.localhost` routes use it).
+- **Stacks aren't moved yet**: their services keep their own ports.
+
+### Activity views (`web/public/app.js`)
+
+- **Sessions, APIs, Errors, Console are views of the same events**, computed in the page from one request (up to 2000 events), so switching views doesn't reload.
+- **APIs are grouped by method and path with ids folded** (`/orders/42` → `/orders/:id`; numbers, UUIDs and long hex), per project.
+- **Errors are grouped by kind and message with numbers blanked**, per project; console warnings stay in Console only.
+- **The dev server's own console lines** (`[vite] …`, `[HMR] …`) aren't recorded unless they're warnings or errors.
 
 ### Terminals (`core/src/tools/terminals.ts`)
 

@@ -45,6 +45,11 @@ export interface DxConfig {
   activityDays?: number;
   /** Megabytes the activity history may take in all (default 500); the oldest days go first. */
   activityMaxMB?: number;
+  /**
+   * Record apps opened at localhost:<port> too (default true): for dev servers dx starts with a
+   * tool it knows (vite, next, …), dx answers on the usual port and runs the server on another.
+   */
+  localhostRecording?: boolean;
   /** The terminal projects open in, by id (`dx terminal --list`); the first one found when unset. */
   terminal?: string;
 }

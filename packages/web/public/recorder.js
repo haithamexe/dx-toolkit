@@ -110,6 +110,10 @@
       try {
         var parts = [];
         for (var i = 0; i < arguments.length; i++) parts.push(show(arguments[i]));
+        // The dev server's own chatter ("[vite] connected.") isn't the app's output; its warnings and errors are kept.
+        if ((level === "debug" || level === "info" || level === "log") && /^\[(vite|hmr|webpack-dev-server|webpack|fast refresh|hot module replacement|wds)\]/i.test(parts[0] || "")) {
+          return original.apply(this, arguments);
+        }
         var stack = new Error().stack;
         // The page's own frames: without the "Error" line and this file's wrapper.
         var own = String(stack || "")

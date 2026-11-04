@@ -57,6 +57,7 @@ const ICONS = {
   deps: "M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6zM9 12l2 2 4-4",
   health: "M3 12h4l3-8 4 16 3-8h4",
   activity: "M12 7v5l3 2M3.5 12a8.5 8.5 0 1 0 2.5-6M3 4v4h4",
+  key: "M10.8 13.2L20 4M16.5 7.5l2.5 2.5M14 10l2 2M7.5 20a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
   play: "M7 4l13 8-13 8z",
   stop: "M6 6h12v12H6z",
   external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
@@ -304,6 +305,7 @@ const pages = [
   { id: "new", label: "New project", icon: "new", render: newProjectPage },
   { id: "ports", label: "Ports", icon: "ports", render: portsPage },
   { id: "activity", label: "Activity", icon: "activity", render: activityPage },
+  { id: "env", label: "Env & secrets", icon: "key", render: envPage },
   { id: "journal", label: "Journal", icon: "journal", render: journalPage },
   { id: "summary", label: "Summary", icon: "summary", render: summaryPage },
   { id: "cleanup", label: "Cleanup", icon: "cleanup", render: cleanupPage },
@@ -1332,16 +1334,322 @@ function journalPage(root) {
   setTimeout(() => input.focus(), 0);
 }
 
+// ------------------------------------------------------------------ Env
+
+function envPage(root) {
+  let list = [];
+  let query = "";
+  let show = pref("envShow", "problems");
+  const open = new Set(); // project dirs opened
+  const deep = new Map(); // dir -> full audit with the key scan
+  const holder = h("div", { class: "section" }, h("div", { class: "card" }, loadingView("Looking for .env files in your projects…")));
+  const summary = h("div");
+  const search = h("input", {
+    class: "input",
+    type: "search",
+    placeholder: "Search projects",
+    "aria-label": "Search projects",
+    oninput: (e) => ((query = e.target.value.trim().toLowerCase()), render()),
+  });
+  append(
+    root,
+    pageHead(
+      "Env & secrets",
+      "Every project's .env files, and whether git could leak them. Keys, certificates and .env files never belong in git (OWASP).",
+      search,
+      segmented("Show", [["problems", "Needs attention"], ["all", "All projects"]], show, (v) => ((show = v), setPref("envShow", v), render())),
+      btn("Check again", () => load(), { iconName: "refresh", kind: "ghost" }),
+    ),
+    summary,
+    holder,
+  );
+
+  async function load() {
+    try {
+      list = await api("/api/env/all");
+      deep.clear();
+      render();
+    } catch (err) {
+      holder.replaceChildren(errorView(err, load));
+    }
+  }
+
+  async function reloadProject(dir) {
+    const fresh = await api(`/api/env/project?dir=${encodeURIComponent(dir)}`);
+    deep.set(dir, fresh);
+    list = list.map((p) => (p.dir === dir ? fresh : p));
+    render();
+  }
+
+  function render() {
+    const withProblems = list.filter((p) => p.problems > 0);
+    const files = list.reduce((n, p) => n + p.files.filter((f) => !f.example).length, 0);
+    summary.replaceChildren(
+      withProblems.length
+        ? h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, `${plural(withProblems.length, "project")} of ${list.length} could leak secrets or are missing .gitignore rules. ${plural(files, ".env file")} in all.`))
+        : h("div", { class: "note", role: "status" }, icon("check"), h("p", null, `No problems in ${plural(list.length, "project")}: every .env file is kept out of git. ${plural(files, ".env file")} in all.`)),
+    );
+    const shown = list.filter((p) => (show === "all" || p.problems > 0 || open.has(p.dir)) && (!query || p.name.toLowerCase().includes(query)));
+    if (!shown.length) {
+      holder.replaceChildren(h("div", { class: "card" }, stateView(query ? "No project matches" : "Nothing needs attention", query ? "Try another name." : "Pick All projects to see every project's .env files.")));
+      return;
+    }
+    holder.replaceChildren(...shown.map((p) => projectCard(deep.get(p.dir) ?? p)));
+  }
+
+  function projectCard(p) {
+    const isOpen = open.has(p.dir) || (p.problems > 0 && show === "problems" && !open.size);
+    const badge = p.problems ? h("span", { class: "badge badge-danger" }, `${p.problems} to fix`) : h("span", { class: "badge badge-ok" }, "ok");
+    const body = h("div", { class: "env-body" });
+    const details = h(
+      "details",
+      {
+        class: "card env-project",
+        open: isOpen || undefined,
+        ontoggle: (e) => {
+          if (e.target.open) {
+            open.add(p.dir);
+            fill();
+          } else open.delete(p.dir);
+        },
+      },
+      h(
+        "summary",
+        { class: "env-head" },
+        h("strong", null, p.name),
+        badge,
+        h("span", { class: "dim" }, p.files.length ? plural(p.files.filter((f) => !f.example).length, ".env file") : "no .env files"),
+        !p.gitignore ? h("span", { class: "badge badge-danger" }, "no .gitignore") : null,
+        !p.git ? h("span", { class: "badge" }, "not a git repository") : null,
+      ),
+      body,
+    );
+    const fill = () => body.replaceChildren(...projectBody(p));
+    if (isOpen) fill();
+    return details;
+  }
+
+  function projectBody(p) {
+    const out = [];
+    // The files, with what git would do with each.
+    const real = p.files.filter((f) => !f.example);
+    const examples = p.files.filter((f) => f.example);
+    const rows = [...real, ...examples].map((f) => fileRow(p, f));
+    out.push(
+      h(
+        "section",
+        { class: "env-section" },
+        h("h3", { class: "env-title" }, "Files"),
+        rows.length ? h("ul", { class: "env-files" }, rows) : h("p", { class: "dim" }, "No .env files in this project."),
+        !real.some((f) => f.name === ".env") && examples.length
+          ? h(
+              "p",
+              null,
+              btn("Create .env from the example", async (ev) => {
+                const r = await busy(ev.currentTarget, "Creating…", () => api("/api/env/create", { method: "POST", body: { dir: p.dir } }));
+                if (r) (toast(`Created ${r.name}; fill in its values`), reloadProject(p.dir));
+              }, { small: true, iconName: "new" }),
+            )
+          : null,
+      ),
+    );
+
+    if (real.some((f) => f.tracked)) {
+      out.push(
+        h(
+          "div",
+          { class: "note note-danger" },
+          icon("warn"),
+          h(
+            "div",
+            null,
+            h("p", null, `${real.filter((f) => f.tracked).map((f) => f.name).join(", ")} ${real.filter((f) => f.tracked).length === 1 ? "is" : "are"} committed to git, so the values are in the repository's history.`),
+            h("p", null, "Take it out of git with ", h("code", null, `git rm --cached ${real.find((f) => f.tracked).name}`), ", add it to .gitignore, and change the keys it held: anyone with the repository has the old ones."),
+          ),
+        ),
+      );
+    }
+
+    // .gitignore: what it's missing, and a button that adds it.
+    const missing = p.rules.filter((r) => !r.covered);
+    const gi = [h("h3", { class: "env-title" }, ".gitignore")];
+    if (!p.gitignore) gi.push(h("div", { class: "note note-danger" }, icon("warn"), h("p", null, "This project has no .gitignore: a git add . would commit everything, .env files and keys included.")));
+    if (p.exampleIgnored) gi.push(h("div", { class: "note note-warn" }, icon("warn"), h("p", null, ".env.example is ignored too, so the list of variables isn't shared with the code. dx adds !.env.example to keep it.")));
+    if (missing.length) {
+      gi.push(
+        h("p", null, `Missing ${plural(missing.length, "rule")} for keeping secrets out of git:`),
+        h("ul", { class: "env-rules" }, missing.map((r) => h("li", null, h("code", null, r.pattern), h("span", { class: "dim" }, ` ${r.why}`)))),
+        h(
+          "p",
+          null,
+          btn(`Add ${plural(missing.length, "rule")} to .gitignore`, async (ev) => {
+            // The event's currentTarget is gone once the dialog has been waited for.
+            const button = ev.currentTarget;
+            const yes = await confirmDialog({
+              title: `Add to ${p.name}'s .gitignore?`,
+              text: `These lines go at the end of ${p.gitignore ? "its .gitignore" : "a new .gitignore"}: ${missing.map((r) => r.pattern).join(", ")}. Files that match stop showing in git status; nothing is deleted.`,
+              confirm: "Add them",
+              danger: false,
+            });
+            if (!yes) return;
+            const r = await busy(button, "Adding…", () => api("/api/env/gitignore", { method: "POST", body: { dir: p.dir, patterns: missing.map((m) => m.pattern) } }));
+            if (r) (toast(r.added.length ? `.gitignore now has ${r.added.join(", ")}` : ".gitignore already had them"), reloadProject(p.dir));
+          }, { small: true, kind: "primary", iconName: "check" }),
+        ),
+      );
+    } else if (p.gitignore) gi.push(h("p", { class: "env-ok" }, icon("check"), "Covers .env files, private keys, certificates and keystores."));
+    out.push(h("section", { class: "env-section" }, gi));
+
+    // Variables the example lists that no .env sets.
+    if (p.missingVars.length || p.emptyVars.length) {
+      out.push(
+        h(
+          "section",
+          { class: "env-section" },
+          h("h3", { class: "env-title" }, "Variables"),
+          p.missingVars.length ? h("p", null, "In the example but not set: ", p.missingVars.map((k, i) => [i ? ", " : "", h("code", null, k)])) : null,
+          p.emptyVars.length ? h("p", { class: "dim" }, "Set but empty: ", p.emptyVars.map((k, i) => [i ? ", " : "", h("code", null, k)])) : null,
+        ),
+      );
+    }
+
+    // Keys and tokens in tracked files: a full scan, on request.
+    const keys = h("section", { class: "env-section" }, h("h3", { class: "env-title" }, "Keys in committed files"));
+    if (deep.has(p.dir)) {
+      if (!p.scanned) keys.append(h("p", { class: "dim" }, "Only git repositories are scanned."));
+      else if (!p.secrets.length) keys.append(h("p", { class: "env-ok" }, icon("check"), "No API keys, tokens or private keys in files git tracks."));
+      else
+        keys.append(
+          h(
+            "ul",
+            { class: "env-rules" },
+            p.secrets.map((s) =>
+              h(
+                "li",
+                null,
+                h("span", { class: "badge badge-danger" }, s.kind),
+                " ",
+                btn(`${s.file}:${s.line}`, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: s.file, line: s.line } })).message)), { small: true, kind: "ghost", iconName: "code" }),
+                h("span", { class: "dim mono" }, ` ${s.preview}`),
+              ),
+            ),
+          ),
+          h("p", { class: "dim" }, "Move each into a .env file and change it: it's in the repository's history."),
+        );
+    } else {
+      keys.append(h("p", null, btn("Scan committed files for keys", async (ev) => void (await busy(ev.currentTarget, "Scanning…", () => reloadProject(p.dir))), { small: true, iconName: "deps" })));
+    }
+    out.push(keys);
+    return out;
+  }
+
+  function fileRow(p, f) {
+    const panel = h("div", { class: "env-panel" });
+    const badges = [
+      f.example ? h("span", { class: "badge" }, "example") : null,
+      f.tracked ? h("span", { class: "badge badge-danger" }, "committed to git") : null,
+      f.notIgnored ? (p.git ? h("span", { class: "badge badge-danger" }, "git would commit it") : h("span", { class: "badge badge-warn" }, "not in .gitignore")) : null,
+      !f.example && !f.tracked && !f.notIgnored && p.git ? h("span", { class: "badge badge-ok" }, "ignored by git") : null,
+    ];
+    return h(
+      "li",
+      null,
+      h(
+        "div",
+        { class: "env-file" },
+        h("span", { class: "mono env-name" }, f.name),
+        badges,
+        h("span", { class: "dim" }, plural(f.keys, "variable")),
+        h(
+          "span",
+          { class: "toolbar env-actions" },
+          btn("View", () => view(p, f, panel), { small: true, kind: "ghost", name: `View ${f.name}` }),
+          btn("Edit", () => edit(p, f, panel), { small: true, kind: "ghost", name: `Edit ${f.name}` }),
+          btn("Open", (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: f.name } })).message)), { small: true, kind: "ghost", iconName: "code", name: `Open ${f.name} in your editor` }),
+        ),
+      ),
+      panel,
+    );
+  }
+
+  /** The variables with their values hidden until asked for, one at a time or all. */
+  async function view(p, f, panel) {
+    if (panel.dataset.mode === "view") return void (panel.replaceChildren(), (panel.dataset.mode = ""));
+    let content;
+    try {
+      content = (await api(`/api/env/file?dir=${encodeURIComponent(p.dir)}&name=${encodeURIComponent(f.name)}`)).content;
+    } catch (err) {
+      return toast(err.message, "error");
+    }
+    panel.dataset.mode = "view";
+    const rows = [];
+    const reveal = [];
+    for (const line of content.split(/\r?\n/)) {
+      const m = /^\s*(export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(.*)$/.exec(line);
+      if (!m) {
+        if (line.trim()) rows.push(h("tr", null, h("td", { colspan: "3", class: "dim mono" }, line)));
+        continue;
+      }
+      const value = h("span", { class: "mono env-value" }, m[3] ? "•••" : "(empty)");
+      const toggle = btn("Show", () => {
+        const hidden = value.textContent === "•••";
+        value.textContent = hidden ? m[3] : "•••";
+        toggle.textContent = hidden ? "Hide" : "Show";
+      }, { small: true, kind: "ghost", name: `Show ${m[2]}` });
+      if (!m[3]) toggle.hidden = true;
+      reveal.push(() => {
+        if (m[3]) ((value.textContent = m[3]), (toggle.textContent = "Hide"));
+      });
+      rows.push(h("tr", null, h("th", { scope: "row", class: "mono" }, m[2]), h("td", null, value), h("td", { class: "actions" }, toggle)));
+    }
+    panel.replaceChildren(
+      h(
+        "div",
+        { class: "env-viewer" },
+        h("div", { class: "toolbar" }, btn("Show all values", () => reveal.forEach((r) => r()), { small: true }), btn("Close", () => ((panel.dataset.mode = ""), panel.replaceChildren()), { small: true, kind: "ghost", iconName: "x" })),
+        rows.length ? h("div", { class: "table-wrap" }, h("table", { class: "table env-table" }, h("tbody", null, rows))) : h("p", { class: "dim" }, "The file is empty."),
+      ),
+    );
+  }
+
+  /** The whole file as text, saved in one go. */
+  async function edit(p, f, panel) {
+    let content;
+    try {
+      content = (await api(`/api/env/file?dir=${encodeURIComponent(p.dir)}&name=${encodeURIComponent(f.name)}`)).content;
+    } catch (err) {
+      return toast(err.message, "error");
+    }
+    panel.dataset.mode = "edit";
+    const id = `env-edit-${Math.random().toString(36).slice(2, 8)}`;
+    const area = h("textarea", { id, class: "input env-editor", spellcheck: "false", autocomplete: "off", rows: String(Math.min(24, Math.max(6, content.split("\n").length + 1))) });
+    area.value = content;
+    const save = btn("Save", async (ev) => {
+      if (area.value === content) return toast("Nothing changed");
+      const r = await busy(ev.currentTarget, "Saving…", () => api("/api/env/file", { method: "POST", body: { dir: p.dir, name: f.name, content: area.value } }));
+      if (!r) return;
+      toast(`Saved ${f.name}. A running dev server may need a restart to read it.`);
+      panel.dataset.mode = "";
+      panel.replaceChildren();
+      reloadProject(p.dir);
+    }, { small: true, kind: "primary", iconName: "save" });
+    panel.replaceChildren(
+      h(
+        "div",
+        { class: "env-viewer" },
+        h("label", { for: id, class: "field-hint" }, `${f.name}: values are shown while you edit. One KEY=value per line; # starts a comment.`),
+        area,
+        h("div", { class: "toolbar" }, save, btn("Cancel", () => ((panel.dataset.mode = ""), panel.replaceChildren()), { small: true, kind: "ghost" })),
+      ),
+    );
+    area.focus();
+  }
+
+  load();
+}
+
 // ------------------------------------------------------------------ Activity
 
-const ACTIVITY_KINDS = [
-  ["", "All"],
-  ["request,page", "Requests"],
-  ["route,action", "Routes & clicks"],
-  ["console,error", "Console"],
-  ["problems", "Problems"],
-  ["server,server-error", "Server"],
-];
 const ACTIVITY_LABELS = { request: "Request", page: "Page", route: "Route", action: "Click", console: "Console", error: "Error", server: "Server", "server-error": "Server error" };
 
 function isProblemEvent(e) {
@@ -1351,9 +1659,17 @@ function isProblemEvent(e) {
   return e.level === "error";
 }
 
+const ACTIVITY_VIEWS = [
+  ["sessions", "Sessions"],
+  ["apis", "APIs"],
+  ["errors", "Errors"],
+  ["console", "Console"],
+];
+
 function activityPage(root) {
   let dir = pref("activityDir", "");
-  let kind = pref("activityKind", "");
+  let view = pref("activityView", "sessions");
+  if (!ACTIVITY_VIEWS.some(([v]) => v === view)) view = "sessions";
   let since = pref("activitySince", "today");
   let search = "";
   let events = [];
@@ -1365,8 +1681,11 @@ function activityPage(root) {
 
   const holder = h("div", { class: "card" }, loadingView("Reading the history…"));
   const hint = h("div", { class: "section", "aria-live": "polite" });
-  const kindPicker = segmented("Show", ACTIVITY_KINDS, kind, (v) => ((kind = v), setPref("activityKind", v), load()));
-  kindPicker.classList.add("segmented-wrap");
+  const overview = h("div", { class: "activity-projects" });
+  const viewPicker = segmented("View", ACTIVITY_VIEWS, view, (v) => ((view = v), setPref("activityView", v), render()));
+  viewPicker.classList.add("segmented-wrap");
+  const opened = new Set(); // API endpoints and errors opened, by key
+  let openRows = new Set(); // single events opened, by id
   const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("activityDir", dir), load()) }, h("option", { value: "" }, "All projects"));
   const searchInput = h("input", {
     class: "input input-wide",
@@ -1381,10 +1700,11 @@ function activityPage(root) {
   const clear = btn(
     "Clear history",
     async (ev) => {
+      const button = ev.currentTarget;
       const name = dir ? (projects.find((p) => p.dir === dir)?.name ?? "this project") : "every project";
       const yes = await confirmDialog({ title: "Clear the history?", text: `This deletes the recorded requests, routes, clicks, console output and errors of ${name}. It can't be undone.`, confirm: "Clear history" });
       if (!yes) return;
-      const r = await busy(ev.currentTarget, "Clearing…", () => api("/api/activity/clear", { method: "POST", body: dir ? { dir } : {} }));
+      const r = await busy(button, "Clearing…", () => api("/api/activity/clear", { method: "POST", body: dir ? { dir } : {} }));
       if (!r) return;
       toast("History cleared");
       load();
@@ -1396,12 +1716,13 @@ function activityPage(root) {
     root,
     pageHead(
       "Activity",
-      "What happened in your apps, newest first: requests and responses, routes, clicks, console output and errors.",
+      "What happened in your apps: each visit's steps, every API with its payloads, responses and times, errors and console output.",
       h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
       segmented("Since", [["1h", "Last hour"], ["today", "Today"], ["7d", "7 days"]], since, (v) => ((since = v), setPref("activitySince", v), load())),
       clear,
     ),
-    h("div", { class: "card card-pad toolbar" }, kindPicker, searchInput),
+    overview,
+    h("div", { class: "card card-pad toolbar" }, viewPicker, searchInput),
     hint,
     holder,
   );
@@ -1428,9 +1749,19 @@ function activityPage(root) {
           h(
             "p",
             null,
-            `Nothing from ${s.project}'s browser side yet. Open it at `,
-            h("a", { href: s.localUrl, target: "_blank", rel: "noreferrer", class: "mono" }, s.localUrl.replace(/^https?:\/\//, "")),
-            ` to record its clicks, routes and console${s.url ? `; at ${s.url.replace(/^https?:\/\//, "")} dx doesn't see it` : ""}.`,
+            ...(s.recorded && s.url
+              ? [
+                  `Nothing from ${s.project}'s browser side yet. Open it at `,
+                  h("a", { href: s.url, target: "_blank", rel: "noreferrer", class: "mono" }, s.url.replace(/^https?:\/\//, "")),
+                  " or ",
+                  h("a", { href: s.localUrl, target: "_blank", rel: "noreferrer", class: "mono" }, s.localUrl.replace(/^https?:\/\//, "")),
+                  " in any browser: its clicks, routes, console and API calls show up here.",
+                ]
+              : [
+                  `Nothing from ${s.project}'s browser side yet. Open it at `,
+                  h("a", { href: s.localUrl, target: "_blank", rel: "noreferrer", class: "mono" }, s.localUrl.replace(/^https?:\/\//, "")),
+                  ` to record its clicks, routes and console${s.url ? `; at ${s.url.replace(/^https?:\/\//, "")} dx doesn't see it (its tool can't be moved to another port)` : ""}.`,
+                ]),
           ),
         ),
       ),
@@ -1438,10 +1769,8 @@ function activityPage(root) {
   }
 
   function query(extra = {}) {
-    const q = new URLSearchParams({ limit: "500", ...extra });
+    const q = new URLSearchParams({ limit: "2000", ...extra });
     if (dir) q.set("dir", dir);
-    if (kind === "problems") q.set("problems", "1");
-    else if (kind) q.set("types", kind);
     if (search) q.set("q", search);
     return q;
   }
@@ -1477,19 +1806,198 @@ function activityPage(root) {
   }
 
   function render() {
+    renderOverview();
     if (!events.length) {
       holder.replaceChildren(
         stateView(
-          search || kind ? "Nothing matches" : "Nothing recorded yet",
-          search || kind
-            ? "Try another filter, or a longer time."
-            : "Start an app from the Projects page and open it at its .localhost address. Its requests, routes, clicks, console output and errors show up here as they happen.",
-          search || kind ? null : h("a", { class: "btn", href: "#/projects" }, "Go to projects"),
+          search ? "Nothing matches" : "Nothing recorded yet",
+          search
+            ? "Try other words, or a longer time."
+            : "Start an app from the Projects page and open it in your browser. Its requests, routes, clicks, console output and errors show up here as they happen.",
+          search ? null : h("a", { class: "btn", href: "#/projects" }, "Go to projects"),
         ),
       );
       return;
     }
     const many = !dir && new Set(events.map((e) => e.dir)).size > 1;
+    // Rows people opened stay open when new events come in.
+    openRows = new Set([...holder.querySelectorAll("details[open][data-id]")].map((d) => d.dataset.id));
+    if (view === "apis") return renderApis(many);
+    if (view === "errors") return renderErrors(many);
+    if (view === "console") return renderConsole(many);
+    renderSessions(many);
+  }
+
+  /** Each project with its visits, API calls and problems; a click shows only that project. */
+  function renderOverview() {
+    if (dir) return overview.replaceChildren();
+    const byDir = new Map();
+    for (const e of events) {
+      const s = byDir.get(e.dir) ?? byDir.set(e.dir, { dir: e.dir, project: e.project, visits: new Set(), calls: 0, problems: 0, last: e.at }).get(e.dir);
+      if (e.visit) s.visits.add(e.visit);
+      if (e.type === "request") s.calls++;
+      if (isProblemEvent(e)) s.problems++;
+      s.last = e.at;
+    }
+    const list = [...byDir.values()].sort((a, b) => Date.parse(b.last) - Date.parse(a.last));
+    overview.replaceChildren(
+      ...list.map((s) =>
+        h(
+          "button",
+          {
+            type: "button",
+            class: "card activity-project",
+            title: `Show only ${s.project}`,
+            onclick: () => {
+              dir = s.dir;
+              projectSelect.value = s.dir;
+              setPref("activityDir", dir);
+              load();
+            },
+          },
+          h("strong", null, s.project),
+          h("span", { class: "dim" }, `${plural(s.visits.size, "visit")} · ${plural(s.calls, "API call")} · ${relativeTime(Date.parse(s.last))}`),
+          s.problems ? h("span", { class: "badge badge-danger" }, plural(s.problems, "problem")) : h("span", { class: "badge badge-ok" }, "no problems"),
+        ),
+      ),
+    );
+  }
+
+  /** The address an API call is grouped by: ids, numbers and long hex in its path become :id. */
+  function endpointOf(e) {
+    let path = e.url ?? e.text.split(" ")[1] ?? "";
+    let host = "";
+    try {
+      const u = new URL(path, "http://same.origin");
+      if (u.host !== "same.origin") host = u.host;
+      path = u.pathname;
+    } catch {
+      path = path.split("?")[0];
+    }
+    const norm = path
+      .split("/")
+      .map((seg) => (/^\d+$|^[0-9a-f]{8}-[0-9a-f-]{27,}$|^[0-9a-f]{16,}$/i.test(seg) ? ":id" : seg))
+      .join("/");
+    return `${(e.method ?? "GET").toUpperCase()} ${host}${norm || "/"}`;
+  }
+
+  /** Every API with its calls: how often, how fast, how many failed; open one for each call's payload and response. */
+  function renderApis(many) {
+    const groups = new Map();
+    for (const e of events) {
+      if (e.type !== "request") continue;
+      const key = `${e.dir}|${endpointOf(e)}`;
+      const g = groups.get(key) ?? groups.set(key, { key, endpoint: endpointOf(e), project: e.project, service: e.service, calls: [] }).get(key);
+      g.calls.push(e);
+    }
+    if (!groups.size) return holder.replaceChildren(stateView("No API calls", "Requests your app makes to its API show up here, each endpoint with its calls, payloads, responses and times."));
+    const list = [...groups.values()].sort((a, b) => Date.parse(b.calls[b.calls.length - 1].at) - Date.parse(a.calls[a.calls.length - 1].at));
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "api-list" },
+        h("div", { class: "api-row api-header", "aria-hidden": "true" }, h("span", null, "Endpoint"), h("span", null, "Calls"), h("span", null, "Avg"), h("span", null, "Slowest"), h("span", null, "Last")),
+        list.map((g) => {
+          const times = g.calls.map((c) => c.ms).filter((ms) => ms !== undefined);
+          const avg = times.length ? Math.round(times.reduce((a, b) => a + b, 0) / times.length) : undefined;
+          const slow = times.length ? Math.max(...times) : undefined;
+          const failed = g.calls.filter(isProblemEvent).length;
+          const last = g.calls[g.calls.length - 1];
+          const [method, ...rest] = g.endpoint.split(" ");
+          return h(
+            "details",
+            {
+              class: "api-group",
+              open: opened.has(g.key) || undefined,
+              ontoggle: (e) => (e.target.open ? opened.add(g.key) : opened.delete(g.key)),
+            },
+            h(
+              "summary",
+              { class: "api-row" },
+              h(
+                "span",
+                { class: "api-endpoint" },
+                h("span", { class: "badge mono" }, method),
+                h("span", { class: "mono" }, rest.join(" ")),
+                many ? h("span", { class: "badge" }, g.project) : null,
+                g.service ? h("span", { class: "badge" }, g.service) : null,
+                failed ? h("span", { class: "badge badge-danger" }, `${failed} failed`) : null,
+              ),
+              h("span", null, String(g.calls.length)),
+              h("span", { class: "dim" }, avg === undefined ? "–" : `${avg} ms`),
+              h("span", { class: slow !== undefined && slow > 1000 ? "api-slow" : "dim" }, slow === undefined ? "–" : `${slow} ms`),
+              h("span", null, h("span", { class: `badge ${isProblemEvent(last) ? "badge-danger" : "badge-ok"}` }, last.error ? "failed" : String(last.status ?? "…")), h("span", { class: "dim" }, ` ${relativeTime(Date.parse(last.at))}`)),
+            ),
+            h("ul", { class: "activity-list api-calls" }, [...g.calls].reverse().slice(0, 50).map((c) => activityRow(c, false, openRows.has(String(c.id))))),
+          );
+        }),
+      ),
+    );
+  }
+
+  /** Errors grouped by what they say, most recent first, each with every time it happened. */
+  function renderErrors(many) {
+    const groups = new Map();
+    for (const e of events) {
+      if (!isProblemEvent(e) || (e.type === "console" && e.level === "warn")) continue;
+      const kind = e.type === "server-error" ? "Server" : e.type === "error" ? "Browser" : e.type === "console" ? "Console" : "Request";
+      const message = e.type === "request" || e.type === "page" ? `${endpointOf(e)} → ${e.error ?? e.status}` : e.text.split("\n")[0].replace(/\d+/g, "#");
+      const key = `${e.dir}|${kind}|${message}`;
+      const g = groups.get(key) ?? groups.set(key, { key, kind, project: e.project, all: [] }).get(key);
+      g.all.push(e);
+    }
+    if (!groups.size) return holder.replaceChildren(stateView("No errors", "Uncaught exceptions, console errors, failed requests and server errors show up here, grouped, with each time they happened."));
+    const list = [...groups.values()].sort((a, b) => Date.parse(b.all[b.all.length - 1].at) - Date.parse(a.all[a.all.length - 1].at));
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "api-list" },
+        list.map((g) => {
+          const last = g.all[g.all.length - 1];
+          const first = g.all[0];
+          return h(
+            "details",
+            { class: "api-group", open: opened.has(g.key) || undefined, ontoggle: (e) => (e.target.open ? opened.add(g.key) : opened.delete(g.key)) },
+            h(
+              "summary",
+              { class: "error-row" },
+              h("span", { class: "badge badge-danger" }, g.kind),
+              h("span", { class: "error-message" }, last.text.split("\n")[0]),
+              many ? h("span", { class: "badge" }, g.project) : null,
+              last.source ? h("span", { class: "dim mono" }, last.source) : null,
+              h("span", { class: "dim" }, `${g.all.length > 1 ? `${g.all.length}× · ` : ""}${g.all.length > 1 ? `first ${relativeTime(Date.parse(first.at))}, ` : ""}last ${relativeTime(Date.parse(last.at))}`),
+            ),
+            h("ul", { class: "activity-list api-calls" }, [...g.all].reverse().slice(0, 20).map((e) => activityRow(e, false, openRows.has(String(e.id))))),
+          );
+        }),
+      ),
+    );
+  }
+
+  /** Console output, newest first; the same line repeated is one row with a count. */
+  function renderConsole(many) {
+    const lines = events.filter((e) => e.type === "console");
+    if (!lines.length) return holder.replaceChildren(stateView("No console output", "console.log, info, warn and error from your app's pages show up here, with the file and line that wrote them."));
+    const rows = [];
+    for (const e of [...lines].reverse()) {
+      const prev = rows[rows.length - 1];
+      if (prev && prev.e.text === e.text && prev.e.level === e.level && prev.e.dir === e.dir) prev.count++;
+      else rows.push({ e, count: 1 });
+    }
+    holder.replaceChildren(
+      h(
+        "ul",
+        { class: "activity-list console-list" },
+        rows.slice(0, 500).map(({ e, count }) => {
+          const row = activityRow(e, many, openRows.has(String(e.id)));
+          if (count > 1) row.querySelector(".activity-text")?.append(h("span", { class: "badge" }, ` ×${count}`));
+          return row;
+        }),
+      ),
+    );
+  }
+
+  function renderSessions(many) {
     // Keep what people opened open when new events come in; the newest visit, and visits with problems, start open.
     const seen = holder.querySelector("[data-group]") !== null;
     const open = new Set([...holder.querySelectorAll("details[open]")].map((d) => d.dataset.id ?? d.dataset.group));
@@ -2213,6 +2721,7 @@ function healthPage(root) {
     const github = h("input", { class: "input", id: "cfg-github", value: config.githubUser ?? "", placeholder: "Guessed from your repos" });
     const depth = h("select", { id: "cfg-depth" }, [1, 2, 3].map((d) => h("option", { value: d, selected: d === config.scanDepth }, d === 1 ? "Only the folders inside" : `${d} levels deep`)));
     const activityOn = h("input", { type: "checkbox", id: "cfg-activity", checked: config.activity !== false });
+    const localhostOn = h("input", { type: "checkbox", id: "cfg-localhost", checked: config.localhostRecording !== false });
     const activityDays = h("select", { id: "cfg-activity-days" }, [1, 3, 7, 14, 30, 90].map((d) => h("option", { value: d, selected: d === (config.activityDays ?? 7) }, plural(d, "day"))));
     const activityMax = h("select", { id: "cfg-activity-max" }, [100, 250, 500, 1000, 2000, 5000].map((mb) => h("option", { value: mb, selected: mb === (config.activityMaxMB ?? 500) }, mb >= 1000 ? `${mb / 1000} GB` : `${mb} MB`)));
     const activityUse = h("span", { class: "field-hint" });
@@ -2227,7 +2736,7 @@ function healthPage(root) {
         class: "card card-pad section",
         onsubmit: async (e) => {
           e.preventDefault();
-          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
+          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
           const r = await busy(save, "Saving…", () => api("/api/config", { method: "POST", body }));
           if (r) toast("Settings saved");
         },
@@ -2258,6 +2767,7 @@ function healthPage(root) {
           { class: "field" },
           h("span", { class: "field-label" }, "Activity history"),
           h("label", { class: "check", for: "cfg-activity" }, activityOn, "Keep a history of requests, routes, clicks, console and errors"),
+          h("label", { class: "check", for: "cfg-localhost" }, localhostOn, "Record apps at localhost:<port> too (dx answers there and moves the dev server)"),
           h("label", { class: "toolbar", for: "cfg-activity-days" }, h("span", { class: "field-hint" }, "Keep it for"), activityDays),
           h("label", { class: "toolbar", for: "cfg-activity-max" }, h("span", { class: "field-hint" }, "At most"), activityMax),
           activityUse,

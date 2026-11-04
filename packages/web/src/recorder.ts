@@ -127,8 +127,9 @@ export function acceptBrowserEvents(raw: string, route: LocalRoute, headless = f
 export function requestActivity(e: TrafficEntry, route: LocalRoute, userAgent = ""): ActivityEvent | undefined {
   const failed = !!e.error || (e.status ?? 0) >= 400;
   if (e.kind === "socket" || (e.kind === "asset" && !failed)) return undefined;
-  // Browsers ask for the icon on every page by themselves; it's not something you did.
-  if (/^\/favicon\.ico(\?|$)/.test(e.path) && !failed) return undefined;
+  // Browsers ask for the icon on every page by themselves; it's not something you did, and an app
+  // without one answers 404. Only a server error there is worth knowing.
+  if (/^\/favicon\.ico(\?|$)/.test(e.path) && (e.status ?? 0) < 500 && !e.error) return undefined;
   return recordActivity({
     dir: route.dir,
     project: route.project,

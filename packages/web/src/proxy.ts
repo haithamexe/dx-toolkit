@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
-import { localRoutes } from "./dev.js";
+import { localRoutes, type LocalRoute } from "./dev.js";
 import { handleRecorderRequest, injector, requestActivity, shouldInject } from "./recorder.js";
 import { recordExchange } from "./traffic.js";
 
@@ -126,79 +126,21 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
     const route = t.host === "dx.localhost" ? undefined : localRoutes().get(t.host);
     // The activity recorder's script and the events it sends are answered here, never forwarded.
     if (route && (req.url ?? "").startsWith("/__dx/") && handleRecorderRequest(req, res, route, `${isSecure(req) ? "https" : "http"}://${req.headers.host}`)) return;
-    const rec = route ? recordExchange(req, route, t.host) : undefined;
-    if (rec) req.on("data", (c: Buffer) => rec.request(c));
-    let done = false;
-    const finish = (error?: string) => {
-      if (done) return;
-      done = true;
-      if (!rec || !route) return;
-      rec.end(error);
-      requestActivity(rec.entry, route, String(req.headers["user-agent"] ?? ""));
-    };
-    const outgoing = headersFor(req, t);
-    // A page the recorder goes into is asked for uncompressed, so the tag can be added as it streams.
-    const wantsPage = !!route && req.method === "GET" && /text\/html/i.test(String(req.headers.accept ?? ""));
-    if (wantsPage) delete outgoing["accept-encoding"];
-    const upstream = http.request(
-      { host: "localhost", port: t.port, method: req.method, path: req.url, headers: outgoing },
-      (up) => {
-        const headers = { ...up.headers };
-        const location = headers.location;
-        if (typeof location === "string") {
-          headers.location = location.replace(new RegExp(`^https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]):${t.port}(?=/|$)`), publicOrigin(t.host, isSecure(req)));
-        }
-        const status = up.statusCode ?? 502;
-        rec?.headers(status, up.headers);
-        const inject = wantsPage && shouldInject(req, status, up.headers);
-        if (inject) delete headers["content-length"];
-        res.writeHead(status, up.statusMessage, headers);
-        if (rec) {
-          up.on("data", (c: Buffer) => rec.response(c));
-          up.on("end", () => finish());
-          up.on("aborted", () => finish("the dev server closed the connection"));
-          res.on("close", () => finish());
-        }
-        if (!inject) return void up.pipe(res);
-        const page = injector((chunk) => res.write(chunk));
-        up.on("data", (c: Buffer) => page.push(c));
-        up.on("end", () => {
-          page.end();
-          res.end();
-        });
-        up.on("aborted", () => res.destroy());
-      },
-    );
-    upstream.on("error", (err) => {
-      const code = (err as NodeJS.ErrnoException).code ?? err.message;
-      finish(code);
-      if (res.headersSent) return res.destroy();
-      page(res, 502, `${t.host} isn't answering`, `The dev server behind it didn't accept the connection (${code}). It may still be starting, or it stopped: the dx dashboard shows its output.`);
+    relay(req, res, {
+      port: t.port,
+      headers: headersFor(req, t),
+      route,
+      label: t.host,
+      publicOrigin: publicOrigin(t.host, isSecure(req)),
+      unreachable: (code) =>
+        page(res, 502, `${t.host} isn't answering`, `The dev server behind it didn't accept the connection (${code}). It may still be starting, or it stopped: the dx dashboard shows its output.`),
     });
-    req.pipe(upstream);
   }
 
   function upgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
     const t = target(req);
     if (!t) return void socket.destroy();
-    const upstream = net.connect({ host: "localhost", port: t.port });
-    upstream.once("connect", () => {
-      const headers = headersFor(req, t);
-      const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
-      for (const [name, value] of Object.entries(headers)) {
-        if (value === undefined) continue;
-        for (const v of Array.isArray(value) ? value : [value]) lines.push(`${name}: ${v}`);
-      }
-      upstream.write(lines.join("\r\n") + "\r\n\r\n");
-      if (head.length) upstream.write(head);
-      socket.pipe(upstream).pipe(socket);
-    });
-    const close = () => {
-      socket.destroy();
-      upstream.destroy();
-    };
-    upstream.on("error", close);
-    socket.on("error", close);
+    pipeUpgrade(req, socket, head, t.port, headersFor(req, t));
   }
 
   function notFound(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -233,6 +175,97 @@ export async function startLocalDomains(options: { dashboardPort: number; ports?
   };
 }
 
+export interface RelayOptions {
+  /** The dev server's port on this computer. */
+  port: number;
+  /** The request's headers as the dev server should get them. */
+  headers: http.OutgoingHttpHeaders;
+  /** When given, the exchange is logged (network log, activity) and the recorder goes into pages. */
+  route?: LocalRoute;
+  /** The address the request came to, for the network log. */
+  label: string;
+  /** Where redirects to the dev server's own address should point instead. */
+  publicOrigin: string;
+  /** Answers the browser when the dev server doesn't take the connection. */
+  unreachable(code: string): void;
+}
+
+/**
+ * Passes one request to a dev server on this computer and its answer back. With a route, the
+ * exchange is recorded and HTML pages get the activity recorder as they stream through.
+ */
+export function relay(req: http.IncomingMessage, res: http.ServerResponse, o: RelayOptions): void {
+  const { route } = o;
+  const rec = route ? recordExchange(req, route, o.label) : undefined;
+  if (rec) req.on("data", (c: Buffer) => rec.request(c));
+  let done = false;
+  const finish = (error?: string) => {
+    if (done) return;
+    done = true;
+    if (!rec || !route) return;
+    rec.end(error);
+    requestActivity(rec.entry, route, String(req.headers["user-agent"] ?? ""));
+  };
+  const outgoing = { ...o.headers };
+  // A page the recorder goes into is asked for uncompressed, so the tag can be added as it streams.
+  const wantsPage = !!route && req.method === "GET" && /text\/html/i.test(String(req.headers.accept ?? ""));
+  if (wantsPage) delete outgoing["accept-encoding"];
+  const upstream = http.request({ host: "localhost", port: o.port, method: req.method, path: req.url, headers: outgoing }, (up) => {
+    const headers = { ...up.headers };
+    const location = headers.location;
+    if (typeof location === "string") {
+      headers.location = location.replace(new RegExp(`^https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]):${o.port}(?=/|$)`), o.publicOrigin);
+    }
+    const status = up.statusCode ?? 502;
+    rec?.headers(status, up.headers);
+    const inject = wantsPage && shouldInject(req, status, up.headers);
+    if (inject) delete headers["content-length"];
+    res.writeHead(status, up.statusMessage, headers);
+    if (rec) {
+      up.on("data", (c: Buffer) => rec.response(c));
+      up.on("end", () => finish());
+      up.on("aborted", () => finish("the dev server closed the connection"));
+      res.on("close", () => finish());
+    }
+    if (!inject) return void up.pipe(res);
+    const html = injector((chunk) => res.write(chunk));
+    up.on("data", (c: Buffer) => html.push(c));
+    up.on("end", () => {
+      html.end();
+      res.end();
+    });
+    up.on("aborted", () => res.destroy());
+  });
+  upstream.on("error", (err) => {
+    const code = (err as NodeJS.ErrnoException).code ?? err.message;
+    finish(code);
+    if (res.headersSent) return res.destroy();
+    o.unreachable(code);
+  });
+  req.pipe(upstream);
+}
+
+/** Passes a WebSocket upgrade (live reload) to a dev server on this computer, both ways. */
+export function pipeUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer, port: number, headers: http.OutgoingHttpHeaders): void {
+  const upstream = net.connect({ host: "localhost", port });
+  upstream.once("connect", () => {
+    const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
+    for (const [name, value] of Object.entries(headers)) {
+      if (value === undefined) continue;
+      for (const v of Array.isArray(value) ? value : [value]) lines.push(`${name}: ${v}`);
+    }
+    upstream.write(lines.join("\r\n") + "\r\n\r\n");
+    if (head.length) upstream.write(head);
+    socket.pipe(upstream).pipe(socket);
+  });
+  const close = () => {
+    socket.destroy();
+    upstream.destroy();
+  };
+  upstream.on("error", close);
+  socket.on("error", close);
+}
+
 function hostname(host: string | undefined): string {
   return String(host ?? "")
     .toLowerCase()
@@ -243,7 +276,7 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
-function page(res: http.ServerResponse, status: number, title: string, text: string, links: string[] = []): void {
+export function page(res: http.ServerResponse, status: number, title: string, text: string, links: string[] = []): void {
   const items = links.map((l) => `<li><a href="${escapeHtml(l)}">${escapeHtml(l)}</a></li>`).join("");
   res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
   res.end(
@@ -254,7 +287,7 @@ function page(res: http.ServerResponse, status: number, title: string, text: str
 }
 
 /** Listens on host:port, or resolves undefined when the port is taken or not allowed. */
-function listen(server: net.Server, port: number, host: string): Promise<number | undefined> {
+export function listen(server: net.Server, port: number, host: string): Promise<number | undefined> {
   return new Promise((resolve) => {
     const onError = () => {
       server.removeListener("listening", onListening);

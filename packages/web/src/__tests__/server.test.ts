@@ -150,6 +150,42 @@ test("settings: validates and saves", async () => {
   assert.equal((await api("/api/config", { method: "POST", body: { activity: true, activityDays: 7 } })).json.activity, true);
 });
 
+test("env & secrets: lists .env files, reads and saves only those, and fixes .gitignore", async () => {
+  const envApp = path.join(root, "env-app");
+  fs.mkdirSync(path.join(envApp, "apps", "web"), { recursive: true });
+  fs.writeFileSync(path.join(envApp, "package.json"), JSON.stringify({ name: "env-app" }));
+  fs.writeFileSync(path.join(envApp, ".env"), "API_KEY=first-value\n");
+  fs.writeFileSync(path.join(envApp, ".env.example"), "API_KEY=\n");
+  fs.writeFileSync(path.join(envApp, "apps", "web", ".env.local"), "X=1\n");
+
+  const all = (await api("/api/env/all")).json as { name: string; problems: number; files: { name: string }[]; gitignore: boolean }[];
+  const mine = all.find((p) => p.name === "env-app")!;
+  assert.deepEqual(mine.files.map((f) => f.name), [".env", ".env.example", "apps/web/.env.local"]);
+  assert.equal(mine.gitignore, false);
+  assert.ok(mine.problems > 0);
+  assert.ok(!JSON.stringify(all).includes("first-value"), "the list never carries values");
+
+  const read = await api(`/api/env/file?dir=${encodeURIComponent(envApp)}&name=.env`);
+  assert.equal(read.json.content, "API_KEY=first-value\n");
+  for (const bad of ["package.json", "../env-app/.env", "apps/../../tiny-app/.env"]) {
+    assert.equal((await api(`/api/env/file?dir=${encodeURIComponent(envApp)}&name=${encodeURIComponent(bad)}`)).status, 400, bad);
+  }
+  assert.equal((await api(`/api/env/file?dir=${encodeURIComponent(path.join(root, "nowhere"))}&name=.env`)).status, 404, "only known projects");
+
+  const saved = await api("/api/env/file", { method: "POST", body: { dir: envApp, name: ".env", content: "API_KEY=second-value\n" } });
+  assert.equal(saved.status, 200);
+  assert.equal(fs.readFileSync(path.join(envApp, ".env"), "utf8"), "API_KEY=second-value\n");
+  assert.equal((await api("/api/env/file", { method: "POST", body: { dir: envApp, name: "package.json", content: "{}" } })).status, 400);
+  const runs = fs.readFileSync(path.join(home, "runs.jsonl"), "utf8");
+  assert.ok(runs.includes("env-app: saved .env") && !runs.includes("second-value"), "the run log names the file, never its values");
+
+  const fixed = await api("/api/env/gitignore", { method: "POST", body: { dir: envApp, patterns: [".env", ".env.*", "*.pem", "rm -rf /"] } });
+  assert.deepEqual(fixed.json.added, [".env", ".env.*", "*.pem", "!.env.example"]);
+  const after = (await api(`/api/env/project?dir=${encodeURIComponent(envApp)}`)).json;
+  assert.equal(after.gitignore, true);
+  assert.ok(after.rules.find((r: { pattern: string }) => r.pattern === ".env").covered);
+});
+
 test("runs a dev server, streams its output, notices the URL it prints, and stops it", async () => {
   const start = await api("/api/dev/start", { method: "POST", body: { dir: app } });
   assert.equal(start.status, 200);
@@ -172,7 +208,7 @@ test("runs a dev server, streams its output, notices the URL it prints, and stop
   const newer = (await api(`/api/dev/logs?dir=${encodeURIComponent(app)}&after=${logs.server.lastLine}`)).json;
   assert.equal(newer.lines.length, 0, "only lines after the given number");
 
-  const listed = (await api("/api/projects")).json[0];
+  const listed = (await api("/api/projects")).json.find((p: { name: string }) => p.name === "tiny-app");
   assert.equal(listed.dev.status, "ready");
 
   assert.equal(server.startedBy, "dashboard");

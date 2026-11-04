@@ -4,6 +4,21 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **Env & secrets page**: every project's `.env` files, subfolders included. See one with its values hidden until you ask, edit and save it, or open it in your editor. Warnings for `.env` files git would commit or already has, projects with no `.gitignore`, `.env.example` ignored by mistake, and keys in committed files. What `.gitignore` is missing to keep secrets out of git, following OWASP (`.env`, `.env.*`, private keys, certificates, keystores, SSH keys), with an **Add to .gitignore** button. `dx env --gitignore` does the same from the terminal, and `check_env` tells AI agents.
+- **Apps are recorded at `localhost:<port>` too, in any browser.** When dx starts an app whose tool it knows (Vite, Next.js, Astro, Nuxt, Angular, webpack, Gatsby, Create React App), it answers at the usual address itself and runs the dev server on a free port behind it. Requests, clicks, routes, console and errors are in the activity history there as at `.localhost`; live reload passes through. `"localhostRecording": false` turns it off.
+- **Activity views**: **Sessions**, **APIs** (each endpoint with its calls, payloads, responses, average and slowest time, failures), **Errors** (grouped, with counts and where in the code) and **Console** (repeats folded), with each project's visits, API calls and problems at the top.
+
+### Changed
+
+- The dev server's own console chatter (`[vite] connected.`, `[HMR]` and the like) isn't recorded; its warnings and errors still are.
+- A missing `/favicon.ico` (404) isn't counted as a failed request any more.
+
+### Fixed
+
+- **Clear history** on the Activity page did nothing after you confirmed it.
+
 ## 1.3.0 (2026-11-04)
 
 dx now keeps a history of what happens in your apps (requests, clicks, routes, console and errors), can replay a visit to reproduce a bug, and opens projects in the terminal you pick. Your AI agent can also run your tests, read the network log, click through pages and query the development database. Update with `npm install -g dx-devkit@latest`.
