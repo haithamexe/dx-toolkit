@@ -93,6 +93,7 @@ export function acceptBrowserEvents(raw: string, route: LocalRoute, headless = f
       source: str(e.source, 500),
       stack: str(e.stack, 8000),
     };
+    if (type === "action" && typeof e.target === "string" && e.target) base.target = e.target.slice(0, 300);
     if (type === "console") base.level = level ?? "log";
     if (type === "error") base.level = "error";
     if (type === "request") {

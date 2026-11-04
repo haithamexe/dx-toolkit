@@ -76,7 +76,7 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 |---|---|
 | **Projects** | Search your projects; **Run** a dev server right in the page and watch its output live, open it in the browser when it's ready, **Stop** it; see its **errors** with file and line, and open your editor at that line; **Check page** loads it in a headless browser and lists exceptions, console errors and failed requests; **Requests** shows what the app sent through its `.localhost` address and what came back; see servers your AI agent started; **work that isn't backed up** across all projects; **leave a note** on a project for next time; **check its .env** and look for committed keys; **run its tests** and see each failure with file, line, expected and actual; open a project in your editor, in **a terminal** (pick which one at the top of the page: Windows Terminal, PowerShell, Git Bash, iTerm2, Warp, Ghostty and others, whichever you have) or in File Explorer; run its dev server in a terminal window; save one as a template |
 | **New project** | Create a project from a template or a copy of another, with git and packages installed; or **clone a repository** and get it ready to run |
-| **Activity** | Everything that happened in your apps, newest first, live: requests with their payloads and responses, pages and route changes, clicks, console output, browser errors, and the dev server starting, stopping and failing. Filter by project, kind or time, search payloads and messages, open an error at its line in your editor. See [The activity history](#the-activity-history) |
+| **Activity** | Everything that happened in your apps, newest first, live, grouped by visit: requests with their payloads and responses, pages and route changes, clicks, console output, browser errors, and the dev server starting, stopping and failing. Filter by project, kind or time, search payloads and messages, open an error at its line in your editor. **Copy as bug report** on any error; **Replay** a visit to click through it again in a headless browser. See [The activity history](#the-activity-history) |
 | **Ports** | See what's listening and stop it (it asks first, naming the process) |
 | **Journal** | Add what you did, read back 7, 30 or 90 days |
 | **Summary** | Your week: commits, pull requests, journal, where the time went, uncommitted work; copy it as markdown or save it. **This year** gives the year in review |
@@ -106,11 +106,20 @@ Every app you open at its `.localhost` address (the address `dx up`, `dx go` and
 - **Console output** (`console.log`, `warn`, `error`) with the file and line that wrote it, and **uncaught errors** with their stack;
 - the **dev server** starting, getting ready, stopping and crashing, and each **error it printed**.
 
-See it on the **Activity** page, with `dx activity`, or ask your AI agent (`activity_log`). Nothing to set up:
+![The Activity page: a visit to a shop app with its 2 clicks and 3 problems: the click on Add to cart, the route to /cart, the POST /api/cart answered 409, the console error and the uncaught TypeError that followed, with a Replay button; above it, a note that todo-app is running but hasn't been opened at its .localhost address.](docs/images/activity.png)
+
+See it on the **Activity** page, with `dx activity`, or ask your AI agent (`activity_log`). On the Activity page:
+
+- **Visits**: each page load in a tab, with everything that followed it: the clicks, the requests they set off, and the errors in the browser and on the server.
+- **Copy as bug report** on an error copies markdown for an issue or an AI chat: the steps that led there, what went wrong, each request with what was sent and returned, and the stack.
+- **Replay** a visit: dx opens the page it started on in a headless browser, clicks what you clicked in the same order, and lists what broke. Run it again after a fix to see the problem gone. Your AI agent can do the same with `replay_visit`. What you typed isn't recorded, so fields stay empty.
+
+Nothing to set up:
 
 - **How it's recorded.** Requests go through the local domains proxy, which logs them. For the browser side, the proxy adds one `<script>` tag to your app's HTML pages, served from your app's own address. Browser dev tools leave it out of stack traces, so `console.log` still shows your file and line. Requests the page makes to `localhost:<port>` or other addresses are recorded by that script.
 - **Only what you open at `.localhost`.** `localhost:5173` is the dev server directly, and nothing passes through dx there.
-- **Private.** Passwords, tokens, cookies and API keys are masked before anything is written. It's kept in `~/.dx/activity`, readable by you only, for 7 days (`activityDays` in the settings). Only the page itself can add to its history; no other website can. `dx activity --clear` or **Clear history** deletes it.
+- **Private.** Passwords, tokens, cookies and API keys are masked before anything is written. It's kept in `~/.dx/activity`, readable by you only, for 7 days (`activityDays` in the settings).
+- **Bounded.** At most 500 MB in all (`activityMaxMB`), the oldest days going first. A project's day keeps everything up to 100 MB; past that, events are kept without their bodies, and past 200 MB only errors are kept. An app that polls every second can't fill your disk. Health & settings shows how much it takes. Only the page itself can add to its history; no other website can. `dx activity --clear` or **Clear history** deletes it.
 - **Off**: untick it in Health & settings, or set `"activity": false`. Pages are then served exactly as your dev server sends them.
 
 ---
@@ -343,7 +352,7 @@ Created on first run, with the code folders and editor dx found:
 ```
 
 - **`terminal`**: the terminal projects open in, by id (`dx terminal --list`). Without it: Windows Terminal, else Command Prompt, on Windows; Terminal on macOS; the system default on Linux.
-- **`activity`** / **`activityDays`**: `false` turns the activity history off (pages are then left exactly as the dev server sends them); a number keeps that many days instead of 7.
+- **`activity`** / **`activityDays`** / **`activityMaxMB`**: `false` turns the activity history off (pages are then left exactly as the dev server sends them); a number of days to keep instead of 7; and how many megabytes it may take in all instead of 500.
 - **`localDomains`** / **`localDomainsPort`**: `false` turns `*.localhost` addresses off; a number picks their port instead of 80 (or 1355).
 - **`aiToolsSeen`**: the AI tools dx has connected itself to once. A tool you disconnect stays disconnected. Set `"autoConnectAi": false` to stop dx connecting itself to new ones (`dx setup --undo` does both).
 
@@ -399,6 +408,7 @@ Ask your agent to work on a project and check its own work, for example *"Start 
 | `run_tests` | Runs the project's tests and returns each failure with its name, file and line, and expected against actual; `match` reruns just the ones being fixed |
 | `network_log` | The requests the app made through its `.localhost` address, with status, timing and bodies (credentials masked): what the front end sent the API, and what came back |
 | `activity_log` | What happened in the app, in order: what the user clicked, the routes they went through, each request with its payload and response, console output and errors in the browser and on the server. Ask *"I clicked checkout and nothing happened, why?"* and the agent reads the steps that led there |
+| `replay_visit` | Does what you did again in a headless browser: opens the page a visit started on, clicks what you clicked, and reports what broke. The agent reproduces your bug, fixes it, and replays it to confirm |
 | `db_query` | A read-only query against the project's development database (Postgres, MySQL/MariaDB, Redis in docker-compose), to check what an action actually stored |
 | `resume_project`, `leave_note` | Where things were left in a project (branch, what ran, open errors, commits since, the last note), and a note for next time. Ask *"carry on with todo-app"* and the agent starts from there |
 | `dx_setup_check` | dx's health checks, each problem with the command that fixes it, so the agent can fix your setup for you |

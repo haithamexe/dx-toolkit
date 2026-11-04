@@ -43,6 +43,8 @@ export interface DxConfig {
   activity?: boolean;
   /** Days of activity history to keep (default 7). */
   activityDays?: number;
+  /** Megabytes the activity history may take in all (default 500); the oldest days go first. */
+  activityMaxMB?: number;
   /** The terminal projects open in, by id (`dx terminal --list`); the first one found when unset. */
   terminal?: string;
 }

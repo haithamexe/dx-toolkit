@@ -5,7 +5,23 @@ import path from "node:path";
 import { test } from "node:test";
 
 process.env.DX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "dx-activity-test-"));
-const { activityFolder, appendActivity, clearActivity, formatActivity, isProblem, nextActivityId, parseSince, pruneActivity, readActivity, listTerminals, terminalIds } = await import("../index.js");
+const {
+  activityFolder,
+  activityUsage,
+  appendActivity,
+  bugReport,
+  clearActivity,
+  formatActivity,
+  isProblem,
+  nextActivityId,
+  parseSince,
+  pruneActivity,
+  readActivity,
+  replayFromVisit,
+  reportContext,
+  listTerminals,
+  terminalIds,
+} = await import("../index.js");
 type Ev = import("../index.js").ActivityEvent;
 
 const shop = path.join(os.tmpdir(), "dx-activity-shop");
@@ -75,6 +91,92 @@ test("a line cut short is skipped, and old days are deleted", () => {
   assert.deepEqual(readActivity({ dir: shop }).map((e) => e.text), ["today"]);
   clearActivity(shop);
   assert.equal(readActivity().length, 0);
+});
+
+test("a day that reaches its limit keeps events without bodies, then only problems; the total is capped too", () => {
+  clearActivity();
+  const at = new Date();
+  const big = "x".repeat(4000);
+  appendActivity([ev(shop, at, { type: "request", text: "GET /api/poll → 200", responseBody: big, from: "proxy" })], 3000);
+  appendActivity([ev(shop, at, { type: "request", text: "GET /api/poll → 200", responseBody: big, requestHeaders: { accept: "*/*" }, from: "proxy" })], 3000);
+  let list = readActivity({ dir: shop });
+  assert.equal(list.length, 2);
+  assert.equal(list[0].responseBody, big, "under the limit: kept whole");
+  assert.equal(list[1].responseBody, undefined, "over it: without bodies");
+  assert.equal(list[1].requestHeaders, undefined);
+  assert.equal(list[1].trimmed, true);
+  appendActivity(
+    [
+      ev(shop, at, { type: "request", text: "GET /api/poll → 200", from: "proxy" }),
+      ev(shop, at, { type: "error", text: "Uncaught TypeError", stack: big }),
+    ],
+    2000,
+  );
+  list = readActivity({ dir: shop });
+  assert.deepEqual(list.slice(2).map((e) => e.type), ["error"], "past twice the limit: only problems");
+  assert.equal(list[2].stack, undefined);
+
+  const usage = activityUsage();
+  assert.equal(usage.projects.length, 1);
+  assert.equal(usage.projects[0].project, "dx-activity-shop");
+  assert.ok(usage.bytes > 4000);
+
+  // Over the total: the oldest days go first.
+  const old = new Date(at.getTime() - 2 * 86_400_000);
+  appendActivity([ev(blog, old, { text: "two days ago", stack: big })]);
+  const removed = pruneActivity(7, new Date(), usage.bytes + 100);
+  assert.equal(removed, 1);
+  assert.deepEqual(readActivity({ dir: blog }), []);
+  assert.equal(readActivity({ dir: shop }).length, 3, "today's is kept");
+  clearActivity();
+});
+
+test("a bug report: the steps, what went wrong, the requests, the stack", () => {
+  clearActivity();
+  const t = Date.now();
+  const at = (ms: number) => new Date(t - 60_000 + ms);
+  const visit = "abcdefgh" + (t - 60_000).toString(36);
+  appendActivity([
+    ev(shop, at(0), { type: "page", text: "GET / → 200", url: "/", from: "proxy" }),
+    ev(shop, at(100), { type: "action", text: "Clicked button “Add to cart”", target: "#add", visit, page: "http://shop.localhost/" }),
+    ev(shop, at(150), { type: "route", text: "/ → /cart", visit, page: "http://shop.localhost/cart" }),
+    ev(shop, at(200), { type: "request", text: "POST /api/cart → 409", method: "POST", status: 409, requestBody: '{"id":7,"password":"•••"}', responseBody: '{"error":"Only 1 left"}', from: "proxy" }),
+    ev(shop, at(300), { type: "error", level: "error", text: "Uncaught TypeError: Cannot read properties of null (reading 'items')", stack: "TypeError: …\n    at /src/cart.ts:12:5", source: "/src/cart.ts:12:5", visit, page: "http://shop.localhost/cart" }),
+    ev(blog, at(310), { type: "action", text: "Clicked link “Other project”" }),
+  ]);
+  const target = readActivity({ dir: shop, types: ["error"] })[0];
+  const { target: found, events } = reportContext(shop, target.id);
+  assert.equal(found?.id, target.id);
+  assert.ok(!events.some((e) => e.dir === blog), "only this project");
+  const md = bugReport(found!, events);
+  assert.match(md, /^## Uncaught TypeError: Cannot read properties of null \(reading 'items'\)/);
+  assert.match(md, /- \*\*Where in the code\*\*: `\/src\/cart\.ts:12:5`/);
+  assert.match(md, /### Steps\n\n1\. Opened \/\n2\. Clicked button “Add to cart”\n3\. Went \/ → \/cart/);
+  assert.match(md, /- \*\*Request failed\*\* at .*: POST \/api\/cart → 409/);
+  assert.match(md, /"password": "•••"/);
+  assert.match(md, /"error": "Only 1 left"/);
+  assert.match(md, /### Stack: Uncaught TypeError/);
+  assert.equal(reportContext(shop, 12345).target, undefined);
+  clearActivity();
+});
+
+test("replay: the page a visit started on, its clicks, and waiting where a click changed the address", () => {
+  const t = new Date();
+  const visit = [
+    ev(shop, t, { type: "action", text: "Clicked button “Add to cart”", target: "#add", page: "http://shop.localhost/" }),
+    ev(shop, new Date(t.getTime() + 50), { type: "route", text: "/ → /cart", page: "http://shop.localhost/cart" }),
+    ev(shop, new Date(t.getTime() + 100), { type: "console", text: "added", page: "http://shop.localhost/cart" }),
+    ev(shop, new Date(t.getTime() + 200), { type: "action", text: "Clicked link “Checkout” (/checkout)", page: "http://shop.localhost/cart" }),
+    ev(shop, new Date(t.getTime() + 300), { type: "action", text: "Submitted form “login” (POST /login)", page: "http://shop.localhost/checkout" }),
+    ev(shop, new Date(t.getTime() + 400), { type: "route", text: "/checkout → /cart (back or forward)", page: "http://shop.localhost/cart" }),
+    ev(shop, new Date(t.getTime() + 500), { type: "request", text: "GET /api/x → 200", from: "proxy" }),
+  ];
+  const r = replayFromVisit(visit);
+  assert.ok(r);
+  assert.equal(r.url, "http://shop.localhost/");
+  assert.deepEqual(r.steps, [{ click: "#add" }, { waitFor: "url=/cart" }, { click: "text=Checkout" }]);
+  assert.equal(r.notes.length, 2, JSON.stringify(r.notes));
+  assert.equal(replayFromVisit([ev(shop, t, { type: "request", text: "GET / → 200", from: "proxy" })]), undefined, "nothing from the page itself");
 });
 
 test("since reads durations, days, times and dates", () => {

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { activityMatcher, appendActivity, byTime, loadConfig, nextActivityId, pruneActivity, readActivity, type ActivityEvent, type ActivityQuery } from "@dx/core";
+import { activityMatcher, appendActivity, byTime, loadConfig, TOTAL_LIMIT_BYTES, nextActivityId, pruneActivity, readActivity, type ActivityEvent, type ActivityQuery } from "@dx/core";
 
 /**
  * The dashboard's side of the activity history (core's activity.ts): events come in from the
@@ -13,22 +13,24 @@ const RECENT = 2000;
 const recent: ActivityEvent[] = [];
 let queue: ActivityEvent[] = [];
 let timer: NodeJS.Timeout | undefined;
-let settings: { at: number; on: boolean; days: number } | undefined;
+let settings: { at: number; on: boolean; days: number; maxBytes: number } | undefined;
 let prunedAt = 0;
 
 /** Whether history is kept, and for how long. Read from the config at most every few seconds. */
-export function activitySettings(): { on: boolean; days: number } {
+export function activitySettings(): { on: boolean; days: number; maxBytes: number } {
   if (!settings || Date.now() - settings.at > 5000) {
     let on = true;
     let days = 7;
+    let maxBytes = TOTAL_LIMIT_BYTES;
     try {
       const config = loadConfig();
       on = config.activity !== false;
       days = Math.max(1, Math.min(365, Math.round(config.activityDays ?? 7)));
+      if (config.activityMaxMB) maxBytes = Math.max(50, Math.min(100_000, Math.round(config.activityMaxMB))) * 1024 * 1024;
     } catch {
       // unreadable config: the defaults
     }
-    settings = { at: Date.now(), on, days };
+    settings = { at: Date.now(), on, days, maxBytes };
   }
   return settings;
 }
@@ -69,7 +71,8 @@ export function flushActivity(): void {
   if (Date.now() - prunedAt > 3_600_000) {
     prunedAt = Date.now();
     try {
-      pruneActivity(activitySettings().days);
+      const s = activitySettings();
+      pruneActivity(s.days, new Date(), s.maxBytes);
     } catch {
       // try again in an hour
     }

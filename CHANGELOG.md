@@ -19,7 +19,11 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
   - console output with the line that wrote it, and uncaught errors;
   - the dev server starting, stopping and printing errors.
 
-  Passwords, tokens and cookies are masked. It's on the new **Activity** page (live, filtered by project, kind and time, searchable), in `dx activity` (`-f` to follow, `--problems`, `-q`, `-b` for payloads), and the `activity_log` MCP tool. The browser side comes from a small script the local domains proxy adds to the app's HTML pages. Turn it off with `"activity": false`, or in Health & settings.
+  Passwords, tokens and cookies are masked. It's on the new **Activity** page (live, grouped by visit, filtered by project, kind and time, searchable), in `dx activity` (`-f` to follow, `--problems`, `-q`, `-b` for payloads), and the `activity_log` MCP tool. The browser side comes from a small script the local domains proxy adds to the app's HTML pages. Turn it off with `"activity": false`, or in Health & settings.
+- **Copy as bug report** on any error in the Activity page: markdown with the steps that led there, what went wrong, each request with what was sent and returned, and the stack.
+- **Replay a visit**: dx opens the page it started on in a headless browser and clicks what you clicked, in order, then lists what broke. On the Activity page, and for AI agents as the `replay_visit` MCP tool, to reproduce a bug and confirm its fix.
+- **The activity history has a size limit**: 500 MB in all (`activityMaxMB`), the oldest days going first; past 100 MB in a project's day, events are kept without bodies, and past 200 MB only errors. Health & settings shows how much it takes.
+- **A hint on the Activity page** when a running app has nothing from its browser side, which usually means it's open at `localhost:<port>`: it says which `.localhost` address to open instead.
 - **Open a project in a terminal, in the terminal you pick**: a **Terminal** button on every project, and a dropdown at the top of the Projects page (and in Health & settings) listing the terminals installed on the computer: Windows Terminal, PowerShell, Command Prompt, Git Bash, WezTerm and Alacritty on Windows; Terminal, iTerm2, Warp, Ghostty, kitty, WezTerm and Alacritty on macOS; the usual ones on Linux. `dx terminal <project>` opens one; `dx terminal --list` and `--use <id>` pick it. **Run in a terminal window** and `dx go -w` use the same choice.
 
 ### Changed

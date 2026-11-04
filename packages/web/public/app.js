@@ -1361,8 +1361,12 @@ function activityPage(root) {
   let projects = [];
   let stopped = false;
   let searchTimer = 0;
+  const replays = new Map(); // visit key -> what its last replay found
 
   const holder = h("div", { class: "card" }, loadingView("Reading the history…"));
+  const hint = h("div", { class: "section", "aria-live": "polite" });
+  const kindPicker = segmented("Show", ACTIVITY_KINDS, kind, (v) => ((kind = v), setPref("activityKind", v), load()));
+  kindPicker.classList.add("segmented-wrap");
   const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("activityDir", dir), load()) }, h("option", { value: "" }, "All projects"));
   const searchInput = h("input", {
     class: "input input-wide",
@@ -1397,9 +1401,41 @@ function activityPage(root) {
       segmented("Since", [["1h", "Last hour"], ["today", "Today"], ["7d", "7 days"]], since, (v) => ((since = v), setPref("activitySince", v), load())),
       clear,
     ),
-    h("div", { class: "card card-pad toolbar" }, segmented("Show", ACTIVITY_KINDS, kind, (v) => ((kind = v), setPref("activityKind", v), load())), searchInput),
+    h("div", { class: "card card-pad toolbar" }, kindPicker, searchInput),
+    hint,
     holder,
   );
+
+  /**
+   * A running app with nothing from its browser side is usually open at localhost:<port>,
+   * which dx doesn't see: say where to open it instead.
+   */
+  async function updateHint() {
+    let running = [];
+    try {
+      running = await api("/api/dev");
+    } catch {
+      return;
+    }
+    const recorded = new Set(events.filter((e) => e.from === "browser").map((e) => e.dir.toLowerCase()));
+    const missing = running.filter((s) => s.localUrl && s.status === "ready" && !recorded.has(s.dir.toLowerCase()) && (!dir || s.dir === dir));
+    hint.replaceChildren(
+      ...missing.slice(0, 3).map((s) =>
+        h(
+          "div",
+          { class: "note" },
+          icon("info"),
+          h(
+            "p",
+            null,
+            `Nothing from ${s.project}'s browser side yet. Open it at `,
+            h("a", { href: s.localUrl, target: "_blank", rel: "noreferrer", class: "mono" }, s.localUrl.replace(/^https?:\/\//, "")),
+            ` to record its clicks, routes and console${s.url ? `; at ${s.url.replace(/^https?:\/\//, "")} dx doesn't see it` : ""}.`,
+          ),
+        ),
+      ),
+    );
+  }
 
   function query(extra = {}) {
     const q = new URLSearchParams({ limit: "500", ...extra });
@@ -1415,6 +1451,7 @@ function activityPage(root) {
       events = await api(`/api/activity?${query({ since })}`);
       lastId = Math.max(lastId, ...events.map((e) => e.id));
       render();
+      void updateHint();
     } catch (err) {
       holder.replaceChildren(errorView(err, load));
     }
@@ -1430,6 +1467,7 @@ function activityPage(root) {
           events = [...events, ...next].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id).slice(-2000);
           lastId = Math.max(lastId, ...next.map((e) => e.id));
           render();
+          if (hint.childElementCount) void updateHint();
         }
       } catch {
         // the next poll tries again
@@ -1451,20 +1489,154 @@ function activityPage(root) {
       );
       return;
     }
-    const byDay = new Map();
-    for (const e of events) {
-      const d = new Date(e.at);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      (byDay.get(key) ?? byDay.set(key, []).get(key)).push(e);
-    }
     const many = !dir && new Set(events.map((e) => e.dir)).size > 1;
-    // Keep the rows people opened open when new ones come in.
-    const open = new Set([...holder.querySelectorAll("details[open]")].map((d) => d.dataset.id));
+    // Keep what people opened open when new events come in; the newest visit, and visits with problems, start open.
+    const seen = holder.querySelector("[data-group]") !== null;
+    const open = new Set([...holder.querySelectorAll("details[open]")].map((d) => d.dataset.id ?? d.dataset.group));
+    const groups = visitsOf(events);
+    const byDay = new Map();
+    for (const g of groups) {
+      const d = new Date(g.events[0].at);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      (byDay.get(key) ?? byDay.set(key, []).get(key)).push(g);
+    }
+    const newest = groups[groups.length - 1]?.key;
     holder.replaceChildren(
       ...[...byDay.entries()].reverse().map(([day, list]) =>
-        h("section", { class: "day" }, h("h2", { class: "day-title" }, dayLabel(day)), h("ul", { class: "activity-list" }, [...list].reverse().map((e) => activityRow(e, many, open.has(String(e.id)))))),
+        h(
+          "section",
+          { class: "day" },
+          h("h2", { class: "day-title" }, dayLabel(day)),
+          [...list].reverse().map((g) => visitView(g, many, seen ? open.has(g.key) : g.key === newest || g.problems > 0, open)),
+        ),
       ),
     );
+  }
+
+  /**
+   * Events in groups: a visit is one page load in one tab and what followed it (the page's own
+   * events carry its id; requests and server errors join the visit they happened in), and the
+   * dev server's own lines are a group of their own.
+   */
+  function visitsOf(list) {
+    const groups = [];
+    const current = new Map(); // dir -> the open group
+    const byVisit = new Map(); // visit id -> its group
+    const start = (e, extra) => {
+      const g = { key: `g${e.id}`, dir: e.dir, project: e.project, events: [], problems: 0, ...extra };
+      groups.push(g);
+      current.set(e.dir, g);
+      return g;
+    };
+    for (const e of list) {
+      let g = current.get(e.dir);
+      const last = g?.events[g.events.length - 1];
+      const recent = last && Date.parse(e.at) - Date.parse(last.at) < 30_000;
+      if (e.type === "server") {
+        if (g?.kind !== "server") g = start(e, { kind: "server" });
+      } else if (e.visit) {
+        const known = byVisit.get(e.visit);
+        if (known) {
+          g = known;
+          current.set(e.dir, g);
+        } else if (g && g.kind === "visit" && !g.visit && recent) g.visit = e.visit; // the page load that started it
+        else g = start(e, { kind: "visit", visit: e.visit });
+        byVisit.set(e.visit, g);
+      } else if (e.type === "page") {
+        // A page load starts a visit, unless one has just started and its page hasn't spoken yet.
+        const starting = g?.kind === "visit" && !g.visit && last && Date.parse(e.at) - Date.parse(last.at) < 5000;
+        if (!starting) g = start(e, { kind: "visit" });
+      } else if (!g || g.kind === "server" || !recent) {
+        g = start(e, { kind: "requests" });
+      }
+      g.events.push(e);
+      if (isProblemEvent(e)) g.problems++;
+    }
+    // A visit's id is the right key once known: it stays the same as events come in.
+    for (const g of groups) if (g.visit) g.key = `v${g.visit}`;
+    return groups;
+  }
+
+  function visitView(g, many, isOpen, open) {
+    const first = g.events[0];
+    const last = g.events[g.events.length - 1];
+    const time = (e) => new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const pageOf = first.type === "page" ? first.url : g.events.find((e) => e.page)?.page;
+    let path = "";
+    try {
+      path = pageOf ? new URL(pageOf, "http://x").pathname : "";
+    } catch {
+      path = pageOf ?? "";
+    }
+    const title = g.kind === "server" ? "Dev server" : g.kind === "requests" ? "Requests" : `Visit${path ? ` to ${path}` : ""}`;
+    const clicks = g.events.filter((e) => e.type === "action" && e.text.startsWith("Clicked")).length;
+    const fromCheck = g.events.some((e) => e.from === "check") && !g.events.some((e) => e.from === "browser");
+    const result = h("div", { class: "visit-result" }, replays.get(g.key) ?? null);
+    const actions = [];
+    if (g.visit && clicks && !fromCheck) {
+      actions.push(
+        btn("Replay", (ev) => replay(ev.currentTarget, g), {
+          small: true,
+          iconName: "play",
+          title: "Open the page in a headless browser and click what was clicked here, in order, then list what broke",
+          name: `Replay this visit to ${path || g.project}`,
+        }),
+      );
+    }
+    return h(
+      "details",
+      { class: "visit", open: isOpen || undefined, dataset: { group: g.key } },
+      h(
+        "summary",
+        { class: "visit-head" },
+        h("span", { class: "time" }, first === last || time(first) === time(last) ? time(first) : `${time(first)}–${time(last)}`),
+        h("strong", { class: "visit-title" }, title),
+        many ? h("span", { class: "badge" }, g.project) : null,
+        fromCheck ? h("span", { class: "badge" }, "headless check") : null,
+        h("span", { class: "dim" }, `${plural(g.events.length, "event")}${clicks ? `, ${plural(clicks, "click")}` : ""}`),
+        g.problems ? h("span", { class: "badge badge-danger" }, plural(g.problems, "problem")) : null,
+      ),
+      actions.length ? h("div", { class: "toolbar visit-actions" }, actions) : null,
+      result,
+      h("ul", { class: "activity-list" }, [...g.events].reverse().map((e) => activityRow(e, many, open.has(String(e.id))))),
+    );
+  }
+
+  async function replay(button, g) {
+    const r = await busy(button, "Replaying…", () => api("/api/activity/replay", { method: "POST", body: { dir: g.dir, visit: g.visit } }));
+    if (!r) return;
+    const holderEl = h("div");
+    const p = r.result.page;
+    const items = [];
+    for (const s of p?.steps ?? []) items.push(h("li", null, h("span", { class: `badge ${s.ok ? "badge-ok" : "badge-danger"}` }, s.ok ? "ok" : "failed"), ` ${s.action}`, s.error ? h("span", { class: "dim" }, ` · ${s.error}`) : null));
+    const problems = [...(p?.exceptions ?? []).map((m) => `Exception: ${m.text}`), ...(p?.consoleErrors ?? []).map((m) => `Console error: ${m.text}`), ...(p?.failedRequests ?? []).map((f) => `${f.method ?? "GET"} ${f.url} → ${f.status ?? f.error}`)];
+    holderEl.replaceChildren(
+      h(
+        "div",
+        { class: "note", role: "status" },
+        icon(p?.ok ? "check" : "warn"),
+        h(
+          "div",
+          null,
+          h("p", null, p?.error ? `The replay couldn't load ${r.replay.url}: ${p.error}` : p?.ok ? `Replayed ${plural(r.replay.steps.length, "step")} on ${r.replay.url}: no problems this time.` : `Replayed ${plural(r.replay.steps.length, "step")} on ${r.replay.url}: ${plural(problems.length, "problem")}.`),
+          items.length ? h("ol", { class: "bullets" }, items) : null,
+          problems.length ? h("ul", { class: "bullets" }, problems.slice(0, 10).map((t) => h("li", { class: "mono" }, t))) : null,
+          r.replay.notes.map((n) => h("p", { class: "dim" }, n)),
+        ),
+      ),
+    );
+    // Shown with the visit it replayed; its own events are in the history too, as a headless check.
+    replays.set(g.key, holderEl);
+    void load();
+  }
+
+  async function copyReport(button, e) {
+    const r = await busy(button, "Copying…", async () => {
+      const report = await api(`/api/activity/report?dir=${encodeURIComponent(e.dir)}&id=${e.id}`);
+      await navigator.clipboard.writeText(report.markdown);
+      return report;
+    });
+    if (r) toast("Bug report copied: steps, requests and the error, as markdown");
   }
 
   function activityRow(e, many, isOpen) {
@@ -1482,6 +1654,16 @@ function activityPage(root) {
       e.ms !== undefined && (e.type === "request" || e.type === "page") ? h("span", { class: "dim" }, `${e.ms} ms`) : null,
     ];
     const details = [];
+    if (problem) {
+      details.push(
+        h(
+          "p",
+          { class: "activity-meta" },
+          btn("Copy as bug report", (ev) => copyReport(ev.currentTarget, e), { small: true, iconName: "copy", title: "Copy the steps that led here, the requests and the error, as markdown for an issue or an AI chat" }),
+        ),
+      );
+    }
+    if (e.trimmed) details.push(h("p", { class: "dim activity-meta" }, "Bodies and stack weren't kept: this day's history had reached its size limit."));
     if (e.text.includes("\n")) details.push(h("pre", { class: "log-snippet" }, e.text));
     if (e.page && e.type !== "page") details.push(h("p", { class: "dim mono activity-meta" }, `on ${e.page}`));
     if (e.source) details.push(sourceButton(e));
@@ -1997,7 +2179,7 @@ function depsPage(root) {
 
 function healthPage(root) {
   const holder = h("div", { class: "section" }, loadingView("Checking your setup…"));
-  append(root, pageHead("Health & settings", "Checks that dx works on this computer, its settings, and recent activity.", btn("Check again", () => load(), { iconName: "refresh" })), holder);
+  append(root, pageHead("Health & settings", "Checks that dx works on this computer, its settings, and what it ran recently.", btn("Check again", () => load(), { iconName: "refresh" })), holder);
 
   async function load() {
     let data;
@@ -2032,6 +2214,11 @@ function healthPage(root) {
     const depth = h("select", { id: "cfg-depth" }, [1, 2, 3].map((d) => h("option", { value: d, selected: d === config.scanDepth }, d === 1 ? "Only the folders inside" : `${d} levels deep`)));
     const activityOn = h("input", { type: "checkbox", id: "cfg-activity", checked: config.activity !== false });
     const activityDays = h("select", { id: "cfg-activity-days" }, [1, 3, 7, 14, 30, 90].map((d) => h("option", { value: d, selected: d === (config.activityDays ?? 7) }, plural(d, "day"))));
+    const activityMax = h("select", { id: "cfg-activity-max" }, [100, 250, 500, 1000, 2000, 5000].map((mb) => h("option", { value: mb, selected: mb === (config.activityMaxMB ?? 500) }, mb >= 1000 ? `${mb / 1000} GB` : `${mb} MB`)));
+    const activityUse = h("span", { class: "field-hint" });
+    api("/api/activity/usage")
+      .then((u) => activityUse.replaceChildren(u.bytes ? `Now ${formatBytes(u.bytes)}${u.projects.length > 1 ? ` across ${plural(u.projects.length, "project")}` : ""}. The oldest days go first when it's full.` : "Nothing recorded yet."))
+      .catch(() => {});
     const save = btn("Save settings", null, { kind: "primary", type: "submit" });
 
     const settings = h(
@@ -2040,7 +2227,7 @@ function healthPage(root) {
         class: "card card-pad section",
         onsubmit: async (e) => {
           e.preventDefault();
-          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, activityDays: Number(activityDays.value) };
+          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
           const r = await busy(save, "Saving…", () => api("/api/config", { method: "POST", body }));
           if (r) toast("Settings saved");
         },
@@ -2072,6 +2259,8 @@ function healthPage(root) {
           h("span", { class: "field-label" }, "Activity history"),
           h("label", { class: "check", for: "cfg-activity" }, activityOn, "Keep a history of requests, routes, clicks, console and errors"),
           h("label", { class: "toolbar", for: "cfg-activity-days" }, h("span", { class: "field-hint" }, "Keep it for"), activityDays),
+          h("label", { class: "toolbar", for: "cfg-activity-max" }, h("span", { class: "field-hint" }, "At most"), activityMax),
+          activityUse,
         ),
       ),
       h("div", { class: "form-actions" }, save),

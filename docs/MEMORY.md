@@ -9,7 +9,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Built**:
   - the core tools;
   - the `dx` command: `ui, go, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, traffic, activity, terminal, setup, https, config, runs, doctor`;
-  - the MCP server with 29 tools, 14 of them for running and checking apps;
+  - the MCP server with 30 tools, 15 of them for running and checking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
   - the dashboard with 9 pages (Projects, New project, Ports, Activity, Journal, Summary, Cleanup, Dependencies, Health & settings);
   - the activity history (requests, routes, clicks, console, errors, kept 7 days) and opening projects in a terminal you pick;
@@ -38,7 +38,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Decisions
 
-### Activity history (`core/src/tools/activity.ts`, `web/src/activity.ts`, `web/src/recorder.ts`, `web/public/recorder.js`)
+### Activity history (`core/src/tools/activity.ts` and `activityReport.ts`, `web/src/activity.ts`, `web/src/recorder.ts`, `web/public/recorder.js`)
 
 - **On disk, unlike the network log**: the point is a history to go back to, so it's kept, as JSON lines in `~/.dx/activity/<project>-<hash>/<day>.jsonl` (mode 0600), for `activityDays` (default 7). The dashboard keeps the last 2000 in memory for following along and writes in batches every 500 ms; the CLI and the MCP server read the files directly, so they work without the dashboard.
 - **The browser side is a script the proxy adds to HTML pages**, right after `<head>`, as the page streams. That was the only no-setup way: a browser extension needs installing, and wrapping the dev server needs knowing each framework.
@@ -50,6 +50,12 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Requests the proxy saw aren't recorded twice**: the script records only requests to other origins (`localhost:4000`, other hosts), with bodies only for loopback addresses.
 - **Listed by time, followed by id.** The page sends its events in batches a second later, so ids are arrival order; sorting by `at` puts a click before the request it caused. "What's new" uses the highest id seen, not the last in the list.
 - **Not recorded**: scripts, styles and images that loaded fine, WebSockets, and `/favicon.ico`.
+- **Errors are sent at once, everything else within 250 ms.** A one-second batch lost the last errors when a headless check closed the tab (macOS CI caught it).
+- **Size: 100 MB per project per day, then slimmed (no bodies, headers or stacks), then past 200 MB only problems; 500 MB in all (`activityMaxMB`), oldest days first.** Writing is checked per batch against the file's size, so there's no index to keep.
+- **Visits** are one page load in one tab: the page's events carry its id. The page groups proxy events into them by time: a page load starts a visit, unless one started under 5 s ago and its page hasn't sent anything yet; requests and server errors join the open visit within 30 s. The dev server's own lines are groups of their own.
+- **Replay** rebuilds steps from a visit (`replayFromVisit`): the page the first event was on, each click by the target the page recorded (`[data-testid]`, a unique `#id`, else `text=Label`), and, where a click changed the address within 3 s, a wait for the new address. Typed values aren't recorded, so forms are submitted as the page has them; back and forward are left out. It runs through `checkUrl` with steps, so a replay is a headless check like any other, and shows in the history as one.
+- **A route change within a second of a click is that click's**, not the back button: Chrome fires `popstate` for a `#hash` link too.
+- **Bug reports** take the error's visit (or, without one, the project) from 10 minutes before to 5 s after, keeping only problems and requests after it.
 
 ### Terminals (`core/src/tools/terminals.ts`)
 

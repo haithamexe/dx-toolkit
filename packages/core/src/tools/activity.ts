@@ -61,6 +61,10 @@ export interface ActivityEvent {
   responseBody?: string;
   /** A body was longer than what's kept. */
   truncated?: boolean;
+  /** Bodies, headers and stack weren't kept: that day's history had reached its size limit. */
+  trimmed?: boolean;
+  /** For a click: how to find the control again (`#id`, `[data-testid=…]` or `text=Label`), for replaying it. */
+  target?: string;
   /** file:line:column where it happened. */
   source?: string;
   stack?: string;
@@ -100,17 +104,68 @@ export function nextActivityId(now = Date.now()): number {
   return lastId;
 }
 
+/**
+ * How much one project's day may hold. Past it, events are kept without their bodies, headers
+ * and stacks; past twice that, only what went wrong is kept. A page that polls every second
+ * with large answers can't fill the disk.
+ */
+export const DAY_LIMIT_BYTES = 100 * 1024 * 1024;
+/** How much the whole history may hold by default (`activityMaxMB`); the oldest days go first. */
+export const TOTAL_LIMIT_BYTES = 500 * 1024 * 1024;
+
 /** Appends events to their project's file for the day. */
-export function appendActivity(events: ActivityEvent[]): void {
-  const files = new Map<string, string[]>();
+export function appendActivity(events: ActivityEvent[], dayLimit = DAY_LIMIT_BYTES): void {
+  const files = new Map<string, ActivityEvent[]>();
   for (const e of events) {
     const file = path.join(activityFolder(e.dir), `${localDay(new Date(e.at))}.jsonl`);
-    (files.get(file) ?? files.set(file, []).get(file)!).push(JSON.stringify(e));
+    (files.get(file) ?? files.set(file, []).get(file)!).push(e);
   }
-  for (const [file, lines] of files) {
+  for (const [file, list] of files) {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    fs.appendFileSync(file, lines.join("\n") + "\n", { mode: 0o600 });
+    let size = fileSize(file);
+    const lines: string[] = [];
+    for (const e of list) {
+      let kept: ActivityEvent | undefined = e;
+      if (size >= dayLimit * 2) kept = isProblem(e) ? slim(e) : undefined;
+      else if (size >= dayLimit) kept = slim(e);
+      if (!kept) continue;
+      const line = JSON.stringify(kept);
+      size += line.length + 1;
+      lines.push(line);
+    }
+    if (lines.length) fs.appendFileSync(file, lines.join("\n") + "\n", { mode: 0o600 });
   }
+}
+
+/** The event without what makes it big. */
+function slim(e: ActivityEvent): ActivityEvent {
+  if (!e.requestBody && !e.responseBody && !e.stack && !e.requestHeaders && !e.responseHeaders) return e;
+  const { requestBody: _a, responseBody: _b, stack: _c, requestHeaders: _d, responseHeaders: _e, ...rest } = e;
+  return { ...rest, trimmed: true };
+}
+
+function fileSize(file: string): number {
+  try {
+    return fs.statSync(file).size;
+  } catch {
+    return 0;
+  }
+}
+
+export interface ActivityUsage {
+  bytes: number;
+  projects: { project: string; folder: string; bytes: number; days: number }[];
+}
+
+/** How much the history takes on disk, per project, largest first. */
+export function activityUsage(): ActivityUsage {
+  const projects = allFolders().map((folder) => {
+    const list = days(folder);
+    const bytes = list.reduce((sum, d) => sum + fileSize(path.join(folder, `${d}.jsonl`)), 0);
+    return { project: path.basename(folder).replace(/-[0-9a-f]{8}$/, ""), folder, bytes, days: list.length };
+  });
+  projects.sort((a, b) => b.bytes - a.bytes);
+  return { bytes: projects.reduce((s, p) => s + p.bytes, 0), projects };
 }
 
 /** Events matching the query, oldest first (the newest `limit` of them). */
@@ -181,18 +236,32 @@ export function isProblem(e: ActivityEvent): boolean {
   return e.level === "error";
 }
 
-/** Deletes days older than `days`. */
-export function pruneActivity(keepDays = 7, now = new Date()): number {
+/** Deletes days older than `keepDays`, then the oldest days until the history fits in `maxBytes`. */
+export function pruneActivity(keepDays = 7, now = new Date(), maxBytes = TOTAL_LIMIT_BYTES): number {
   const oldest = localDay(new Date(now.getTime() - (keepDays - 1) * 86_400_000));
   let removed = 0;
+  const files: { file: string; day: string; bytes: number }[] = [];
   for (const folder of allFolders()) {
     for (const day of days(folder)) {
-      if (day >= oldest) continue;
-      fs.rmSync(path.join(folder, `${day}.jsonl`), { force: true });
+      const file = path.join(folder, `${day}.jsonl`);
+      if (day >= oldest) {
+        files.push({ file, day, bytes: fileSize(file) });
+        continue;
+      }
+      fs.rmSync(file, { force: true });
       removed++;
     }
-    if (!days(folder).length) fs.rmSync(folder, { recursive: true, force: true });
   }
+  // Too big: the oldest days go first, the largest first within a day.
+  let total = files.reduce((s, f) => s + f.bytes, 0);
+  files.sort((a, b) => a.day.localeCompare(b.day) || b.bytes - a.bytes);
+  for (const f of files) {
+    if (total <= maxBytes) break;
+    fs.rmSync(f.file, { force: true });
+    total -= f.bytes;
+    removed++;
+  }
+  for (const folder of allFolders()) if (!days(folder).length) fs.rmSync(folder, { recursive: true, force: true });
   return removed;
 }
 
@@ -231,11 +300,16 @@ export function parseSince(text: string, now = new Date()): Date | undefined {
 }
 
 /** One line per event, for the terminal and for AI agents. `bodies` adds payloads and stacks. */
-export function formatActivity(events: ActivityEvent[], options: { bodies?: boolean; project?: boolean; maxBody?: number } = {}): string {
+export function formatActivity(events: ActivityEvent[], options: { bodies?: boolean; project?: boolean; maxBody?: number; visits?: boolean } = {}): string {
   const max = options.maxBody ?? 2000;
   const clip = (s: string) => (s.length > max ? `${s.slice(0, max)} …` : s);
   const out: string[] = [];
+  let visit: string | undefined;
   for (const e of events) {
+    if (options.visits && e.visit && e.visit !== visit) {
+      visit = e.visit;
+      out.push(`── visit ${e.visit}${e.page ? ` on ${e.page}` : ""}${e.from === "check" ? " (a headless check)" : ""}`);
+    }
     const time = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
     const who = [options.project ? e.project : "", e.service ? `[${e.service}]` : ""].filter(Boolean).join(" ");
     out.push(`${time}  ${LABELS[e.type].padEnd(7)} ${who ? `${who} ` : ""}${e.text}${e.ms !== undefined && e.type === "request" ? `  (${e.ms} ms)` : ""}`);

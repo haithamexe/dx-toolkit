@@ -40,7 +40,7 @@ fs.writeFileSync(
 );
 
 const { startDashboard } = await import("../server.js");
-const { checkPage, findBrowser, readActivity } = await import("@dx/core");
+const { checkPage, findBrowser, readActivity, readRuns } = await import("@dx/core");
 let dashboard: Awaited<ReturnType<typeof startDashboard>>;
 const host = "tiny-cart.localhost";
 let origin = "";
@@ -171,6 +171,42 @@ test("in a real browser: the click, the route change, the console and the failed
   assert.ok(texts.includes("console: Cart failed: 500"), JSON.stringify(texts));
   const logged = list.find((e) => e.text.startsWith("adding"));
   assert.match(logged?.source ?? "", /^\/app\.js:1:\d+$/, "the page's own line, not the recorder's");
+
+  // The click knows how to find the button again, and the console error's stack starts at the page.
+  const all = (await history("&types=action,console")).filter((e: { from: string }) => e.from === "check");
+  const click = all.find((e: { type: string }) => e.type === "action");
+  assert.equal(click.target, "#add");
+  const failed = all.find((e: { level?: string }) => e.level === "error");
+  assert.ok(failed.stack && !failed.stack.includes("dx-recorder") && !/^Error$/m.test(failed.stack), failed.stack);
+
+  // A bug report for the console error: the steps that led there and the request, credentials masked.
+  const report = await api(`/api/activity/report?dir=${encodeURIComponent(app)}&id=${failed.id}`);
+  assert.match(report.markdown, /^## Cart failed: 500/);
+  assert.match(report.markdown, /Clicked button “Add to cart”/);
+  assert.match(report.markdown, /POST \/api\/cart → 500/);
+  assert.match(report.markdown, /"password": "•••"/);
+  assert.match(report.markdown, /"error": "out of stock"/);
+
+  // Replay the visit: the same click in a fresh browser, and the same failure found.
+  const replayed = await api("/api/activity/replay", { dir: app, visit: click.visit });
+  assert.deepEqual(replayed.replay.steps[0], { click: "#add" });
+  assert.equal(replayed.result.page.steps[0].ok, true, JSON.stringify(replayed.result.page.steps));
+  assert.ok(replayed.result.page.consoleErrors.some((m: { text: string }) => m.text.includes("Cart failed: 500")), JSON.stringify(replayed.result.page));
+  const run = readRuns(20).find((r) => r.tool === "replay");
+  assert.ok(run?.ok, "the replay is in dx runs, as done");
+  assert.match(run.detail ?? "", /replayed 1 step\(s\), \d+ problem\(s\) on the page/);
+});
+
+test("how much the history takes, and the limits", async () => {
+  const usage = await api("/api/activity/usage");
+  assert.ok(usage.bytes > 0);
+  assert.equal(usage.maxBytes, 500 * 1024 * 1024);
+  assert.equal(usage.dayLimitBytes, 100 * 1024 * 1024);
+  assert.equal((await api("/api/config", { activityMaxMB: 1 })).activityMaxMB, 50, "at least 50 MB");
+  assert.equal((await api("/api/activity/usage")).maxBytes, 50 * 1024 * 1024);
+  await api("/api/config", { activityMaxMB: 500 });
+  const missing = await fetch(new URL(`/api/activity/report?dir=${encodeURIComponent(app)}&id=12345`, dashboard.url), { headers: { "X-DX-Token": dashboard.token } });
+  assert.equal(missing.status, 404);
 });
 
 test("turned off: pages are left alone and nothing is kept; clearing deletes it", async () => {

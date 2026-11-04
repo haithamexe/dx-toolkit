@@ -16,6 +16,7 @@
   var timer = 0;
   var send = window.fetch ? window.fetch.bind(window) : null;
   var lastHref = location.href;
+  var lastClick = 0;
 
   function clip(s, n) {
     s = String(s);
@@ -110,7 +111,14 @@
         var parts = [];
         for (var i = 0; i < arguments.length; i++) parts.push(show(arguments[i]));
         var stack = new Error().stack;
-        push({ type: "console", level: level, text: clip(parts.join(" "), MAX_TEXT), source: caller(stack), stack: level === "error" || level === "warn" ? clip(stack, MAX_TEXT) : undefined });
+        // The page's own frames: without the "Error" line and this file's wrapper.
+        var own = String(stack || "")
+          .split("\n")
+          .filter(function (l) {
+            return l.trim() !== "Error" && l.indexOf("dx-recorder.js") < 0;
+          })
+          .join("\n");
+        push({ type: "console", level: level, text: clip(parts.join(" "), MAX_TEXT), source: caller(stack), stack: (level === "error" || level === "warn") && own ? clip(own, MAX_TEXT) : undefined });
       } catch (e) {
         // keep logging even if this can't
       }
@@ -160,7 +168,7 @@
     if (href === lastHref) return;
     var from = lastHref;
     lastHref = href;
-    push({ type: "route", text: short(from) + " → " + short(href), how: how });
+    push({ type: "route", text: short(from) + " → " + short(href) + (how === "back or forward" ? " (back or forward)" : "") });
   }
 
   function short(href) {
@@ -186,7 +194,8 @@
     };
   });
   addEventListener("popstate", function () {
-    routeChanged("back or forward");
+    // A link to a #hash fires this too: right after a click, it's the click, not the back button.
+    routeChanged(Date.now() - lastClick < 1000 ? "link" : "back or forward");
   });
   addEventListener("hashchange", function () {
     routeChanged("hash");
@@ -208,6 +217,18 @@
     return clip(label.replace(/\s+/g, " ").trim(), 80);
   }
 
+  /** How to find the control again, to replay the click: a test id, an id, or its label. */
+  function targetOf(el, name) {
+    var attrs = ["data-testid", "data-test", "data-cy"];
+    for (var i = 0; i < attrs.length; i++) {
+      var v = el.getAttribute(attrs[i]);
+      if (v) return "[" + attrs[i] + '="' + v.replace(/"/g, '\\"') + '"]';
+    }
+    if (el.id && /^[A-Za-z][\w-]*$/.test(el.id) && document.querySelectorAll("#" + el.id).length === 1) return "#" + el.id;
+    if (name && name.length <= 60) return "text=" + name;
+    return undefined;
+  }
+
   function kindOf(el) {
     var role = el.getAttribute("role");
     if (role) return role;
@@ -219,6 +240,7 @@
   document.addEventListener(
     "click",
     function (e) {
+      lastClick = Date.now();
       try {
         var el = e.target && e.target.closest ? e.target.closest(CONTROL) : null;
         if (!el) return;
@@ -226,7 +248,7 @@
         var text = "Clicked " + kindOf(el) + (name ? " “" + name + "”" : "");
         if (el.tagName === "A" && el.getAttribute("href")) text += " (" + clip(short(el.href), 200) + ")";
         if (el.tagName === "INPUT" && (el.type === "checkbox" || el.type === "radio")) text += el.checked ? ", now on" : ", now off";
-        push({ type: "action", text: text });
+        push({ type: "action", text: text, target: targetOf(el, name) });
       } catch (err) {
         // nothing to do
       }

@@ -46,6 +46,7 @@ import {
   parseSince,
   readActivity,
   type ActivityEvent,
+  type Replay,
   type DevError,
   type PageCheck,
   type Project,
@@ -913,8 +914,46 @@ server.registerTool(
     const detail = bodies ?? list.length <= 30;
     const problemsSeen = list.filter(isProblem).length;
     return text(
-      `${list.length} event(s), oldest first${problemsSeen ? `, ${problemsSeen} of them problems` : ""}:\n` + formatActivity(list, { bodies: detail, project: many, maxBody: 1500 }),
+      `${list.length} event(s), oldest first${problemsSeen ? `, ${problemsSeen} of them problems` : ""}:\n` +
+        formatActivity(list, { bodies: detail, project: many, maxBody: 1500, visits: true }) +
+        (list.some((e) => e.visit) ? "\n\nreplay_visit repeats a visit's clicks in a headless browser." : ""),
     );
+  },
+);
+
+server.registerTool(
+  "replay_visit",
+  {
+    title: "Do what the user did again",
+    description:
+      "Repeats a visit from the activity history in a headless browser: opens the page it started on and clicks what the user " +
+      "clicked, in order, then reports what broke, like check_url with steps. Use it to reproduce \"I clicked X and it broke\", " +
+      "and again after a fix to confirm it. Typed values aren't recorded, so fields stay empty. Without a visit, the user's most " +
+      "recent one in the project is used; activity_log shows visits as \"── visit <id>\".",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      visit: z.string().optional().describe("The visit id from activity_log; the most recent one when left out"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ project: name, visit }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    let id = visit;
+    if (!id) {
+      const recent = readActivity({ dir: project.dir, since: new Date(Date.now() - 86_400_000), types: ["action", "route", "console", "error"], limit: 2000 });
+      id = [...recent].reverse().find((e) => e.visit && e.from === "browser" && e.type === "action")?.visit;
+      if (!id) return failure(`No visit with clicks in ${project.name}'s history today. Open it at its .localhost address and use it, then try again.`);
+    }
+    try {
+      const client = await ensureDashboard();
+      const r = await client.post<{ replay: Replay; result: CheckResult }>("/api/activity/replay", { dir: project.dir, visit: id }, 150_000);
+      const head = `Replayed visit ${id}: ${r.replay.url}, then ${r.replay.steps.length} step(s).${r.replay.notes.length ? `\n${r.replay.notes.map((n) => `Note: ${n}`).join("\n")}` : ""}`;
+      const report = pageReport(r.result);
+      return { ...report, content: [{ type: "text" as const, text: head }, ...report.content] };
+    } catch (err) {
+      return failure((err as Error).message);
+    }
   },
 );
 

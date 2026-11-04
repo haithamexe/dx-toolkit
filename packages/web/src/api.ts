@@ -46,6 +46,14 @@ import {
   scanProjects,
   ACTIVITY_TYPES,
   clearActivity,
+  activityUsage,
+  bugReport,
+  DAY_LIMIT_BYTES,
+  isLoopbackUrl,
+  readActivity,
+  replayFromVisit,
+  reportContext,
+  type Replay,
   listTerminals,
   parseSince,
   terminalIds,
@@ -56,7 +64,7 @@ import {
   type Project,
   type Source,
 } from "@dx/core";
-import { forgetActivitySettings, forgetRecentActivity, listActivity } from "./activity.js";
+import { activitySettings, flushActivity, forgetActivitySettings, forgetRecentActivity, listActivity } from "./activity.js";
 import { checkUrl } from "./check.js";
 import { clearTraffic, listTraffic } from "./traffic.js";
 import {
@@ -193,6 +201,32 @@ const routes: Record<string, Handler> = {
       search: q.get("q") || undefined,
       limit: clampInt(q.get("limit"), 1, 2000, 200),
     });
+  },
+  "GET /api/activity/usage": () => {
+    const s = activitySettings();
+    return { ...activityUsage(), maxBytes: s.maxBytes, dayLimitBytes: DAY_LIMIT_BYTES, days: s.days, on: s.on };
+  },
+  "GET /api/activity/report": (req) => {
+    const project = knownProject(req.query.get("dir"));
+    const id = Number(req.query.get("id"));
+    if (!Number.isSafeInteger(id) || id <= 0) throw new HttpError(400, "Which event? Give its id.");
+    flushActivity();
+    const { target, events } = reportContext(project.dir, id);
+    if (!target) throw new HttpError(404, "That event isn't in the history any more.");
+    return { title: target.text.split("\n")[0], markdown: bugReport(target, events) };
+  },
+  "POST /api/activity/replay": async (req) => {
+    const project = knownProject(req.body.dir);
+    const visit = typeof req.body.visit === "string" ? req.body.visit.slice(0, 40) : "";
+    if (!visit) throw new HttpError(400, "Which visit? Give its id.");
+    const replay = replayOf(project.dir, visit);
+    const result = await checkUrl({ url: replay.url, browser: true, steps: replay.steps, timeoutMs: 60_000 });
+    // The replay worked when every step could be done; what it found on the page is the detail.
+    const page = result.page;
+    const done = !!page && !page.error && (page.steps ?? []).every((s) => s.ok);
+    const found = page ? page.exceptions.length + page.consoleErrors.length + page.failedRequests.length : 0;
+    recordRun("replay", done, `${project.name}: replayed ${replay.steps.length} step(s)${found ? `, ${found} problem(s) on the page` : ", no problems"}`, "web", { project: project.name });
+    return { replay, result };
   },
   "POST /api/activity/clear": (req) => {
     const dir = req.body.dir === undefined ? undefined : knownProject(req.body.dir).dir;
@@ -471,6 +505,7 @@ const routes: Record<string, Handler> = {
     }
     if (typeof req.body.activity === "boolean") config.activity = req.body.activity;
     if (req.body.activityDays !== undefined) config.activityDays = clampInt(req.body.activityDays, 1, 365, config.activityDays ?? 7);
+    if (req.body.activityMaxMB !== undefined) config.activityMaxMB = clampInt(req.body.activityMaxMB, 50, 100_000, config.activityMaxMB ?? 500);
     saveConfig(config);
     forgetActivitySettings();
     return config;
@@ -528,6 +563,19 @@ function sourceFrom(raw: unknown): Source {
     return { kind: "project", name: p.name, dir: p.dir };
   }
   throw new HttpError(400, "Pick a template or a project to start from.");
+}
+
+/** The steps to do one visit again, from the history; only addresses on this computer. */
+export function replayOf(dir: string, visit: string): Replay {
+  flushActivity();
+  // A visit id ends with the time it started, in base 36.
+  const started = parseInt(visit.slice(8), 36);
+  const since = Number.isFinite(started) && started > 1e12 ? new Date(started - 60_000) : new Date(Date.now() - 7 * 86_400_000);
+  const events = readActivity({ dir, since, limit: 5000 }).filter((e) => e.visit === visit);
+  const replay = replayFromVisit(events);
+  if (!replay) throw new HttpError(404, "That visit isn't in the history any more.");
+  if (!isLoopbackUrl(replay.url)) throw new HttpError(400, "Only pages on this computer can be replayed.");
+  return replay;
 }
 
 function clampInt(raw: unknown, min: number, max: number, fallback: number): number {

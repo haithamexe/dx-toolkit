@@ -431,6 +431,13 @@ select {
   font-weight: 550;
   cursor: pointer;
 }
+.segmented-wrap {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.segmented-wrap button {
+  white-space: nowrap;
+}
 .segmented button[aria-pressed="true"] {
   background: var(--accent-soft);
   color: var(--accent);
@@ -947,6 +954,51 @@ summary.activity-row {
   margin: 0;
   max-height: 320px;
   overflow: auto;
+}
+.visit {
+  border-top: 1px solid var(--border);
+}
+.visit:first-of-type {
+  border-top: 0;
+}
+.visit-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: var(--s2) 0;
+  cursor: pointer;
+}
+.visit-head .time {
+  min-width: 5.5em;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+}
+.visit-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.visit > .activity-list,
+.visit > .visit-actions,
+.visit > .visit-result {
+  margin-left: var(--s5);
+}
+.visit-actions {
+  padding-bottom: var(--s2);
+}
+.visit-result:empty {
+  display: none;
+}
+.visit-result {
+  padding-bottom: var(--s2);
+}
+@media (max-width: 860px) {
+  .visit > .activity-list,
+  .visit > .visit-actions,
+  .visit > .visit-result {
+    margin-left: 0;
+  }
 }
 .activity-headers summary {
   cursor: pointer;
