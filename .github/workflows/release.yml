@@ -61,9 +61,10 @@ jobs:
           set -o pipefail
           if npm view "dx-devkit@$VERSION" version --prefer-online >/dev/null 2>&1; then
             echo "dx-devkit@$VERSION is already on npm."
-          elif ! npm publish ./release --provenance --access public 2>&1 | tee "$RUNNER_TEMP/publish.log"; then
-            # npm's own error lines on the run's summary page, readable without opening the log.
-            reason=$(grep -iE "npm (error|err!)|E40[0-9]|OIDC|trusted|provenance" "$RUNNER_TEMP/publish.log" | tail -10 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' || true)
+          elif ! npm publish ./release --provenance --access public --loglevel verbose 2>&1 | tee "$RUNNER_TEMP/publish.log"; then
+            # npm's own error lines, and what it said about trusted publishing (OIDC), on the run's
+            # summary page: readable without opening the log.
+            reason=$(grep -iE "oidc|trusted|npm error code|npm error 40[0-9] [A-Z]" "$RUNNER_TEMP/publish.log" | grep -v "^npm verbose cli" | tail -12 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' || true)
             echo "::error title=npm publish failed::${reason:-npm printed no error line; see the log of this step}"
             exit 1
           fi
