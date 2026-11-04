@@ -33,7 +33,17 @@ jobs:
       - run: npm ci
 
       # Builds every package, then runs the core, dashboard and MCP tests (they use git, which every runner has).
-      - run: npm test
+      - name: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt
+
+      # Which tests failed and why, as annotations on the run (readable without the log).
+      - name: Show failed tests
+        if: failure()
+        shell: bash
+        run: node scripts/ci-failures.mjs test-output.txt
 
       # The package published to npm: build it, install it globally into a temporary folder, run it.
       - name: Pack and install the npm package
