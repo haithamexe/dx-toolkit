@@ -85,6 +85,14 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **The dashboard shows the usual address**, with `recorded: true`; the hidden one is internal (`.localhost` routes use it).
 - **Stacks aren't moved yet**: their services keep their own ports.
 
+### Visual and Raw (`web/public/app.js`, the viewers)
+
+- **The maintainer's rule for the whole interface: a modern, readable view first, the raw text one click away.** Every detail shows Visual by default and Raw on request; one preference for the whole dashboard (`dx.detailMode` in localStorage), and every open detail redraws when it changes (`liveDetail` keeps a set of them).
+- **JSON** is a tree drawn with DOM nodes (never `innerHTML`): the first two levels open, objects and arrays fold with a count, at most 500 entries per level. A body that doesn't parse is shown as text in both modes.
+- **Stacks** are parsed from V8 (`at fn (file:line:col)`) and Firefox (`fn@file:line:col`) lines; frames in `node_modules`, the runtime, Vite's deps and the recorder fold into one line. A frame in the project is a button that opens the editor (`openAt`).
+- **Console lines** were joined to text in the page, so objects are found again by matching brackets and parsing what's between them.
+- **A request's timing bar** is scaled to a second (longer ones fill it) and coloured fast/ok/slow at 200 ms and 1 s; its width is set through the CSSOM, which the CSP allows.
+
 ### Activity views (`web/public/app.js`)
 
 - **Sessions, APIs, Errors, Console are views of the same events**, computed in the page from one request (up to 2000 events), so switching views doesn't reload.

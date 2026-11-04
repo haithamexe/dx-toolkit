@@ -13,6 +13,12 @@ Keep secrets out of git with the new Env & secrets page, see your app's APIs, er
 - **Env & secrets page**: every project's `.env` files, subfolders included. See one with its values hidden until you ask, edit and save it, or open it in your editor. Warnings for `.env` files git would commit or already has, projects with no `.gitignore`, `.env.example` ignored by mistake, and keys in committed files. What `.gitignore` is missing to keep secrets out of git, following OWASP (`.env`, `.env.*`, private keys, certificates, keystores, SSH keys), with an **Add to .gitignore** button. `dx env --gitignore` does the same from the terminal, and `check_env` tells AI agents.
 - **Apps are recorded at `localhost:<port>` too, in any browser.** When dx starts an app whose tool it knows (Vite, Next.js, Astro, Nuxt, Angular, webpack, Gatsby, Create React App), it answers at the usual address itself and runs the dev server on a free port behind it. Requests, clicks, routes, console and errors are in the activity history there as at `.localhost`; live reload passes through. `"localhostRecording": false` turns it off.
 - **Activity views**: **Sessions**, **APIs** (each endpoint with its calls, payloads, responses, average and slowest time, failures), **Errors** (grouped, with counts and where in the code) and **Console** (repeats folded), with each project's visits, API calls and problems at the top.
+- **Visual and Raw** for every request, error and console line, in the Activity page and the Requests panel. Visual is the default, and the choice is remembered:
+  - **Requests**: method, status (coloured by class), address, a timing bar and sizes at a glance, then **Response**, **Request** and **Headers** tabs. JSON bodies are colour-coded trees whose objects and arrays fold, forms are tables, headers are tables.
+  - **Errors**: the stack as frames; your own code's frames open your editor at the line, and library frames fold into one line.
+  - **Console**: objects in a log line show as trees.
+
+  Raw shows the exact text. Each part has a **Copy** button.
 
 ### Changed
 

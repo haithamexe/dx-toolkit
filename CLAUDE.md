@@ -67,6 +67,8 @@ Every feature must work without the user configuring anything. If something need
 - `public/styles.css`: CSS custom-property tokens at the top (light, dark via `prefers-color-scheme`, and `[data-theme]` overrides), 4px spacing base, breakpoint 860px. Use the tokens; don't add literal colours or spacing.
 - Status colours carry the CLI's meanings: ok green, warn yellow, danger red, accent cyan.
 - Destructive actions (kill, delete) always go through `confirmDialog()` naming what will happen.
+- **Data is shown Visual first, with Raw one click away.** Anything a developer reads in detail (payloads, headers, stacks, console output, logs) goes through `liveDetail()` with the shared viewers: `requestDetail()`, `bodyBlock()` (JSON tree, form table), `headersBlock()`, `stackBlock()` (frames, library frames folded, `openAt()` for your own), `consoleBlock()`. Raw is always the exact text, and every part has `copyButton()`. The choice is one dashboard-wide preference (`detailMode`). New pages reuse these rather than printing raw text into a `<pre>`.
+- A button handler that awaits (a dialog, a fetch) keeps `ev.currentTarget` in a variable first: it's gone after the first `await`.
 
 ## Public repository: nothing personal
 

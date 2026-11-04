@@ -264,6 +264,331 @@ function setPref(key, value) {
   }
 }
 
+// ------------------------------------------------------------------ viewers: payloads, stacks, console
+
+/**
+ * Details are shown "visual" (JSON as a tree, forms as tables, stacks as frames, a request's
+ * status and time at a glance) or "raw" (the exact text). One choice for the whole dashboard,
+ * remembered, and every open detail follows it.
+ */
+let detailMode = pref("detailMode", "visual") === "raw" ? "raw" : "visual";
+const liveDetails = new Set();
+
+function setDetailMode(mode) {
+  detailMode = mode;
+  setPref("detailMode", mode);
+  for (const d of [...liveDetails]) {
+    if (d.el.isConnected) d.draw();
+    else liveDetails.delete(d);
+  }
+}
+
+/** A detail that redraws itself when Visual/Raw changes; `draw(mode)` returns its content. */
+function liveDetail(draw) {
+  const el = h("div", { class: "detail" });
+  const entry = {
+    el,
+    draw: () =>
+      el.replaceChildren(
+        h(
+          "div",
+          { class: "detail-bar" },
+          segmented("Show details as", [["visual", "Visual"], ["raw", "Raw"]], detailMode, setDetailMode),
+        ),
+        ...[draw(detailMode)].flat(Infinity).filter(Boolean),
+      ),
+  };
+  entry.draw();
+  liveDetails.add(entry);
+  el.redraw = entry.draw;
+  return el;
+}
+
+function copyButton(text, label = "Copy") {
+  return btn(label, async (ev) => {
+    const b = ev.currentTarget;
+    try {
+      await navigator.clipboard.writeText(typeof text === "function" ? text() : text);
+      b.replaceChildren(icon("check"), "Copied");
+      setTimeout(() => b.isConnected && b.replaceChildren(icon("copy"), label), 1500);
+    } catch {
+      toast("Couldn't copy: the browser didn't allow it", "error");
+    }
+  }, { small: true, kind: "ghost", iconName: "copy" });
+}
+
+function parseJson(text) {
+  if (typeof text !== "string" || !/^\s*[[{"\d-]|^\s*(true|false|null)\s*$/.test(text)) return undefined;
+  try {
+    return { value: JSON.parse(text) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** A JSON value as a tree: objects and arrays fold, the first two levels start open. */
+function jsonTree(value, depth = 0) {
+  if (value === null) return h("span", { class: "json-literal" }, "null");
+  if (typeof value === "boolean") return h("span", { class: "json-literal" }, String(value));
+  if (typeof value === "number") return h("span", { class: "json-number" }, String(value));
+  if (typeof value === "string") return h("span", { class: "json-string" }, JSON.stringify(value));
+  const isArray = Array.isArray(value);
+  const entries = isArray ? value.map((v, i) => [i, v]) : Object.entries(value);
+  const open = isArray ? "[" : "{";
+  const close = isArray ? "]" : "}";
+  if (!entries.length) return h("span", { class: "json-punct" }, `${open}${close}`);
+  const count = isArray ? plural(entries.length, "item") : plural(entries.length, "key");
+  return h(
+    "details",
+    { class: "json-node", open: depth < 2 && entries.length <= 50 ? true : undefined },
+    h("summary", null, h("span", { class: "json-punct" }, open), h("span", { class: "json-count" }, ` ${count} `), h("span", { class: "json-punct json-close-inline" }, close)),
+    h(
+      "ul",
+      { class: "json-tree" },
+      entries.slice(0, 500).map(([k, v]) => h("li", null, h("span", { class: isArray ? "json-index" : "json-key" }, isArray ? `${k}` : JSON.stringify(k)), h("span", { class: "json-punct" }, ": "), jsonTree(v, depth + 1))),
+      entries.length > 500 ? h("li", { class: "dim" }, `… ${entries.length - 500} more`) : null,
+    ),
+    h("span", { class: "json-punct" }, close),
+  );
+}
+
+/** key=value&… as a table. */
+function formTable(text) {
+  const rows = text.split("&").filter(Boolean).map((pair) => {
+    const [k, ...rest] = pair.split("=");
+    const dec = (s) => {
+      try {
+        return decodeURIComponent(s.replace(/\+/g, " "));
+      } catch {
+        return s;
+      }
+    };
+    return [dec(k), dec(rest.join("="))];
+  });
+  return keyValueTable(rows);
+}
+
+function keyValueTable(rows) {
+  return h("div", { class: "table-wrap" }, h("table", { class: "table kv-table" }, h("tbody", null, rows.map(([k, v]) => h("tr", null, h("th", { scope: "row", class: "mono" }, k), h("td", { class: "mono" }, v))))));
+}
+
+/** A request or response body: a JSON tree, a form table, or text; Raw is the exact text. */
+function bodyBlock(label, body, type = "", note = "") {
+  const json = parseJson(body);
+  const isForm = /x-www-form-urlencoded/i.test(type) && !json;
+  return (mode) =>
+    h(
+      "section",
+      { class: "detail-section" },
+      h(
+        "div",
+        { class: "detail-head" },
+        h("strong", null, label),
+        h("span", { class: "dim" }, [type.split(";")[0], formatBytes(new TextEncoder().encode(body).length), note].filter(Boolean).join(" · ")),
+        copyButton(() => (json && mode === "visual" ? JSON.stringify(json.value, null, 2) : body)),
+      ),
+      mode === "raw" || (!json && !isForm)
+        ? h("pre", { class: "log-snippet raw-text" }, mode === "raw" ? body : body)
+        : json
+          ? h("div", { class: "json-view" }, jsonTree(json.value))
+          : formTable(body),
+    );
+}
+
+function headersBlock(req = {}, res = {}) {
+  return (mode) => {
+    const reqRows = Object.entries(req);
+    const resRows = Object.entries(res);
+    if (mode === "raw") {
+      return h("pre", { class: "log-snippet raw-text" }, [...reqRows.map(([k, v]) => `> ${k}: ${v}`), ...resRows.map(([k, v]) => `< ${k}: ${v}`)].join("\n"));
+    }
+    return [
+      resRows.length ? h("section", { class: "detail-section" }, h("div", { class: "detail-head" }, h("strong", null, "Response headers")), keyValueTable(resRows)) : null,
+      reqRows.length ? h("section", { class: "detail-section" }, h("div", { class: "detail-head" }, h("strong", null, "Request headers")), keyValueTable(reqRows)) : null,
+    ];
+  };
+}
+
+/** Frames out of a V8 or Firefox stack; the lines before the first frame are the message. */
+function parseStack(stack) {
+  const head = [];
+  const frames = [];
+  for (const line of String(stack).split("\n")) {
+    const v8 = /^\s*at (?:(.+?) \()?((?:[a-z]+:\/\/|[A-Za-z]:\\|\/)?[^()]*?):(\d+)(?::(\d+))?\)?\s*$/.exec(line);
+    const ff = !v8 && /^(.*?)@(.+?):(\d+)(?::(\d+))?$/.exec(line.trim());
+    const m = v8 || ff;
+    if (m) frames.push({ fn: m[1] || "(anonymous)", file: m[2], line: Number(m[3]), column: m[4] ? Number(m[4]) : undefined });
+    else if (!frames.length && line.trim()) head.push(line);
+  }
+  return { head, frames };
+}
+
+const LIBRARY_FRAME = /node_modules|^node:|node:internal|\(internal\/|^internal\/|\.vite\/deps|\/chunk-[\w-]+\.js|webpack-internal|<anonymous>|dx-recorder\.js|^native$/;
+
+/** Where in a project a location is, for opening it: the browser names files by address, the server by path. */
+function projectFile(location) {
+  const file = String(location).replace(/^https?:\/\/[^/]+/, "").replace(/^webpack:\/\/\/?/, "").replace(/\?.*$/, "").replace(/^\/(?=[^/]+\/)/, "");
+  if (LIBRARY_FRAME.test(location) || /^\/?@|^\/?__/.test(file)) return undefined;
+  return file;
+}
+
+/** A button that opens a file in your editor at a line, or the location as text when it isn't one of the project's files. */
+function openAt(dir, location, line, column) {
+  const file = projectFile(location);
+  const label = `${file ? inProject(file, dir) : location}:${line}${column ? `:${column}` : ""}`;
+  if (!file || !dir) return h("span", { class: "dim mono" }, label);
+  return btn(label, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file, line, column } })).message)), {
+    small: true,
+    kind: "ghost",
+    iconName: "code",
+    title: "Open in your editor at this line",
+    name: `Open ${label} in editor`,
+  });
+}
+
+/** A stack as frames: yours first-class, libraries folded into one line. */
+function stackBlock(stack, dir) {
+  return (mode) => {
+    const parsed = parseStack(stack);
+    if (mode === "raw" || !parsed.frames.length) {
+      return h("section", { class: "detail-section" }, h("div", { class: "detail-head" }, h("strong", null, "Stack"), copyButton(stack)), h("pre", { class: "log-snippet raw-text" }, stack));
+    }
+    const items = [];
+    let folded = [];
+    const flush = () => {
+      if (!folded.length) return;
+      const list = folded;
+      folded = [];
+      items.push(
+        h(
+          "li",
+          { class: "frame frame-lib" },
+          h("details", null, h("summary", { class: "dim" }, `${plural(list.length, "frame")} in libraries and the runtime`), h("ul", { class: "frames" }, list.map((f) => h("li", { class: "frame dim mono" }, `${f.fn} · ${f.file}:${f.line}`)))),
+        ),
+      );
+    };
+    for (const f of parsed.frames) {
+      if (LIBRARY_FRAME.test(f.file) || LIBRARY_FRAME.test(f.fn)) {
+        folded.push(f);
+        continue;
+      }
+      flush();
+      items.push(h("li", { class: "frame" }, h("span", { class: "frame-fn mono" }, f.fn), openAt(dir, f.file, f.line, f.column)));
+    }
+    flush();
+    return h(
+      "section",
+      { class: "detail-section" },
+      h("div", { class: "detail-head" }, h("strong", null, "Stack"), h("span", { class: "dim" }, plural(parsed.frames.length, "frame")), copyButton(stack)),
+      parsed.head.length > 1 ? h("pre", { class: "log-snippet raw-text" }, parsed.head.join("\n")) : null,
+      h("ol", { class: "frames" }, items),
+    );
+  };
+}
+
+/** A console line: the text, with any object or array in it as a tree. */
+function consoleBlock(text) {
+  return (mode) => {
+    if (mode === "raw") return h("pre", { class: "log-snippet raw-text" }, text);
+    const parts = [];
+    let rest = text;
+    while (rest) {
+      const at = rest.search(/[[{]/);
+      if (at < 0) break;
+      const end = matchingBracket(rest, at);
+      const json = end > at ? parseJson(rest.slice(at, end + 1)) : undefined;
+      if (!json || typeof json.value !== "object" || json.value === null) {
+        parts.push(rest.slice(0, at + 1));
+        rest = rest.slice(at + 1);
+        continue;
+      }
+      if (at) parts.push(rest.slice(0, at));
+      parts.push(h("div", { class: "json-view" }, jsonTree(json.value)));
+      rest = rest.slice(end + 1);
+    }
+    if (rest) parts.push(rest);
+    // Adjacent text pieces as one line.
+    const merged = [];
+    for (const p of parts) {
+      if (typeof p === "string" && typeof merged[merged.length - 1] === "string") merged[merged.length - 1] += p;
+      else merged.push(p);
+    }
+    return h("div", { class: "console-view" }, merged.map((p) => (typeof p === "string" ? (p.trim() ? h("p", { class: "mono console-text" }, p.trim()) : null) : p)));
+  };
+}
+
+/** The index of the bracket closing the one at `start`, skipping brackets inside strings; -1 if none. */
+function matchingBracket(text, start) {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** A request at a glance: method, status, address, how long it took, and how big it was. */
+function requestSummary(e) {
+  const status = e.status ?? 0;
+  const tone = e.error || status >= 500 ? "danger" : status >= 400 ? "warn" : status >= 300 ? "accent" : "ok";
+  const ms = e.ms;
+  const speed = ms === undefined ? "" : ms < 200 ? "fast" : ms < 1000 ? "ok" : "slow";
+  const size = (s) => (s ? formatBytes(new TextEncoder().encode(s).length) : undefined);
+  return h(
+    "div",
+    { class: "req-summary" },
+    h("span", { class: "badge mono req-method" }, e.method ?? "GET"),
+    h("span", { class: `badge badge-${tone}` }, e.error ? `failed: ${e.error}` : String(status || "…")),
+    h("span", { class: "mono req-url" }, e.url ?? e.text),
+    ms !== undefined
+      ? h(
+          "span",
+          { class: "req-time", title: `${ms} ms` },
+          h("span", { class: "req-bar" }, h("span", { class: `req-bar-fill req-${speed}`, style: { width: `${Math.max(4, Math.min(100, (ms / Math.max(1000, ms)) * 100))}%` } })),
+          h("span", { class: "dim" }, `${ms} ms`),
+        )
+      : null,
+    h("span", { class: "dim" }, [size(e.requestBody) && `sent ${size(e.requestBody)}`, size(e.responseBody) && `got ${size(e.responseBody)}`].filter(Boolean).join(" · ")),
+  );
+}
+
+/** A request's whole detail: the summary, then its response, request and headers as tabs. */
+function requestDetail(e, tab = { current: undefined }) {
+  const tabs = [];
+  if (e.responseBody) tabs.push(["response", "Response"]);
+  if (e.requestBody) tabs.push(["request", "Request"]);
+  if ((e.requestHeaders && Object.keys(e.requestHeaders).length) || (e.responseHeaders && Object.keys(e.responseHeaders).length)) tabs.push(["headers", "Headers"]);
+  tab.current ??= tabs[0]?.[0];
+  const blocks = {
+    response: () => bodyBlock("Response", e.responseBody, e.responseHeaders?.["content-type"] ?? "", e.truncated ? "cut short" : ""),
+    request: () => bodyBlock("Request", e.requestBody, e.requestHeaders?.["content-type"] ?? ""),
+    headers: () => headersBlock(e.requestHeaders, e.responseHeaders),
+  };
+  let view;
+  view = liveDetail((mode) => [
+    requestSummary(e),
+    tabs.length > 1
+      ? segmented("Part of the request", tabs, tab.current, (v) => {
+          tab.current = v;
+          view.redraw();
+        })
+      : null,
+    tab.current ? blocks[tab.current]()(mode) : h("p", { class: "dim" }, "No body was kept for this request."),
+  ]);
+  return view;
+}
+
 /**
  * Which terminal projects open in: the installed ones, saved to the settings on change. Used on
  * the Projects page and in Health & settings.
@@ -822,15 +1147,16 @@ function projectsPage(root) {
     const status = h("span", { class: `badge ${bad ? "badge-danger" : "badge-ok"}` }, e.error ? "failed" : String(e.status ?? "…"));
     const head = [h("span", { class: "mono traffic-method" }, e.method), status, e.service ? h("span", { class: "badge" }, e.service) : null, h("span", { class: "mono traffic-path" }, e.path), e.ms !== undefined ? h("span", { class: "dim" }, `${e.ms} ms`) : null];
     if (!e.requestBody && !e.responseBody) return h("li", { class: "traffic-row" }, head);
+    // The same request view as the Activity page, drawn when the row is opened.
+    const body = h("div", { class: "traffic-detail" });
     return h(
       "li",
       null,
       h(
         "details",
-        null,
+        { ontoggle: (ev) => ev.target.open && !body.firstChild && body.append(requestDetail({ ...e, url: e.path })) },
         h("summary", { class: "traffic-row" }, head),
-        e.requestBody ? h("pre", { class: "log-snippet" }, `→ ${e.requestBody}`) : null,
-        e.responseBody ? h("pre", { class: "log-snippet" }, `← ${e.responseBody}${e.truncated ? " …" : ""}`) : null,
+        body,
       ),
     );
   }
@@ -2172,51 +2498,39 @@ function activityPage(root) {
       );
     }
     if (e.trimmed) details.push(h("p", { class: "dim activity-meta" }, "Bodies and stack weren't kept: this day's history had reached its size limit."));
-    if (e.text.includes("\n")) details.push(h("pre", { class: "log-snippet" }, e.text));
     if (e.page && e.type !== "page") details.push(h("p", { class: "dim mono activity-meta" }, `on ${e.page}`));
-    if (e.source) details.push(sourceButton(e));
-    if (e.requestBody) details.push(h("p", { class: "activity-meta" }, `Request${e.requestHeaders?.["content-type"] ? ` · ${e.requestHeaders["content-type"]}` : ""}`), h("pre", { class: "log-snippet" }, pretty(e.requestBody)));
-    if (e.responseBody) details.push(h("p", { class: "activity-meta" }, `Response${e.responseHeaders?.["content-type"] ? ` · ${e.responseHeaders["content-type"]}` : ""}${e.truncated ? " · cut short" : ""}`), h("pre", { class: "log-snippet" }, pretty(e.responseBody)));
-    if (e.stack && e.type !== "console") details.push(h("pre", { class: "log-snippet" }, e.stack));
-    else if (e.stack && problem) details.push(h("pre", { class: "log-snippet" }, e.stack));
-    if (e.requestHeaders || e.responseHeaders) {
-      const lines = [
-        ...Object.entries(e.requestHeaders ?? {}).map(([k, v]) => `→ ${k}: ${v}`),
-        ...Object.entries(e.responseHeaders ?? {}).map(([k, v]) => `← ${k}: ${v}`),
-      ];
-      if (lines.length) details.push(h("details", { class: "activity-headers" }, h("summary", null, "Headers"), h("pre", { class: "log-snippet" }, lines.join("\n"))));
+    if (e.type === "request" || e.type === "page") {
+      details.push(requestDetail(e));
+    } else if (e.type === "console") {
+      details.push(
+        liveDetail((mode) => [
+          consoleBlock(e.text)(mode),
+          e.source ? h("p", { class: "activity-meta" }, sourceButton(e)) : null,
+          e.stack && problem ? stackBlock(e.stack, e.dir)(mode) : null,
+        ]),
+      );
+    } else if (e.type === "error" || e.type === "server-error") {
+      const extra = e.text.includes("\n") ? e.text : "";
+      details.push(
+        liveDetail((mode) => [
+          // A stack's first frame says where already.
+          e.source && (mode === "raw" || !e.stack || !parseStack(e.stack).frames.length) ? h("p", { class: "activity-meta" }, "Where: ", sourceButton(e)) : null,
+          e.stack ? stackBlock(e.stack, e.dir)(mode) : extra ? h("pre", { class: "log-snippet raw-text" }, extra) : null,
+        ]),
+      );
+    } else {
+      if (e.text.includes("\n")) details.push(h("pre", { class: "log-snippet" }, e.text));
+      if (e.source) details.push(h("p", { class: "activity-meta" }, sourceButton(e)));
     }
     if (!details.length) return h("li", { class: "activity-row" }, head);
     return h("li", null, h("details", { open: isOpen || undefined, dataset: { id: String(e.id) } }, h("summary", { class: "activity-row" }, head), h("div", { class: "activity-detail" }, details)));
   }
 
-  /** A button that opens the file in your editor, when the place is a file in the project. */
+  /** The event's file and line as a button that opens your editor there, when it's one of the project's files. */
   function sourceButton(e) {
     const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(e.source);
-    if (!m) return h("p", { class: "dim mono activity-meta" }, e.source);
-    // The browser names files by their address (/src/App.tsx?t=123); the server by their path.
-    const file = m[1].replace(/^https?:\/\/[^/]+/, "").replace(/\?.*$/, "").replace(/^\/(?=[^/]+\/)/, "");
-    if (/node_modules|^\/?@|^\/?__|^chunk-|\.vite\/deps/.test(file)) return h("p", { class: "dim mono activity-meta" }, e.source);
-    const where = `${inProject(file, e.dir)}:${m[2]}`;
-    return h(
-      "p",
-      { class: "activity-meta" },
-      btn(where, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir: e.dir, file, line: Number(m[2]), column: m[3] ? Number(m[3]) : undefined } })).message)), {
-        small: true,
-        kind: "ghost",
-        iconName: "code",
-        title: "Open in your editor at this line",
-        name: `Open ${where} in editor`,
-      }),
-    );
-  }
-
-  function pretty(body) {
-    try {
-      return JSON.stringify(JSON.parse(body), null, 2);
-    } catch {
-      return body;
-    }
+    if (!m) return h("span", { class: "dim mono" }, e.source);
+    return openAt(e.dir, m[1], Number(m[2]), m[3] ? Number(m[3]) : undefined);
   }
 
   (async () => {
