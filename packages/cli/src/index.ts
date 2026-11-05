@@ -24,6 +24,7 @@ import { terminalCommand } from "./commands/terminal.js";
 import { gitCommand } from "./commands/git.js";
 import { machineCommand } from "./commands/machine.js";
 import { updateCommand } from "./commands/update.js";
+import { prepareCommand } from "./commands/prepare.js";
 import { runCommand } from "./commands/run.js";
 import { bugCommand } from "./commands/bug.js";
 import { mockCommand } from "./commands/mock.js";
@@ -67,6 +68,7 @@ const commands: Command[] = [
   visualCommand,
   machineCommand,
   updateCommand,
+  prepareCommand,
   setupCommand,
   httpsCommand,
   configCommand,

@@ -53,3 +53,4 @@ export * from "./tools/rules.js";
 export * from "./tools/yaml.js";
 export * from "./tools/openapi.js";
 export * from "./tools/aicli.js";
+export * from "./tools/prepare.js";

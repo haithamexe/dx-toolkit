@@ -6,6 +6,8 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ### Added
 
+- **Run gets the project ready first**, so Run works on a fresh clone or after a pull: packages installed when they're missing or the lock file changed, `.env` made from its example, Docker running for a stack's databases, `prisma generate`, workspace packages built, migrations applied (only to a database on this computer, never with a script that resets or seeds), and the usual port checked. Each step shows on the project's card with its output; a failed one stops the start and says why and how to fix it. `dx prepare <project>` shows or runs the plan, and `.devrc.json` adds steps of the project's own (`"prepare": [...]`) or turns it off.
+
 - **The Requests page**: Burp- and Postman-style tools for the app you run.
   - **Rules** (match and replace): for a method and path, change the request or its answer on the way (headers, JSON fields, the body, the status), add a delay, or make it fail with a 500, never answer, or drop the connection. Changed calls are marked in Activity.
   - **Intercept**: hold matching requests or answers, edit them, then send them on or drop them; they go on by themselves after a minute.

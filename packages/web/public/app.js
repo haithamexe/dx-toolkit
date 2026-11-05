@@ -1353,6 +1353,46 @@ function projectsPage(root) {
     );
   }
 
+  /**
+   * Getting it ready before it runs: the steps that had something to do (install, .env, Docker,
+   * migrations…), while starting or when one failed; later, only the ones worth a look.
+   */
+  function prepareList(s) {
+    const steps = (s.prepare ?? []).filter((x) => x.status !== "ok");
+    const attention = steps.filter((x) => x.status === "warn" || x.status === "skip" || x.status === "failed");
+    const shown = s.status === "starting" || s.status === "failed" ? steps : attention;
+    if (!shown.length) return null;
+    const mark = {
+      running: () => h("span", { class: "spinner", "aria-hidden": "true" }),
+      done: () => icon("check"),
+      failed: () => icon("x"),
+      warn: () => icon("warn"),
+      skip: () => icon("info"),
+      todo: () => h("span", { class: "prepare-dot", "aria-hidden": "true" }),
+    };
+    const words = { running: "running", done: "done", failed: "failed", warn: "needs a look", skip: "skipped", todo: "to do" };
+    return h(
+      "ul",
+      { class: "prepare-list", "aria-label": `Getting ${s.project} ready` },
+      shown.map((x) =>
+        h(
+          "li",
+          { class: `prepare-step prepare-${x.status}` },
+          (mark[x.status] ?? mark.todo)(),
+          h(
+            "div",
+            null,
+            h("span", { class: "visually-hidden" }, `${words[x.status] ?? x.status}: `),
+            h("strong", null, x.title),
+            h("span", { class: "dim" }, ` · ${x.why}`),
+            x.status === "failed" && x.output ? h("code", { class: "prepare-output" }, x.output) : null,
+            (x.status === "failed" || x.status === "warn" || x.status === "skip") && x.fix ? h("div", { class: "prepare-fix" }, x.fix) : null,
+          ),
+        ),
+      ),
+    );
+  }
+
   function devCard(s) {
     const key = s.dir.toLowerCase();
     const live = s.status === "starting" || s.status === "ready";
@@ -1427,6 +1467,7 @@ function projectsPage(root) {
             : null,
         ),
       ),
+      prepareList(s),
       s.services ? h("ul", { class: "stack-services", "aria-label": `Services of ${s.project}` }, s.services.map(serviceRow)) : null,
       s.note ? h("p", { class: "stack-note" }, icon("warn"), s.note) : null,
       pageChecks.has(key) ? pagePanel(key, pageChecks.get(key)) : null,

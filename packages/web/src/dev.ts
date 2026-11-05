@@ -3,6 +3,10 @@ import {
   detectStack,
   ErrorTracker,
   getProjectPort,
+  hasWork,
+  planPrepare,
+  runPrepare,
+  type PrepareStep,
   isPortOpen,
   killProcess,
   loadConfig,
@@ -68,7 +72,23 @@ export interface DevServerInfo {
   recorded?: boolean;
   /** The project as it was at a commit, run from ~/.dx/snapshots. */
   snapshot?: boolean;
+  /** Getting it ready before it starts: packages, .env, Docker, migrations… with each step's state. */
+  prepare?: PrepareView[];
 }
+
+export interface PrepareView {
+  id: string;
+  title: string;
+  why: string;
+  status: PrepareStep["status"];
+  fix?: string;
+  /** After a failure: the output line that says what went wrong. */
+  output?: string;
+  blocking: boolean;
+}
+
+const prepareView = (steps: PrepareStep[] | undefined): PrepareView[] | undefined =>
+  steps?.length ? steps.map(({ id, title, why, status, fix, output, blocking }) => ({ id, title, why, status, fix, output, blocking })) : undefined;
 
 interface Proc {
   key: string;
@@ -105,6 +125,7 @@ interface Proc {
   front?: { door: FrontDoor; port: number; hidden: number };
   snapshot?: boolean;
   portHint?: number;
+  prepare?: PrepareStep[];
 }
 
 /** Whether apps dx starts are recorded at localhost:<port> too (needs the activity history on). */
@@ -127,6 +148,9 @@ interface StackRun {
   startedAt: string;
   stoppedAt?: string;
   note?: string;
+  prepare?: PrepareStep[];
+  /** Its preparation failed, so nothing was started. */
+  failed?: boolean;
 }
 
 const MAX_LINES = 2000;
@@ -268,11 +292,53 @@ export function startDevServer(project: Project, startedBy: StartedBy = "dashboa
     port: getProjectPort(project),
     startedBy,
   };
-  if (options.snapshot) return info(startOnOwnPort(project, { ...spec, url: undefined, port: undefined, snapshot: true }));
+  // Getting it ready first (packages, .env, migrations…), in its own log; a snapshot prepares itself.
+  const steps = options.snapshot ? [] : safePlan(project, {});
+  if (!hasWork(steps, "before")) {
+    const p = launchProject(project, spec, options);
+    if (steps.length) p.prepare = steps;
+    return info(p);
+  }
+  const p = newProc(spec);
+  p.prepare = steps;
+  void (async () => {
+    const r = await runPrepare(steps, project.dir, "before", { log: (line) => push(p, "dx", line) });
+    if (p.stopping) {
+      p.status = "stopped";
+      p.stoppedAt = new Date().toISOString();
+      return;
+    }
+    if (!r.ok) {
+      p.status = "failed";
+      p.stoppedAt = new Date().toISOString();
+      push(p, "dx", `${project.name} didn't start: ${r.failed!.title} failed (${r.failed!.why}).${r.failed!.fix ? ` ${r.failed!.fix}.` : ""}`);
+      recordRun("go", false, `${project.name}: ${r.failed!.title} failed`, "web", { project: project.name });
+      return;
+    }
+    launchProject(project, spec, options, p);
+  })();
+  return info(p);
+}
+
+/** The steps, or none when finding them failed (a broken file): starting matters more. */
+function safePlan(project: Project, options: Parameters<typeof planPrepare>[1]): PrepareStep[] {
+  try {
+    return planPrepare(project, options);
+  } catch {
+    return [];
+  }
+}
+
+function launchProject(project: Project, spec: Spec, options: { snapshot?: boolean }, existing?: Proc): Proc {
+  if (options.snapshot) return startOnOwnPort(project, { ...spec, url: undefined, port: undefined, snapshot: true }, existing);
   // Recorded at localhost:<port> too, when its tool can be moved to another port.
   const usual = spec.port;
-  if (usual && localhostRecording() && moveDevPort(project, 1)) return info(startBehindDoor(project, spec, usual));
-  return info(spawnProc(spec));
+  if (usual && localhostRecording() && moveDevPort(project, 1)) return startBehindDoor(project, spec, usual, existing);
+  if (existing) {
+    launch(existing, spec);
+    return existing;
+  }
+  return spawnProc(spec);
 }
 
 function startStack(project: Project, stack: Stack, startedBy: StartedBy): DevServerInfo {
@@ -297,8 +363,42 @@ async function runStack(run: StackRun): Promise<void> {
   const waves: (StackService[] | "runner")[] = stack.runner ? [...(docker.length ? [docker] : []), "runner"] : startOrder(stack);
   const unavailable = (d: string) => crashed.has(d) || skipped.some((s) => s.startsWith(`${d} `));
 
+  // Getting it ready: packages (the root's and each service folder's), .env, Docker, builds; then,
+  // once its databases are up, migrations. Logged as the stack's own "prepare" output.
+  const steps = safePlan({ dir: run.dir, name: run.name } as Project, {
+    docker: docker.length > 0,
+    extraDirs: [...new Set(stack.services.filter((s) => s.kind === "process").map((s) => s.dir))],
+  });
+  run.prepare = steps;
+  let prep: Proc | undefined;
+  const log = (line: string) => {
+    prep ??= newProc({ key: `${run.key}#prepare`, project: run.name, dir: run.dir, command: "prepare", startedBy: run.startedBy, stackKey: run.key, service: "prepare" });
+    push(prep, "dx", line);
+  };
+  const failed = (step: PrepareStep) => {
+    run.failed = true;
+    run.phase = "stopped";
+    run.stoppedAt = new Date().toISOString();
+    run.note = `Didn't start: ${step.title} failed (${step.why}).${step.fix ? ` ${step.fix}.` : ""}`;
+    if (prep) prep.status = "failed";
+    recordRun("go", false, `${run.name}: ${step.title} failed`, "web", { project: run.name });
+  };
+  if (hasWork(steps, "before")) {
+    const r = await runPrepare(steps, run.dir, "before", { log });
+    if (run.phase !== "starting") return;
+    if (!r.ok) return failed(r.failed!);
+  }
+  let dbReady = !hasWork(steps, "db");
+
   for (const wave of waves) {
     if (run.phase !== "starting") return;
+    // Migrations after the databases, before anything that uses them.
+    if (!dbReady && (wave === "runner" || !wave.some((s) => s.kind === "docker"))) {
+      dbReady = true;
+      const r = await runPrepare(steps, run.dir, "db", { log });
+      if (run.phase !== "starting") return;
+      if (!r.ok) return failed(r.failed!);
+    }
     const started: Proc[] = [];
     for (const svc of wave === "runner" ? [] : wave) {
       const blockedBy = svc.dependsOn.filter(unavailable);
@@ -419,8 +519,9 @@ function newProc(spec: Spec): Proc {
  * moves the server to a free one, and passes everything through, so your own browser's visit
  * is recorded. When the port is taken or the tool can't be moved, it starts as it always did.
  */
-function startBehindDoor(project: Project, spec: Spec, usual: number): Proc {
-  const p = newProc({ ...spec, url: undefined, port: undefined });
+function startBehindDoor(project: Project, spec: Spec, usual: number, existing?: Proc): Proc {
+  const p = existing ?? newProc({ ...spec, url: undefined, port: undefined });
+  if (existing) Object.assign(existing, { url: undefined, port: undefined });
   void (async () => {
     let run = spec;
     try {
@@ -457,8 +558,8 @@ function startBehindDoor(project: Project, spec: Spec, usual: number): Proc {
  * read, and the address it prints wins as always. No localhost door: its usual port belongs to
  * the project.
  */
-function startOnOwnPort(project: Project, spec: Spec): Proc {
-  const p = newProc(spec);
+function startOnOwnPort(project: Project, spec: Spec, existing?: Proc): Proc {
+  const p = existing ?? newProc(spec);
   void (async () => {
     let run = spec;
     try {
@@ -884,6 +985,7 @@ function info(p: Proc): DevServerInfo {
   if (p.front) out.recorded = true;
   if (p.snapshot) out.snapshot = true;
   if (!p.stackKey && url && p.child) out.localUrl = localUrlOf(`${serviceName(project)}.localhost`);
+  if (p.prepare && !p.stackKey) out.prepare = prepareView(p.prepare);
   return out;
 }
 
@@ -924,7 +1026,8 @@ function stackInfo(run: StackRun): DevServerInfo {
   const main = mainService(run.stack);
   const mainInfo = services.find((s) => s.service === main?.name);
   let status: DevStatus;
-  if (run.phase === "starting") status = "starting";
+  if (run.failed) status = "failed";
+  else if (run.phase === "starting") status = "starting";
   else if (run.phase === "stopped" || run.phase === "stopping") status = "stopped";
   else if (services.some((s) => s.status === "failed")) status = "failed";
   else if (services.some((s) => s.status === "starting")) status = "starting";
@@ -946,6 +1049,7 @@ function stackInfo(run: StackRun): DevServerInfo {
     services: services.map(({ kind: _kind, ...s }) => s),
     stackSource: run.stack.source,
     note: run.note,
+    prepare: prepareView(run.prepare),
   };
 }
 

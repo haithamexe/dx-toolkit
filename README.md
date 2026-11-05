@@ -223,6 +223,22 @@ Which commit changed how the app looks? When you commit on the Git page, and whe
 
 ---
 
+## Run gets the project ready
+
+A fresh clone, a pull with new packages, a new migration: **Run** (the dashboard, `dx go`, `dx up`, your AI agent) gets the project ready before it starts, and shows each step on the project's card while it works:
+
+1. **Packages**, when `node_modules` is missing or the lock file changed since the last install, with the project's own package manager (npm, pnpm, yarn, bun); a stack's services in their own folders too. Python: a `.venv` and `pip install -r requirements.txt`, or `uv sync`.
+2. **`.env`** made from `.env.example` when it's missing; values the example has and `.env` doesn't are listed.
+3. **Docker** running, for a stack whose databases run in Docker.
+4. **Generated code**: `prisma generate` when the schema changed.
+5. **Workspace packages** the app imports from a build folder that isn't built yet (`main: "dist/index.js"` with no `dist`) are built first.
+6. **Migrations**, with the project's own `db:migrate` / `migrate` script, else Prisma, Drizzle, Knex, Sequelize, Django, Rails, Laravel or Alembic, when new ones arrived. In a stack, after its databases are up. **Only against a database on this computer** (localhost, Docker, SQLite): when `.env` points anywhere else, dx says so and leaves it alone, and it never runs a script that also resets, drops or seeds data.
+7. **The usual port** is free, or who's holding it.
+
+What finished is remembered, so the next start skips it. When a step fails, the project doesn't start, and its card says which step, why (the step's own output is in the log), and how to fix it. `dx prepare <project>` shows the plan, `--run` does it now, and `.devrc.json` can add steps of the project's own or turn it off (see [Per-project settings](#per-project-settings-devrcjson)).
+
+---
+
 ## Stacks and local domains
 
 **A stack is everything an app needs running**: its front end, API, worker and database. dx finds it by itself, starts every part in order, and serves each one at a readable address:
@@ -288,6 +304,7 @@ dx up shop
 | `dx update` | Update dx to the newest version, cleaning up an old, linked or broken install first (`--npm` switches from a linked build to the npm package) |
 | `dx setup` | Connect dx to your AI tools (it does this by itself; `--list` shows them, `--undo` removes dx from them) |
 | `dx go todo-app` | Open the project in your editor, start its dev server here (its whole stack, if it has one), open the browser when it's ready |
+| `dx prepare todo-app` | What [Run does first](#run-gets-the-project-ready) and why: packages, `.env`, Docker, generated code, builds, migrations, the port. `--run` does it now, `--again` forgets what was done so every step runs |
 | `dx go todo-app -w` | Same, but the dev server runs in a new terminal window |
 | `dx go` | Pick from your most recently active projects |
 | `dx go .` | The project in the current folder |
@@ -444,6 +461,14 @@ A folder containing only a `.devrc.json` also counts as a project.
 ```
 
 `dir` runs a command in another folder, `url` says where a service listens if it doesn't print it, and `role` (`data`, `backend`, `frontend`) sets the order when there's no `dependsOn`.
+
+**Steps of your own before Run** (see [Run gets the project ready](#run-gets-the-project-ready)), in order; `after: "db"` waits for a stack's databases. `"prepare": false` turns preparing off:
+
+```json
+{
+  "prepare": ["npm run codegen", { "run": "npm run db:seed", "after": "db", "title": "Seed the database" }]
+}
+```
 
 ### Settings: `~/.dx/config.json`
 

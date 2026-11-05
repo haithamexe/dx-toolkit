@@ -56,6 +56,17 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Decisions
 
+### Getting a project ready before Run (`core/src/tools/prepare.ts`, `web/src/dev.ts`, `dx prepare`)
+
+- **Why**: Run failed on real projects for reasons dx could see coming: no `node_modules`, a lock file changed by a pull, no `.env`, Docker not running, migrations not applied, a workspace package not built. Each is now a step before the start.
+- **Found from files only** (`planPrepare`: fast, runs nothing), run in order (`runPrepare`), output into the server's own log, so the card and `dev_logs` show it. A blocking step that fails stops the start (status `failed`, no process); warnings (`.env` values missing, a busy port) don't.
+- **Two phases**: "before" for everything, "db" for migrations in a stack with Docker databases, run after the Docker wave and before the services that use them.
+- **Remembered per project** in `~/.dx/prepare.json` by what each step depends on: the lock file's hash, the schema's, the migrations folder's listing, or (with no migrations folder to watch) the commit checked out, read from `.git` without running git. The first time dx sees an installed project whose `node_modules` is newer than its lock file, it counts as installed.
+- **`npm install`, not `npm ci`**: ci deletes `node_modules` every time and fails when `package.json` and the lock disagree.
+- **Migrations are guarded twice**: only against a database on this computer (the `DATABASE_URL`, `DB_HOST`… in `.env` files: localhost, a Docker service name, SQLite), and never a project script that also resets, drops, truncates, seeds or pushes the schema. Both show as "skipped" with the command to run by hand.
+- **The project's own migrate script first** (`db:migrate`, `migrate`, `migration:run`…), since it knows its setup; then the tool found from its files.
+- **Snapshots aren't prepared here**: they link or install their packages themselves.
+
 ### The Requests page (`core/src/tools/rules.ts`, `openapi.ts`, `yaml.ts`, `aicli.ts`; `web/src/apilab.ts`, `intercept.ts`, `labapi.ts`, `mocks.ts`)
 
 - **Rules run in the proxy, after mock mode**: a mocked call never reaches the server or the rules. Page loads (GET with Accept: text/html) and `/__dx/` are left alone, so the recorder still goes into pages. With no rule matching, `relay()` streams as before; a matching rule reads the request (and, only when it edits or holds the body, the answer) whole, up to 8 MB.

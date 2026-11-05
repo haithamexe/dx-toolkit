@@ -38,6 +38,7 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - **Record runs.** Anything that changes something calls `recordRun(tool, ok, detail, source, extra)` so it shows in `dx runs`.
 - **A new tool** goes in core first, then the CLI command, then optionally MCP, the dashboard and Raycast. The steps are in README, *Adding a new tool*.
 - **Shell commands** run through `child_process` with arguments as arrays where possible. Where `shell: true` is needed (dev commands, `npm`), the command comes from the project's own `package.json` or `.devrc.json`, never from a request body.
+- **Preparing before Run** (`prepare.ts`) runs only commands made of fixed words (package managers, migration tools) and the project's own script names and `.devrc.json` steps. Migrations run only against a database on this computer and never through a script that resets, drops or seeds; keep both guards when adding a tool.
 
 ## The dashboard's security model (keep it intact)
 
