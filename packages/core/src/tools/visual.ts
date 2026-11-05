@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { dxPath } from "../config.js";
+import { A11Y_AUDIT, heavierThan, newIssues, PERF_INIT, PERF_READ, slowerThan, type A11yIssue, type PagePerf } from "./pagehealth.js";
 import { readActivity } from "./activity.js";
 import { findBrowser, isLoopbackUrl, withBrowser, type BrowserPage } from "./browser.js";
 import { gitRun } from "./git.js";
@@ -63,6 +64,20 @@ export interface VisualCapture {
   diff?: boolean;
   /** This page wasn't captured for the commit it's compared with. */
   isNew?: boolean;
+  /** How fast it loaded (desktop only). */
+  perf?: PagePerf;
+  /** The compared commit's numbers, for before and after. */
+  perfBefore?: PagePerf;
+  /** "largest paint 1.2 s → 1.7 s", when it got clearly slower. */
+  slower?: string;
+  /** "JavaScript 412 KB → 498 KB", when it loads clearly more script. */
+  heavier?: string;
+  /** Accessibility problems on the page. */
+  a11y?: A11yIssue[];
+  /** Problems the compared commit didn't have. */
+  a11yNew?: A11yIssue[];
+  /** How many of the compared commit's problems are gone. */
+  a11yFixed?: number;
 }
 
 export interface VisualCommit {
@@ -83,6 +98,10 @@ export interface VisualCommit {
   ratio?: number;
   /** A small picture of the first page, for the graph. */
   thumb?: boolean;
+  /** A page got clearly slower or heavier than the commit it's compared with. */
+  slower?: boolean;
+  /** Accessibility problems the compared commit didn't have, on all pages. */
+  a11yNew?: number;
 }
 
 export interface VisualIndex {
@@ -313,6 +332,17 @@ export function describeVisualCommit(e: VisualCommit): string {
   return `${changed.length} of ${ok.length} page${ok.length === 1 ? "" : "s"} changed: ${changed.map((c) => `${c.path} (${describeCapture(c)})`).join("; ")}`;
 }
 
+/** Speed and accessibility in one line per page that got worse, for the CLI and agents. */
+export function describeHealth(e: VisualCommit): string[] {
+  const out: string[] = [];
+  for (const c of e.captures) {
+    if (c.slower) out.push(`${c.path} slower: ${c.slower}`);
+    if (c.heavier) out.push(`${c.path} heavier: ${c.heavier}`);
+    for (const i of c.a11yNew ?? []) out.push(`${c.path} accessibility: ${i.text}`);
+  }
+  return out;
+}
+
 /**
  * The file behind one image, checked against the index: a hex commit that was captured, a capture
  * name that commit has, and a kind (the screenshot, its diff, or the commit's thumbnail). The path
@@ -483,6 +513,14 @@ export async function captureVisual(o: VisualCaptureOptions): Promise<VisualComm
       await app.send("Page.setBypassCSP", { enabled: true });
       await app.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
       await app.send("Page.addScriptToEvaluateOnNewDocument", { source: FREEZE });
+      await app.send("Page.addScriptToEvaluateOnNewDocument", { source: PERF_INIT });
+      // The scripts each load brings, by size over the wire.
+      const scripts = new Map<string, number>();
+      let jsBytes = 0;
+      app.onEvent((method, p) => {
+        if (method === "Network.responseReceived" && p.type === "Script") scripts.set(p.requestId as string, 0);
+        else if (method === "Network.loadingFinished" && scripts.has(p.requestId as string)) jsBytes += Number(p.encodedDataLength ?? 0);
+      });
       for (const viewport of viewports) {
         const vp = VISUAL_VIEWPORTS[viewport];
         await app.send("Emulation.setDeviceMetricsOverride", { width: vp.width, height: vp.height, deviceScaleFactor: 1, mobile: vp.mobile });
@@ -493,8 +531,28 @@ export async function captureVisual(o: VisualCaptureOptions): Promise<VisualComm
             const url = new URL(p, base);
             if (url.origin !== base.origin || !isLoopbackUrl(url.href)) throw new Error("Only pages of the dev server itself are captured.");
             await app.send("Page.bringToFront");
+            // A first load to let the dev server compile, so the measured one is the page's own time.
+            const measure = viewport === viewports[0];
+            if (measure) await app.navigate(url.href, { settleMs: 300 }).catch(() => undefined);
+            scripts.clear();
+            jsBytes = 0;
             cap.status = await app.navigate(url.href, { settleMs: o.settleMs ?? 1000 });
+            if (measure) {
+              const perf = await app.evaluate<PagePerf>(PERF_READ, 5000).catch(() => undefined);
+              if (perf) cap.perf = { ...perf, jsBytes: jsBytes || undefined };
+              cap.a11y = (await app.evaluate<A11yIssue[]>(A11Y_AUDIT, 15_000).catch(() => undefined)) ?? undefined;
+            }
             await app.evaluate(SETTLE, 15_000);
+            const prevHealth = ref?.captures.find((c) => c.name === name && !c.error);
+            if (prevHealth && cap.perf) {
+              cap.perfBefore = prevHealth.perf;
+              cap.slower = slowerThan(cap.perf, prevHealth.perf);
+              cap.heavier = heavierThan(cap.perf, prevHealth.perf);
+            }
+            if (prevHealth?.a11y && cap.a11y) {
+              cap.a11yNew = newIssues(cap.a11y, prevHealth.a11y);
+              cap.a11yFixed = newIssues(prevHealth.a11y, cap.a11y).length;
+            }
             const shot = await app.send<{ data: string }>("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
             fs.writeFileSync(path.join(work, `${name}.png`), Buffer.from(shot.data, "base64"));
             const prev = ref?.captures.find((c) => c.name === name && !c.error);
@@ -542,6 +600,9 @@ export async function captureVisual(o: VisualCaptureOptions): Promise<VisualComm
   }
 
   const compared = entry.captures.filter((c) => c.changed !== undefined);
+  if (entry.captures.some((c) => c.slower || c.heavier)) entry.slower = true;
+  const fresh11y = entry.captures.reduce((n, c) => n + (c.a11yNew?.length ?? 0), 0);
+  if (fresh11y) entry.a11yNew = fresh11y;
   if (compared.length) {
     entry.changed = compared.some((c) => c.changed);
     entry.ratio = Math.max(...compared.map((c) => c.ratio ?? 0));

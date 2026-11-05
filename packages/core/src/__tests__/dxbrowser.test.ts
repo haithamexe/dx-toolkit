@@ -210,7 +210,7 @@ test("a request on a recorded site becomes a request event, with bodies and head
   assert.equal(req.requestBody, JSON.stringify({ item: 3, password: "•••" }));
   assert.equal(req.responseBody, JSON.stringify({ items: [1], token: "•••" }));
   assert.equal(req.requestHeaders?.authorization, "•••");
-  assert.equal(req.responseHeaders?.["set-cookie"], "•••");
+  assert.equal(req.responseHeaders?.["set-cookie"], "sid=•••", "a cookie keeps its name and flags, never its value");
   assert.equal(req.page, PAGE);
   assert.ok(req.visit && req.visit.length > 8);
   assert.ok(sent.some((s) => s.method === "Network.getResponseBody" && s.sessionId === "S1"));

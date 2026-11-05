@@ -39,6 +39,12 @@ function h(tag, props, ...children) {
   return el;
 }
 
+/** Replaces an element's children; null, false and arrays are handled like append's. */
+function fill(el, ...children) {
+  el.replaceChildren();
+  return append(el, ...children);
+}
+
 function append(el, ...children) {
   for (const child of children.flat(Infinity)) {
     if (child === undefined || child === null || child === false) continue;
@@ -54,6 +60,8 @@ const ICONS = {
   machine: "M3 5h18v11H3zM8 20h8M12 16v4",
   requests: "M4 8h13l-4-4M20 16H7l4 4",
   chaos: "M13 2L4 14h7l-1 8 9-12h-7z",
+  phone: "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM11 18h2",
+  data: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
   journal: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6",
   summary: "M4 19V9M10 19V5M16 19v-7M22 19H2",
   cleanup: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
@@ -938,6 +946,7 @@ const pages = [
   { id: "activity", label: "Activity", icon: "activity", render: activityPage },
   { id: "requests", label: "Requests", icon: "requests", render: requestsPage },
   { id: "chaos", label: "Chaos", icon: "chaos", render: chaosPage },
+  { id: "data", label: "Data", icon: "data", render: dataPage },
   { id: "env", label: "Env & secrets", icon: "key", render: envPage },
   { id: "journal", label: "Journal", icon: "journal", render: journalPage },
   { id: "summary", label: "Summary", icon: "summary", render: summaryPage },
@@ -1007,6 +1016,8 @@ function projectsPage(root) {
   const envChecks = new Map(); // dir -> the last .env check
   const testRuns = new Map(); // dir -> the last test run
   const openTraffic = new Set(JSON.parse(pref("openTraffic", "[]")));
+  const openPhone = new Set(JSON.parse(pref("openPhone", "[]")));
+  const phonePanels = new Map();
   const trafficPanels = new Map(); // dir -> { el, dir, sig }
   let unsaved = null;
   let stopped = false;
@@ -1440,6 +1451,9 @@ function projectsPage(root) {
           s.localUrl
             ? btn(openTraffic.has(key) ? "Hide requests" : "Requests", () => toggle(openTraffic, "openTraffic"), { iconName: "ports", small: true, title: `Requests made through ${s.localUrl}` })
             : null,
+          s.localUrl && s.status === "ready" && !s.snapshot
+            ? btn(openPhone.has(key) ? "Hide phone" : "On my phone", () => toggle(openPhone, "openPhone"), { iconName: "phone", small: true, title: "Open the app on your own phone over Wi-Fi, with a QR code, and see what happens there" })
+            : null,
           s.errorCount || showingErrors
             ? btn(showingErrors ? "Hide errors" : "Show errors", () => toggle(openErrors, "openErrors"), { iconName: "warn", small: true })
             : null,
@@ -1474,6 +1488,7 @@ function projectsPage(root) {
       s.note ? h("p", { class: "stack-note" }, icon("warn"), s.note) : null,
       pageChecks.has(key) ? pagePanel(key, pageChecks.get(key)) : null,
       openTraffic.has(key) && s.localUrl ? trafficPanel(key, s) : null,
+      openPhone.has(key) && s.localUrl ? phonePanel(key, s) : null,
       showingErrors ? errorsEl : null,
       showing && s.services ? outputFilter(key, s.services) : null,
       showing ? logEl : null,
@@ -1490,6 +1505,95 @@ function projectsPage(root) {
       void refreshErrors(key);
     }
     return card;
+  }
+
+  /** Open on my phone: the QR code, the address, what the phone does. Kept across redraws so the code doesn't flicker. */
+  function phonePanel(key, s) {
+    let panel = phonePanels.get(key);
+    if (!panel) {
+      panel = { el: h("div", { class: "dev-errors phone-panel", "aria-label": `${s.project} on your phone`, "aria-live": "polite" }), dir: s.dir, project: s.project };
+      phonePanels.set(key, panel);
+    }
+    void refreshPhone(key);
+    return panel.el;
+  }
+
+  async function refreshPhone(key) {
+    const panel = phonePanels.get(key);
+    if (!panel) return;
+    let d;
+    try {
+      d = await api(`/api/phone?dir=${encodeURIComponent(panel.dir)}`);
+    } catch {
+      return;
+    }
+    const sig = JSON.stringify([d.session?.url, d.session?.joined, d.session?.expiresAt, d.events.map((e) => e.id)]);
+    if (panel.sig === sig && panel.el.childNodes.length) return;
+    panel.sig = sig;
+    if (!d.session) {
+      panel.el.replaceChildren(
+        h("p", null, `Opens ${panel.project} on your own phone over Wi-Fi, for 30 minutes: scan the code with the phone's camera. What the phone does (console, errors, taps, requests) shows up here and in Activity, labelled phone.`),
+        d.address
+          ? h("p", { class: "dim" }, `dx then also listens at ${d.address} on your local network, for that phone only (a one-time link). Your computer may ask whether Node.js can accept connections on private networks: allow it.`)
+          : h("p", { class: "prepare-fix" }, "This computer isn't on a local network, so a phone can't reach it."),
+        btn("Show the code", (ev) => busy(ev.currentTarget, "Starting…", async () => {
+          await api("/api/phone", { method: "POST", body: { dir: panel.dir, minutes: 30 } });
+          panel.sig = "";
+          await refreshPhone(key);
+        }), { kind: "primary", iconName: "phone", disabled: !d.address }),
+      );
+      return;
+    }
+    const sess = d.session;
+    const mins = Math.max(0, Math.round((Date.parse(sess.expiresAt) - Date.now()) / 60_000));
+    let code = null;
+    if (sess.qr) {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", `0 0 ${sess.qrSize} ${sess.qrSize}`);
+      svg.setAttribute("class", "phone-qr");
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", `QR code for ${sess.url}`);
+      const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      bg.setAttribute("width", "100%");
+      bg.setAttribute("height", "100%");
+      bg.setAttribute("class", "phone-qr-bg");
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", sess.qr);
+      path.setAttribute("class", "phone-qr-ink");
+      svg.append(bg, path);
+      code = svg;
+    }
+    panel.el.replaceChildren(
+      h(
+        "div",
+        { class: "phone-head" },
+        code,
+        h(
+          "div",
+          { class: "phone-info" },
+          h("strong", null, sess.joined ? "Your phone is connected" : "Scan with your phone's camera"),
+          h("p", { class: "dim" }, sess.joined ? `${sess.address} · ${plural(mins, "minute")} left` : `Or type ${sess.url} on the phone. The link works once; ${plural(mins, "minute")} left.`),
+          h("p", { class: "dim" }, "The phone must be on the same Wi-Fi. Calls the page makes to localhost addresses won't reach your computer from the phone; same-site calls do."),
+          h(
+            "div",
+            { class: "toolbar" },
+            btn("New code", (ev) => busy(ev.currentTarget, "…", async () => {
+              await api("/api/phone", { method: "POST", body: { dir: panel.dir, minutes: 30 } });
+              panel.sig = "";
+              await refreshPhone(key);
+            }), { small: true, kind: "ghost", iconName: "refresh", title: "A fresh one-time link (the phone that joined is let go)" }),
+            btn("Stop", (ev) => busy(ev.currentTarget, "Stopping…", async () => {
+              await api("/api/phone", { method: "POST", body: { dir: panel.dir, on: false } });
+              panel.sig = "";
+              await refreshPhone(key);
+            }), { small: true, kind: "danger-ghost", iconName: "stop" }),
+          ),
+        ),
+      ),
+      d.events.length
+        ? h("ul", { class: "traffic-list" }, d.events.map((e) => h("li", { class: "traffic-row" }, h("span", { class: `badge ${e.level === "error" ? "badge-danger" : e.level === "warn" ? "badge-warn" : ""}` }, e.type), h("span", { class: "mono traffic-path" }, e.text), h("span", { class: "dim" }, relativeTime(Date.parse(e.at))))))
+        : h("p", { class: "dev-errors-empty" }, icon("info"), sess.joined ? "Nothing from the phone yet: use the app there." : "Waiting for the phone."),
+    );
   }
 
   function trafficPanel(key, s) {
@@ -2052,6 +2156,170 @@ function parseJsonEditsText(text) {
   return out;
 }
 
+// ------------------------------------------------------------------ Data
+
+function dataPage(root) {
+  let dir = pref("dataDir", "");
+  let projects = [];
+  const holder = h("div", { class: "section" });
+  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("dataDir", dir), load()) });
+  append(
+    root,
+    pageHead(
+      "Data",
+      "Believable, connected data for your development database in one click, edge cases included, and named scenes to switch between in seconds.",
+      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
+    ),
+    holder,
+  );
+
+  (async () => {
+    try {
+      projects = await api("/api/projects");
+    } catch (err) {
+      fill(holder, errorView(err));
+      return;
+    }
+    if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
+    fill(projectSelect, ...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    load();
+  })();
+
+  const q = () => `dir=${encodeURIComponent(dir)}`;
+  const KIND = { made: ["badge-accent", "Made"], saved: ["", "Saved"], backup: ["badge-warn", "Backup"] };
+
+  async function load() {
+    if (!dir) return fill(holder, h("div", { class: "card" }, stateView("No projects", "dx looks for projects in your projects folders.")));
+    fill(holder, loadingView("Reading the schema…"));
+    let d;
+    try {
+      d = await api(`/api/data?${q()}`);
+    } catch (err) {
+      return fill(holder, errorView(err, load));
+    }
+    if (!d.schema) return fill(holder, h("div", { class: "card" }, stateView("No database schema here", "dx reads a Prisma schema (prisma/schema.prisma), or CREATE TABLE statements in the project's SQL migration files.")));
+    const preview = h("div", { class: "section" });
+    const seed = h("input", { class: "input lab-status mono", type: "number", placeholder: "new" });
+    const saveName = h("input", { class: "input", placeholder: "Scene name, e.g. Demo for Friday" });
+    fill(holder, 
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("strong", null, `${plural(d.schema.tables.length, "table")} from ${d.schema.file}`), d.target.ok ? h("span", { class: "badge badge-ok" }, d.target.where) : h("span", { class: "badge badge-warn" }, "Can't load here")),
+        d.target.ok ? null : h("p", { class: "prepare-fix" }, d.target.why),
+        h("div", { class: "machine-badges" }, d.schema.tables.map((t) => h("span", { class: "badge", title: t.refs.length ? `Belongs to ${t.refs.join(", ")}` : "" }, `${t.name}${t.refs.length ? ` → ${[...new Set(t.refs)].join(", ")}` : ""}`))),
+      ),
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("strong", null, "Make a scene"),
+        h("div", { class: "data-recipes" }, d.recipes.map((r) => h("div", { class: "data-recipe" }, h("strong", null, r.name), h("p", { class: "dim" }, r.about), btn("Make", (ev) => make(ev.currentTarget, r.id), { small: true, iconName: "new" })))),
+        h("label", { class: "field" }, h("span", { class: "field-label" }, "Seed"), seed, h("span", { class: "field-hint" }, "The same seed makes the same rows; empty for new ones")),
+      ),
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("strong", null, "Scenes"), h("div", { class: "toolbar" }, saveName, btn("Save the data that's there", (ev) => saveCurrent(ev.currentTarget), { small: true, iconName: "save", disabled: !d.target.ok }))),
+        d.scenes.length
+          ? h(
+              "div",
+              { class: "table-wrap" },
+              h(
+                "table",
+                { class: "table" },
+                h("thead", null, h("tr", null, h("th", { scope: "col" }, "Scene"), h("th", { scope: "col" }, "Kind"), h("th", { scope: "col", class: "num" }, "Rows"), h("th", { scope: "col" }, "When"), h("th", { scope: "col" }, h("span", { class: "visually-hidden" }, "Actions")))),
+                h(
+                  "tbody",
+                  null,
+                  d.scenes.map((s) =>
+                    h(
+                      "tr",
+                      null,
+                      h("td", null, h("strong", null, s.name)),
+                      h("td", null, h("span", { class: `badge ${KIND[s.kind]?.[0] ?? ""}` }, KIND[s.kind]?.[1] ?? s.kind)),
+                      h("td", { class: "num" }, s.rows),
+                      h("td", { class: "dim" }, relativeTime(Date.parse(s.createdAt))),
+                      h(
+                        "td",
+                        { class: "actions" },
+                        btn("Load", (ev) => loadIt(ev.currentTarget, s, d), { small: true, kind: "primary", iconName: "play", disabled: !d.target.ok }),
+                        btn("Preview", () => showPreview(preview, s), { small: true, kind: "ghost" }),
+                        btn("Delete", async (ev) => {
+                          const b = ev.currentTarget;
+                          if (!(await confirmDialog({ title: `Delete the scene ${s.name}?`, text: "Only the saved scene goes; the database isn't touched.", confirm: "Delete" }))) return;
+                          if (await busy(b, "Deleting…", () => api("/api/data/remove", { method: "POST", body: { dir, scene: s.slug } }))) load();
+                        }, { small: true, kind: "danger-ghost", iconName: "x" }),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          : stateView("No scenes yet", "Make one from a recipe above, or save the data that's in the database now."),
+      ),
+      preview,
+    );
+
+    async function make(b, recipe) {
+      const r = await busy(b, "Making…", () => api("/api/data/make", { method: "POST", body: { dir, recipe, seed: seed.value ? Number(seed.value) : undefined } }));
+      if (r) {
+        toast(`Made "${r.name}": ${plural(r.rows, "row")}. Load it to put it in the database.`);
+        load();
+      }
+    }
+    async function saveCurrent(b) {
+      const r = await busy(b, "Saving…", () => api("/api/data/save", { method: "POST", body: { dir, name: saveName.value.trim() } }));
+      if (r) {
+        toast(`Saved "${r.name}": ${plural(r.rows, "row")}`);
+        load();
+      }
+    }
+  }
+
+  async function loadIt(b, s, d) {
+    const ok = await confirmDialog({
+      title: `Load ${s.name} into the database?`,
+      text: `Every row in the ${plural(d.schema.tables.length, "table")} of ${d.target.where} is replaced with the scene's ${plural(s.rows, "row")}. What's there now is saved first as a backup scene, so you can load it back.`,
+      confirm: "Replace the data",
+    });
+    if (!ok) return;
+    const r = await busy(b, "Loading…", () => api("/api/data/load", { method: "POST", body: { dir, scene: s.slug } }));
+    if (r) {
+      toast(`${s.name} is in the database: ${plural(r.rows, "row")} in ${Math.round(r.ms / 100) / 10} s.${r.backup ? ` The old data is the scene "${r.backup}".` : ""}`, "ok", { ms: 7000 });
+      load();
+    }
+  }
+
+  async function showPreview(el, s) {
+    fill(el, loadingView("Opening the scene…"));
+    try {
+      const p = await api(`/api/data/scene?${q()}&scene=${encodeURIComponent(s.slug)}`);
+      fill(el, 
+        h("h2", { class: "section-title" }, `${p.name}`),
+        ...p.order.filter((t) => p.rows[t]).map((t) => {
+          const { count, first } = p.rows[t];
+          const cols = [...new Set(first.flatMap((r) => Object.keys(r)))].slice(0, 8);
+          return h(
+            "div",
+            { class: "card card-pad section" },
+            h("div", { class: "section-head" }, h("strong", null, t), h("span", { class: "dim" }, plural(count, "row"))),
+            count
+              ? h(
+                  "div",
+                  { class: "table-wrap" },
+                  h("table", { class: "table" }, h("thead", null, h("tr", null, cols.map((c) => h("th", { scope: "col" }, c)))), h("tbody", null, first.slice(0, 8).map((r) => h("tr", null, cols.map((c) => h("td", { class: "data-cell mono" }, r[c] === null || r[c] === undefined ? "—" : typeof r[c] === "object" ? JSON.stringify(r[c]) : String(r[c]))))))),
+                )
+              : h("p", { class: "dim" }, "Empty."),
+          );
+        }),
+      );
+      el.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    } catch (err) {
+      fill(el, errorView(err));
+    }
+  }
+}
+
 // ------------------------------------------------------------------ Chaos
 
 const CHAOS_TABS = [
@@ -2062,6 +2330,7 @@ const CHAOS_TABS = [
   ["env", "Missing values"],
   ["behaviour", "Behaviour diff"],
   ["graveyard", "Graveyard"],
+  ["security", "Security"],
 ];
 const FINDING_KIND = { blank: "Blank page", uncaught: "Uncaught error", stuck: "Stuck loading", double: "Sent twice", server: "Server error", exception: "Exception", console: "Console error", network: "Request failed", overlay: "Error overlay" };
 const VERDICT = {
@@ -2111,11 +2380,11 @@ function chaosPage(root) {
     try {
       projects = await api("/api/projects");
     } catch (err) {
-      holder.replaceChildren(errorView(err));
+      fill(holder, errorView(err));
       return;
     }
     if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
-    projectSelect.replaceChildren(...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    fill(projectSelect, ...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
     load();
   })();
 
@@ -2124,11 +2393,11 @@ function chaosPage(root) {
 
   async function load() {
     clearTimeout(timer);
-    if (!dir) return holder.replaceChildren(h("div", { class: "card" }, stateView("No projects", "dx looks for projects in your projects folders.")));
+    if (!dir) return fill(holder, h("div", { class: "card" }, stateView("No projects", "dx looks for projects in your projects folders.")));
     try {
       state = await api(`/api/chaos?${q()}`);
     } catch (err) {
-      return holder.replaceChildren(errorView(err, load));
+      return fill(holder, errorView(err, load));
     }
     draw();
   }
@@ -2136,7 +2405,7 @@ function chaosPage(root) {
   function draw() {
     clearTimeout(timer);
     if (!state) return;
-    ({ chaos: chaosTab, gremlins: gremlinsTab, clock: clockTab, phone: phoneTab, env: envTab, behaviour: behaviourTab, graveyard: graveyardTab })[tab]();
+    ({ chaos: chaosTab, gremlins: gremlinsTab, clock: clockTab, phone: phoneTab, env: envTab, behaviour: behaviourTab, graveyard: graveyardTab, security: securityTab })[tab]();
   }
 
   async function save(patch, said) {
@@ -2202,7 +2471,7 @@ function chaosPage(root) {
     faultBoxes.forEach((b, i) => (b.dataset.f = state.faults[i].id));
     const seed = h("input", { class: "input lab-status mono", type: "number", min: "0", value: c.seed, "aria-label": "Seed" });
     const paths = h("input", { class: "input mono", value: c.paths ?? "", placeholder: "all API calls, or a pattern like /api/**" });
-    holder.replaceChildren(
+    fill(holder, 
       h(
         "div",
         { class: "card card-pad section" },
@@ -2232,7 +2501,7 @@ function chaosPage(root) {
       try {
         drawReport(report, await api(`/api/chaos/report?${q()}`));
       } catch (err) {
-        report.replaceChildren(errorView(err));
+        fill(report, errorView(err));
       }
       if (state.config.on) timer = setTimeout(poll, 4000);
     };
@@ -2271,7 +2540,7 @@ function chaosPage(root) {
           ),
         )
       : h("div", { class: "card" }, stateView(r.calls ? "Nothing broke yet" : "No calls yet", r.calls ? "The app took everything chaos threw at it so far. Keep clicking, or let Gremlins loose." : "Use the app at its .localhost address (or let Gremlins loose): its calls show up here as they're broken."));
-    el.replaceChildren(stats, faults.length ? h("div", { class: "machine-badges" }, faults.map(([k, n]) => h("span", { class: "badge" }, `${k} ×${n}`))) : null, list);
+    fill(el, stats, faults.length ? h("div", { class: "machine-badges" }, faults.map(([k, n]) => h("span", { class: "badge" }, `${k} ×${n}`))) : null, list);
   }
 
   // ---------------------------------------------------------------- jobs
@@ -2279,10 +2548,10 @@ function chaosPage(root) {
   function jobView(kind, render) {
     const el = h("div", { class: "section", "aria-live": "polite" });
     const show = (job) => {
-      if (!job) return el.replaceChildren();
+      if (!job) return fill(el);
       const running = !job.finishedAt;
       const bar = h("progress", { class: "chaos-progress", max: Math.max(1, job.total), value: job.done });
-      el.replaceChildren(
+      fill(el, 
         h(
           "div",
           { class: "card card-pad section" },
@@ -2306,7 +2575,7 @@ function chaosPage(root) {
           state.jobs[kind] = next;
           follow(next);
         } catch (err) {
-          el.replaceChildren(errorView(err));
+          fill(el, errorView(err));
         }
       }, 1000);
     };
@@ -2330,7 +2599,7 @@ function chaosPage(root) {
     const bold = h("input", { type: "checkbox" });
     const phone = h("input", { type: "checkbox", checked: !!state.config.phone });
     const job = jobView("gremlins", gremlinResult);
-    holder.replaceChildren(
+    fill(holder, 
       h(
         "div",
         { class: "card card-pad section" },
@@ -2431,7 +2700,7 @@ function chaosPage(root) {
       return save({ clock: v.at || v.timeZone ? v : null }, v.at || v.timeZone ? "Clock set: reload the app's pages to see it" : "Real clock again").then(draw);
     };
     const on = !!(c.at || c.timeZone);
-    holder.replaceChildren(
+    fill(holder, 
       h(
         "div",
         { class: "card card-pad section" },
@@ -2463,7 +2732,7 @@ function chaosPage(root) {
         load();
       },
     });
-    holder.replaceChildren(
+    fill(holder, 
       h(
         "div",
         { class: "card card-pad section" },
@@ -2497,7 +2766,7 @@ function chaosPage(root) {
   function envTab() {
     const path = h("input", { class: "input mono", value: "/", placeholder: "/" });
     const job = jobView("env", envResult);
-    holder.replaceChildren(
+    fill(holder, 
       h(
         "div",
         { class: "card card-pad section" },
@@ -2547,7 +2816,7 @@ function chaosPage(root) {
     const commit = h("input", { class: "input mono", placeholder: "the last commit (or the one before, with no changes)" });
     const pages = h("input", { class: "input mono", placeholder: "your most visited pages" });
     const job = jobView("behaviour", behaviourResult);
-    holder.replaceChildren(
+    fill(holder, 
       h(
         "div",
         { class: "card card-pad section" },
@@ -2586,11 +2855,61 @@ function chaosPage(root) {
     );
   }
 
+  // ---------------------------------------------------------------- Security
+
+  function securityTab() {
+    const cookie = h("input", { class: "input mono", type: "password", autocomplete: "off", placeholder: "sid=… (optional)" });
+    const auth = h("input", { class: "input mono", type: "password", autocomplete: "off", placeholder: "Bearer … (optional)" });
+    const readOnly = h("input", { type: "checkbox" });
+    const job = jobView("attack", attackResult);
+    fill(holder, 
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("p", { class: "dim" }, "A friendly attack on your own app, on this computer only: the requests and pages in its history are tried against its dev server for script that comes back unescaped, records another id opens, calls that work without signing in or from another site, CORS, cookie flags, security headers, stack traces and SQL errors, and logins with no rate limit. It sends a few test records and wrong passwords to your development database."),
+        h(
+          "div",
+          { class: "lab-grid" },
+          field("Your session cookie", cookie, "To test signed-in calls: the Cookie value from your browser's dev tools. Used for this run only, never stored"),
+          field("Or an Authorization value", auth, "For APIs signed in with a token"),
+        ),
+        h("label", { class: "check" }, readOnly, "Only checks that don't change data"),
+        h("div", { class: "toolbar" }, btn("Attack my app", (ev) => start("attack", "/api/chaos/attack", { session: { cookie: cookie.value, authorization: auth.value }, readOnly: readOnly.checked }, ev.currentTarget), { kind: "primary", iconName: "warn" })),
+      ),
+      job.el,
+    );
+  }
+
+  function attackResult(r) {
+    const sev = { high: ["badge-danger", "Serious"], medium: ["badge-warn", "Worth fixing"], low: ["", "Minor"] };
+    return h(
+      "div",
+      { class: "section" },
+      h("p", { class: "dim" }, `${plural(r.requests, "request")} in ${Math.round(r.ms / 1000)} s. Tried: ${r.tried.join(", ") || "nothing"}.`),
+      r.skipped.length ? h("p", { class: "dim" }, `Not tried: ${r.skipped.join("; ")}.`) : null,
+      r.findings.length
+        ? h(
+            "ul",
+            { class: "card chaos-findings" },
+            r.findings.map((f) =>
+              h(
+                "li",
+                null,
+                h("span", { class: `badge ${sev[f.severity][0]}` }, sev[f.severity][1]),
+                h("div", { class: "chaos-finding-text" }, h("strong", null, f.title), h("div", null, f.fix), h("div", { class: "dim mono" }, f.proof), f.where ? h("div", null, fromLink(f.where)) : null),
+                copyButton(`${f.title}\n${f.fix}\nProof: ${f.proof}${f.where ? `\nIn: ${f.where}` : ""}`, "Copy"),
+              ),
+            ),
+          )
+        : h("div", { class: "card" }, stateView("Nothing found", "None of the checks found a weakness in what the history covers. Use more of the app (and sign in) so there's more to try.")),
+    );
+  }
+
   // ---------------------------------------------------------------- Graveyard
 
   function graveyardTab() {
     const out = h("div", { class: "section" }, loadingView("Reading the code and the history…"));
-    holder.replaceChildren(
+    fill(holder, 
       h("div", { class: "card card-pad" }, h("p", { class: "dim" }, "Routes and pages the code declares (and mocks kept for it) that nothing used while dx was watching: dead code found from what actually ran. It's only as long as the history dx keeps (Health & settings, activity days).")),
       out,
     );
@@ -2612,7 +2931,7 @@ function chaosPage(root) {
             alive.length ? h("details", null, h("summary", null, `${alive.length} used`), h("ul", { class: "chaos-grave" }, alive.map((e) => h("li", null, h("span", { class: "mono" }, e.what), h("span", { class: "dim" }, `${plural(e.uses, "time")}, last ${relativeTime(Date.parse(e.lastUsed))}`))))) : null,
           );
         };
-        out.replaceChildren(
+        fill(out, 
           h("p", { class: "dim" }, `The last ${plural(g.days, "day")}: ${plural(g.events, "request and page event", "requests and page events")}${g.unmatched ? `; ${plural(g.unmatched, "call")} matched no route dx found` : ""}.`),
           g.events ? null : h("div", { class: "card" }, stateView("No history yet", "Use the app at its .localhost address first: until something is recorded, everything looks unused.")),
           block("API routes never called", g.endpoints, "No routes found in the code or a saved API spec."),
@@ -2620,7 +2939,7 @@ function chaosPage(root) {
           block("Mocks nothing asked for", g.mocks, "No mocks for this project."),
         );
       } catch (err) {
-        out.replaceChildren(errorView(err));
+        fill(out, errorView(err));
       }
     })();
   }
@@ -5807,6 +6126,7 @@ function gitPage(root) {
         "span",
         { class: "graph-text" },
         look ? visualThumb(look) : null,
+        look ? healthMarks(look) : null,
         pills.length ? h("span", { class: "graph-refs" }, pills) : null,
         h("span", { class: "graph-subject" }, c.subject || "(no message)"),
       ),
@@ -6046,7 +6366,7 @@ function gitPage(root) {
       e.against && c.changed !== undefined ? h("span", { class: "dim" }, " · against ", at(e.against)) : null,
     );
     const after = (cls) => visualImg(e.commit, c.name, "shot", `${c.path} at ${e.commit.slice(0, 7)}`, cls);
-    if (!c.changed) return [summary, h("div", { class: "visual-frame" }, after())];
+    if (!c.changed) return [summary, h("div", { class: "visual-frame" }, after()), healthBlock(c)];
     const before = (cls) => visualImg(e.against, c.name, "shot", `${c.path} at ${e.against.slice(0, 7)}`, cls);
     const boxEl = () => {
       if (!c.box) return null;
@@ -6088,7 +6408,65 @@ function gitPage(root) {
       summary,
       segmented("Compare as", [["wipe", "Wipe"], ["side", "Side by side"], ["diff", "Changes"]], ["wipe", "side", "diff"].includes(view) ? view : "wipe", setView),
       stage,
+      healthBlock(c),
     ];
+  }
+
+  /** In a commit's row: it made a page clearly slower or heavier, or added accessibility problems. */
+  function healthMarks(e) {
+    const marks = [];
+    if (e.slower) {
+      const why = e.captures.map((c) => [c.slower, c.heavier].filter(Boolean).map((t) => `${c.path}: ${t}`).join("; ")).filter(Boolean).join("; ");
+      marks.push(h("span", { class: "badge badge-warn graph-health", title: why }, "slower"));
+    }
+    if (e.a11yNew) marks.push(h("span", { class: "badge badge-warn graph-health", title: `${plural(e.a11yNew, "new accessibility problem")} on the pages captured` }, `${e.a11yNew} a11y`));
+    return marks.length ? marks : null;
+  }
+
+  function fmtMs(ms) {
+    return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
+  }
+
+  /** Speed and accessibility of one captured page, against the commit it's compared with. */
+  function healthBlock(c) {
+    if (!c.perf && !c.a11y) return null;
+    const p = c.perf ?? {};
+    const b = c.perfBefore;
+    const row = (label, key, fmt) => {
+      if (p[key] === undefined) return null;
+      const was = b?.[key];
+      return h("li", null, h("span", { class: "dim" }, label), h("strong", null, fmt(p[key])), was !== undefined && was !== p[key] ? h("span", { class: "dim" }, ` was ${fmt(was)}`) : null);
+    };
+    const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
+    const fresh = new Set((c.a11yNew ?? []).map((i) => `${i.rule} ${i.text}`));
+    const issues = c.a11y ?? [];
+    return h(
+      "div",
+      { class: "health" },
+      h("strong", null, "Speed and accessibility"),
+      c.slower ? h("p", { class: "visual-summary changed" }, icon("warn"), `Slower: ${c.slower}`) : null,
+      c.heavier ? h("p", { class: "visual-summary changed" }, icon("warn"), `Heavier: ${c.heavier}`) : null,
+      c.perf
+        ? h(
+            "ul",
+            { class: "health-stats" },
+            row("Largest paint", "lcpMs", fmtMs),
+            row("Loaded", "loadMs", fmtMs),
+            row("Main thread blocked", "tbtMs", fmtMs),
+            row("Layout shift", "cls", (x) => String(x)),
+            row("JavaScript (dev build)", "jsBytes", kb),
+            row("Requests", "requests", (x) => String(x)),
+          )
+        : null,
+      issues.length
+        ? h(
+            "ul",
+            { class: "chaos-findings health-issues" },
+            issues.map((i) => h("li", null, h("span", { class: `badge ${fresh.has(`${i.rule} ${i.text}`) ? "badge-warn" : ""}` }, fresh.has(`${i.rule} ${i.text}`) ? "New" : i.rule), h("div", { class: "chaos-finding-text" }, i.text))),
+          )
+        : h("p", { class: "dim" }, c.a11y ? "No accessibility problems found on this page." : ""),
+      c.a11yFixed ? h("p", { class: "dim" }, `${plural(c.a11yFixed, "problem")} the commit before had ${c.a11yFixed === 1 ? "is" : "are"} gone.`) : null,
+    );
   }
 
   function visualRaw(e, c) {
@@ -6110,6 +6488,12 @@ function gitPage(root) {
         box: c.box ?? null,
         label: c.label ?? null,
         error: c.error ?? null,
+        perf: c.perf ?? null,
+        perfBefore: c.perfBefore ?? null,
+        slower: c.slower ?? null,
+        heavier: c.heavier ?? null,
+        accessibility: c.a11y ?? null,
+        accessibilityNew: c.a11yNew ?? null,
         files: {
           after: file(e.commit),
           before: e.against && c.changed !== undefined ? file(e.against) : null,

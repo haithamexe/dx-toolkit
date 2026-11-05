@@ -7,12 +7,13 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - CI is green on Windows, macOS and Linux × Node 22 and 24.
 - **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
-  - the Chaos page (Chaos mode, Gremlins, fake clock, weak phone, missing .env values, behaviour diff, the graveyard) and `dx chaos`;
+  - the Chaos page (Chaos mode, Gremlins, fake clock, weak phone, missing .env values, behaviour diff, the graveyard, Security) and `dx chaos`, `dx attack`;
+  - the Data page (realistic data and scenes) and `dx data`; Open on my phone and `dx phone`; speed and accessibility per commit;
   - the core tools;
-  - the `dx` command: `ui, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, chaos, prepare, visual, machine, browser, sites, setup, https, config, runs, doctor`;
-  - the MCP server with 39 tools, 20 of them for running, checking and breaking apps;
+  - the `dx` command: `ui, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, chaos, attack, data, phone, prepare, visual, machine, browser, sites, setup, https, config, runs, doctor`;
+  - the MCP server with 41 tools, 22 of them for running, checking and breaking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
-  - the dashboard with 14 pages (Projects, New project, Ports, Machine, Git, Activity, Requests, Chaos, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - the dashboard with 15 pages (Projects, New project, Ports, Machine, Git, Activity, Requests, Chaos, Data, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
   - the activity history (requests, routes, clicks, console, errors, kept 7 days), for deployed sites too through the dx browser, and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
@@ -56,6 +57,35 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Open on my phone (`web/src/phone.ts`, `core/src/tools/qr.ts`)
+
+- **The one exception to loopback-only, kept narrow**: a session per project, on request, 30 minutes by default (5–120), listening on this computer's private LAN address only (`lanAddress`: 10.x, 192.168.x, 172.16–31.x, virtual 172.x adapters last), never `0.0.0.0`. It forwards only to that project's dev server (`localRoutes()`), through `relay()`, never the dashboard.
+- **A one-time link, then a cookie**: the QR holds `/__dx/phone?c=<32 hex>`; the first request trades it for `dx_phone=<64 hex>` (HttpOnly, SameSite=Lax, expiring with the session) and the code is cleared. Every other request needs that cookie (compared with `timingSafeEqual`); the cookie is removed before the request goes to the app. **New code** restarts the session, which lets the earlier phone go.
+- **Labelled `env: "phone"`** on both the proxy's request events and the recorder's page events (`LocalRoute.env`), so the Activity page's environment filter and the card's panel can pick them out.
+- **Closes** at expiry, on Stop, when the dashboard's regular check finds the dev server gone (`prunePhones`), and with the dashboard.
+- **QR codes are encoded in core** (byte mode, level M, versions 1–10, the lowest-penalty mask), drawn as one SVG path through the DOM (no `innerHTML`, so the CSP is unchanged) and with half blocks in the terminal. Checked against jsQR during development for versions 1, 4, 5, 7, 9 and 10 and unicode; the tests check the structure.
+
+### Realistic data (`core/src/tools/seeddata.ts`, `seedload.ts`, `web/src/dataapi.ts`)
+
+- **Schema from files**: Prisma first (`prisma/schema.prisma`, the `prisma.schema` in package.json, or a `prisma/schema` folder), else `CREATE TABLE` in `.sql` files whose path mentions migrations, schema, db or sql. Relations come from `@relation(fields, references)`, `REFERENCES` and `ALTER TABLE … FOREIGN KEY`; composite uniques are kept so rows don't break them.
+- **Rows by name and type, seeded** (mulberry32): emails at example.com, names, products, prices, statuses, dates in the last year, ids written explicitly (so relations line up). Fill order is parents first; a cycle is broken at an optional reference. Owners (users, accounts, customers…) get a dozen rows; children 1–5 per parent, except row 0 (nothing: empty states), row 1 (the long, unicode, sparse one; the big customer's 60 in that recipe) and row 2 (soft-deleted when there's a `deletedAt`, still with children).
+- **Loading goes through the project's own tools**: a CommonJS runner written to a temp folder runs with the project's `@prisma/client` (deleteMany children first, then createMany parents first, in one transaction; one by one where createMany isn't there), or SQL dx builds itself goes to the compose database's client (`runSceneSql`: TRUNCATE … RESTART IDENTITY CASCADE / DELETE with foreign key checks off, then INSERT). Postgres sequences are moved past the ids used. Never a statement from a request.
+- **Only local**, with the migrations' guard (`isLocalDatabase`) for Prisma, and the compose database (on this computer by definition) for SQL. **A backup scene first**, unless the database is empty; the newest five backups are kept. Verified with real Prisma 6 and SQLite during development; the test uses a stand-in client.
+- **Not yet**: SQLite without Prisma, MongoDB, Drizzle/TypeORM schemas (their migrations' SQL works).
+
+### Attack my app (`core/src/tools/attack.ts`, `POST /api/chaos/attack`)
+
+- **From the history, against the project's own dev server only** (loopback, through its `.localhost` address, so the attempts are in Activity too). Only paths the proxy saw; calls the page made to other addresses are skipped.
+- **Proof over guesses**: stored and DOM script are reported only when a headless browser finds the injected element (`<dx… data-dx-xss>`) in the page; reflected server-side when the HTML contains it unescaped; SQL errors by the database's own error text after one quote; CSRF only with your cookie and an `Origin` of another site, and only for recorded POST/PUT/PATCH (never DELETE). Other ids are tried only with a session, and reported as "check it belongs to the user", since dx can't know who owns what.
+- **A session is used for one run**: kept in memory for the job, never in the report, a log or runs.jsonl.
+- **Set-Cookie keeps its flags**: `maskSetCookie` masks the value only, so the cookie check can read HttpOnly/Secure/SameSite from the history.
+
+### Speed and accessibility per commit (`core/src/tools/pagehealth.ts`, in `captureVisual`)
+
+- **Measured on the desktop capture of each page**, after a warm-up load (the dev server compiles on the first request): navigation timing, largest contentful paint, total blocking time and layout shift from observers added before the page's scripts, and the encoded size of the scripts the measured load fetched. Dev-build sizes: compared between commits, not with production.
+- **Only clear changes count**: slower means +300 ms and +30% on largest paint (else load), +200 ms blocking, or +0.1 layout shift; heavier means +20 KB and +10% JavaScript.
+- **The accessibility audit is dx's own** (no library): alt text, labels, accessible names, WCAG contrast (4.5:1, 3:1 for large text) against the first solid background, `lang`, heading levels, positive tabindex, duplicate ids. New problems are those the compared commit's capture didn't have, by rule and text.
 
 ### Chaos (`core/src/tools/chaos.ts`, `gremlins.ts`, `emulation.ts`, `envprobe.ts`, `behaviour.ts`, `graveyard.ts`; `web/src/chaos.ts`, `chaosapi.ts`)
 

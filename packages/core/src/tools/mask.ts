@@ -18,9 +18,24 @@ export function maskHeaders(headers: HeaderBag): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
     if (v === undefined) continue;
-    out[k.toLowerCase()] = SECRET_HEADERS.test(k) ? MASK : Array.isArray(v) ? v.join(", ") : String(v);
+    // A cookie being set keeps its name and flags (HttpOnly, Secure, SameSite), so they can be
+    // checked; only its value is masked.
+    if (/^set-cookie$/i.test(k)) out[k.toLowerCase()] = (Array.isArray(v) ? v : [String(v)]).map(maskSetCookie).join(", ");
+    else out[k.toLowerCase()] = SECRET_HEADERS.test(k) ? MASK : Array.isArray(v) ? v.join(", ") : String(v);
   }
   return out;
+}
+
+/** "sid=abc; Path=/; HttpOnly" → "sid=•••; Path=/; HttpOnly". Anything that isn't a name=value cookie is masked whole. */
+export function maskSetCookie(cookie: string): string {
+  const m = /^\s*([!#$%&'*+.^_`|~0-9A-Za-z-]{1,100})=[^;]*((?:;\s*[A-Za-z-]+(?:=[^;]*)?)*)\s*$/.exec(cookie);
+  if (!m) return MASK;
+  // Attribute values are kept only for the flags that matter; Domain and Path can stay, Expires too.
+  const attrs = m[2]
+    .split(";")
+    .map((a) => a.trim())
+    .filter((a) => /^(httponly|secure|partitioned)$/i.test(a) || /^(samesite|path|domain|max-age|expires)=/i.test(a));
+  return [`${m[1]}=${MASK}`, ...attrs].join("; ");
 }
 
 /** Masks the values of keys that look like credentials, in JSON, forms and key=value text. */

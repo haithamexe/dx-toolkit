@@ -136,6 +136,26 @@ export async function queryDatabase(project: Pick<Project, "name" | "dir">, opti
   return r;
 }
 
+/**
+ * Runs SQL that dx built itself (Realistic data's scenes: TRUNCATE and INSERT, or a JSON dump)
+ * in the project's Postgres or MySQL container, with its own client and user. Never a statement
+ * from a request; the read-only queries above are the way in for those.
+ */
+export async function runSceneSql(project: Pick<Project, "name" | "dir">, sql: string, options: { service?: string } = {}): Promise<{ db: DbService; stdout: string }> {
+  const dbs = findDatabases(project).filter((d) => d.kind !== "redis");
+  const db = options.service ? dbs.find((d) => d.service === options.service) : dbs[0];
+  if (!db) throw new Error(`${project.name} has no Postgres or MySQL in a docker-compose file.`);
+  if (!(await running(db))) throw new Error(`The ${db.service} container isn't running. Start the stack first (dx up ${project.name}).`);
+  const script =
+    db.kind === "postgres"
+      ? 'psql -X -q -At -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"'
+      : 'U="${MYSQL_USER:-${MARIADB_USER:-root}}"; P="${MYSQL_PASSWORD:-$MARIADB_PASSWORD}"; if [ -n "${MYSQL_ROOT_PASSWORD:-$MARIADB_ROOT_PASSWORD}" ]; then U=root; P="${MYSQL_ROOT_PASSWORD:-$MARIADB_ROOT_PASSWORD}"; fi; ' +
+        'C="$(command -v mysql || command -v mariadb)"; MYSQL_PWD="$P" "$C" -u"$U" --batch --raw -N --default-character-set=utf8mb4 -D "${MYSQL_DATABASE:-${MARIADB_DATABASE:-mysql}}"';
+  const out = await exec(db, ["sh", "-c", script], sql);
+  if (!out.ok) throw new Error(firstLine(out.stderr || out.stdout).replace(/^(psql|ERROR \d+ \([\w]+\) at line \d+):\s*/, ""));
+  return { db, stdout: out.stdout };
+}
+
 async function running(db: DbService): Promise<boolean> {
   const r = await docker(db.composeDir, ["compose", "ps", "--status", "running", "--services"]);
   return r.ok && r.stdout.split(/\r?\n/).map((s) => s.trim()).includes(db.service);

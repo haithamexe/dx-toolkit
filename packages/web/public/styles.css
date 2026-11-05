@@ -4,6 +4,9 @@
  * ok = green ✓, warn = yellow !, danger = red ✗, accent = cyan (commands, links).
  */
 :root {
+  /* A QR code is read dark on light whatever the theme, so these two aren't redefined for dark. */
+  --qr-ink: #000000;
+  --qr-paper: #ffffff;
   --bg: #f5f6f8;
   --surface: #ffffff;
   --surface-2: #eef0f3;
@@ -1472,6 +1475,93 @@ summary.traffic-row {
   .chaos-findings > li {
     flex-wrap: wrap;
   }
+}
+
+/* ------------------------------------------------------------ speed and accessibility (Git page) */
+.graph-health {
+  flex: none;
+  font-size: var(--t-xs);
+}
+.health {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+}
+.health-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--s2) var(--s4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.health-stats > li {
+  display: flex;
+  flex-direction: column;
+}
+.health-issues {
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+}
+
+/* ------------------------------------------------------------ on my phone */
+.phone-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s4);
+  align-items: flex-start;
+}
+.phone-qr {
+  flex: none;
+  width: 184px;
+  height: 184px;
+  border-radius: var(--r1);
+}
+.phone-qr-bg {
+  fill: var(--qr-paper);
+}
+.phone-qr-ink {
+  fill: var(--qr-ink);
+}
+.phone-info {
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.phone-info p {
+  margin: 0;
+}
+
+/* ------------------------------------------------------------ data */
+.data-recipes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--s3);
+}
+.data-recipe {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+}
+.data-recipe p {
+  flex: 1;
+  margin: 0;
+}
+.data-cell {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-sm);
 }
 
 /* ------------------------------------------------------------ env & secrets */

@@ -99,6 +99,7 @@ export function acceptBrowserEvents(raw: string, route: LocalRoute, headless = f
       type: type as ActivityEvent["type"],
       text: str(e.text, 4000) ?? "",
       from: headless ? "check" : "browser",
+      env: route.env,
       visit,
       // The page's clock is this computer's clock; a value far off is replaced by now.
       at: at !== undefined && Math.abs(at - Date.now()) < 3_600_000 ? new Date(at).toISOString() : undefined,
@@ -164,6 +165,7 @@ export function requestActivity(e: TrafficEntry, route: LocalRoute, userAgent = 
     responseBody: e.responseBody,
     truncated: e.truncated,
     from: /HeadlessChrome/i.test(userAgent) ? "check" : "proxy",
+    env: route.env,
     at: e.at,
   });
 }

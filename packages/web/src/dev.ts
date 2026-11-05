@@ -184,6 +184,8 @@ export interface LocalRoute {
   dir: string;
   project: string;
   service?: string;
+  /** Where the visit came from, for the history: "phone" when it came through Open on my phone. */
+  env?: string;
 }
 
 /** Every *.localhost name dx serves, and the address it points at. */

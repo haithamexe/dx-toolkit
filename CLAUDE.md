@@ -44,7 +44,7 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 
 `packages/web/src/server.ts` and `api.ts`:
 
-- Listens on `127.0.0.1` only. The `Host` header must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding).
+- Listens on `127.0.0.1` only. The `Host` header must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding). The one exception is **Open on my phone** (`phone.ts`), below.
 - A random token per run is injected into `<meta name="dx-token">`; every `/api/*` call sends it as `X-DX-Token`, compared with `timingSafeEqual`. Cross-origin `Origin` headers are refused.
 - CSP: `default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; …`. No inline scripts or styles, no external hosts. The page builds DOM with the `h()` helper and text nodes, never `innerHTML` with data.
 - Every action takes a project `dir` and checks it against `scanProjects()`; cleanup deletes only folders `findCleanup()` returns on a fresh scan.
@@ -74,7 +74,10 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
   - **The cache** keeps real answers (2xx–4xx, not redirects, at most 512 KB) as mocks, masked like the history.
   - **AI data** (`aicli.ts`) runs `claude -p` or `codex exec --sandbox read-only` in an empty temp folder with fixed arguments, only on a click; the prompt is built by the server from the mock and the spec, plus the user's note. The answer is only ever used as JSON for the mock's body.
 - **Chaos** (`chaos.ts`, `chaosapi.ts`, `/api/chaos*`): faults apply only inside `relay()`, to API calls for dev servers dx runs (never page loads, scripts, `/__dx/`), and never change where a request goes. Settings are checked by `cleanChaos` (levels and faults from lists, a seed number, a path pattern without CR/LF, a clock of an ISO date and a zone `Intl` accepts) and kept 0600 under `~/.dx/chaos`; only those checked values go into the recorder script. Every route takes a known project's `dir`. Gremlins and behaviour diffs load only paths on the project's own dev server on loopback (`onServer`), the behaviour diff's commit must be hex and resolve, and the missing-values probe runs only the project's own dev command with one variable blank.
-- `server.test.ts`, `stack.test.ts`, `chaos.test.ts`, `activity.test.ts`, `mocks.test.ts`, `apilab.test.ts`, `frontdoor.test.ts` and core's `dxbrowser.test.ts`, `bugbundle.test.ts`, `mocks.test.ts` and `apilab.test.ts` cover all of this. Run them after touching these files.
+- **Open on my phone** (`phone.ts`, `/api/phone`): the only listener beyond loopback. Started only on request for a known project whose dev server dx runs, on this computer's private LAN address only (never `0.0.0.0`), for at most 120 minutes. A one-time code (in the QR link) becomes a session cookie compared with `timingSafeEqual`; every other request is refused. It forwards only to that project's dev server through `relay()`, never the dashboard, strips its own cookie, and closes on expiry, Stop, the dev server stopping, or the dashboard closing. Keep all of that when touching it.
+- **Realistic data** (`seeddata.ts`, `seedload.ts`, `dataapi.ts`): loads only into a database on this computer (`isLocalDatabase` for Prisma's `DATABASE_URL`, or the docker-compose Postgres/MySQL), through the project's own Prisma client or `runSceneSql` with SQL dx builds itself, after saving the current data as a backup scene. Scenes are named by slug (`sceneSlug`) under `~/.dx/data`, 0600; never a path or SQL from a request.
+- **Attack my app** (`attack.ts`, `POST /api/chaos/attack`): requests go only to the project's own dev server on loopback, built from the recorded history; a session given for the run stays in memory and never reaches the report, a log or `runs.jsonl`. `maskSetCookie` keeps a set cookie's name and flags, never its value.
+- `server.test.ts`, `stack.test.ts`, `chaos.test.ts`, `phone.test.ts`, `activity.test.ts`, `mocks.test.ts`, `apilab.test.ts`, `frontdoor.test.ts` and core's `dxbrowser.test.ts`, `bugbundle.test.ts`, `mocks.test.ts` and `apilab.test.ts` cover all of this. Run them after touching these files.
 
 ## No setup
 

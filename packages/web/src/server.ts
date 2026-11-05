@@ -7,6 +7,7 @@ import { handleApi, HttpError } from "./api.js";
 import { certCovers, dxPath, ensureCert, loadConfig, projectHostNames, type CertFiles, type DxConfig } from "@dx/core";
 import { releaseAll } from "./intercept.js";
 import { flushCache, listMockServers, startMockServer, stopAllMockServers } from "./mocks.js";
+import { prunePhones, stopAllPhones } from "./phone.js";
 import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
 import { DOMAIN_PORTS, startLocalDomains, type LocalDomains, type TlsOptions } from "./proxy.js";
 import { clearDashboardInfo, writeDashboardInfo } from "./link.js";
@@ -168,6 +169,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
 
   const idleMs = (options.idleMinutes ?? 30) * 60_000;
   const idleTimer = setInterval(() => {
+    prunePhones();
     if (options.background && !anyDevServerRunning() && !dxBrowserOpen() && !listMockServers().length && Date.now() - lastActivity > idleMs) options.onIdle?.();
   }, Math.min(60_000, Math.max(1000, idleMs / 4)));
   idleTimer.unref();
@@ -183,6 +185,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       releaseAll();
       flushCache();
       await stopAllMockServers();
+      await stopAllPhones();
       await stopAllDevServers();
       // It records through this dashboard, so it goes with it, like the dev servers.
       await closeDxBrowser().catch(() => undefined);

@@ -69,6 +69,9 @@ const SAFE_KEYS = new Set([
   "commit",
   "phone",
   "time_zone",
+  "action",
+  "recipe",
+  "read_only",
 ]);
 /** Arguments whose size is worth knowing but whose content isn't kept. */
 const COUNTED_KEYS = new Set(["steps", "files", "services", "query", "note", "text", "body", "headers", "search", "match"]);

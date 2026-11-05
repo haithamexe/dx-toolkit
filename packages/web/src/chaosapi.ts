@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import {
+  attackApp,
   CHAOS_FAULTS,
   CHAOS_LEVELS,
   ChaosError,
@@ -18,6 +19,7 @@ import {
   runGremlins,
   setChaos,
   topVisitedPaths,
+  type AttackReport,
   type BehaviourDiff,
   type EnvProbe,
   type GremlinRun,
@@ -40,7 +42,7 @@ import { runSnapshot, snapshotViews } from "./snapshots.js";
  * the project's repository.
  */
 
-export type JobKind = "gremlins" | "env" | "behaviour";
+export type JobKind = "gremlins" | "env" | "behaviour" | "attack";
 
 export interface ChaosJob {
   id: string;
@@ -54,7 +56,7 @@ export interface ChaosJob {
   startedAt: string;
   finishedAt?: string;
   error?: string;
-  result?: GremlinRun | EnvProbe | { against: string; diffs: BehaviourDiff[] };
+  result?: GremlinRun | EnvProbe | AttackReport | { against: string; diffs: BehaviourDiff[] };
 }
 
 const jobs = new Map<string, ChaosJob & { abort: AbortController }>();
@@ -121,7 +123,7 @@ export const chaosRoutes: Record<string, (req: ApiRequest) => unknown> = {
       levels: Object.entries(CHAOS_LEVELS).map(([id, l]) => ({ id, name: l.name, about: l.about, faults: Object.keys(l.odds) })),
       faults: CHAOS_FAULTS,
       phone: { ...PHONE, browser: dxBrowserStatus() },
-      jobs: { gremlins: latest("gremlins"), env: latest("env"), behaviour: latest("behaviour") },
+      jobs: { gremlins: latest("gremlins"), env: latest("env"), behaviour: latest("behaviour"), attack: latest("attack") },
     };
   },
 
@@ -278,6 +280,36 @@ export const chaosRoutes: Record<string, (req: ApiRequest) => unknown> = {
     })().catch((err: Error) => {
       finish(job, err);
       recordRun("behaviour", false, `${project.name}: ${job.error}`, "web", { project: project.name });
+    });
+    return view(job);
+  },
+
+  "POST /api/chaos/attack": (req) => {
+    const project = knownProject(req.body.dir);
+    // A session to test signed-in calls with: used for this run, in memory, never stored or logged.
+    const raw = (req.body.session && typeof req.body.session === "object" ? req.body.session : {}) as Record<string, unknown>;
+    const value = (v: unknown, name: string) => {
+      if (v === undefined || v === "") return undefined;
+      if (typeof v !== "string" || v.length > 8192 || /[\r\n]/.test(v)) throw new HttpError(400, `The ${name} must be one line.`);
+      return v.trim();
+    };
+    const session = { cookie: value(raw.cookie, "cookie")?.replace(/^cookie:\s*/i, ""), authorization: value(raw.authorization, "authorization")?.replace(/^authorization:\s*/i, "") };
+    const readOnly = req.body.readOnly === true;
+    const job = newJob("attack", project, "Starting");
+    void (async () => {
+      const base = await serverUrl(project, job);
+      job.phase = "running";
+      flushActivity();
+      const events = readActivity({ dir: project.dir, since: new Date(Date.now() - 3 * 86_400_000), limit: 5000 });
+      const r = await attackApp({ baseUrl: base, dir: project.dir, events, session: session.cookie || session.authorization ? session : undefined, readOnly, signal: job.abort.signal, progress: (step) => ((job.step = step), job.done++) });
+      job.result = r;
+      const high = r.findings.filter((f) => f.severity === "high").length;
+      job.step = r.findings.length ? `${r.findings.length} finding${r.findings.length === 1 ? "" : "s"}${high ? `, ${high} serious` : ""}` : "Nothing found";
+      finish(job);
+      recordRun("attack", high === 0, `${project.name}: ${job.step} (${r.requests} requests)`, "web", { project: project.name });
+    })().catch((err: Error) => {
+      finish(job, err);
+      recordRun("attack", false, `${project.name}: ${job.error}`, "web", { project: project.name });
     });
     return view(job);
   },

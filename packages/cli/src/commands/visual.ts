@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { describeCapture, findProjects, formatRatio, listVisual, loadConfig, readProject, scanProjects, visualFolder, type Project, type VisualCommit } from "@dx/core";
+import { describeCapture, describeHealth, findProjects, formatRatio, listVisual, loadConfig, readProject, scanProjects, visualFolder, type Project, type VisualCommit } from "@dx/core";
 import { findDashboard } from "@dx/web/link";
 import type { Command } from "../command.js";
 import { c, info, table, UsageError } from "../ui.js";
@@ -55,13 +55,14 @@ export const visualCommand: Command = {
     console.log(
       table(
         ["Commit", "Look", "Changed", "Pages", "Message"],
-        commits.map((e) => [c.dim(e.commit.slice(0, 7)), look(e), e.ratio !== undefined ? formatRatio(e.ratio) : "", String(e.captures.filter((x) => !x.error).length), e.subject ?? ""]),
+        commits.map((e) => [c.dim(e.commit.slice(0, 7)), look(e) + (e.slower ? c.yellow(" slower") : "") + (e.a11yNew ? c.yellow(` +${e.a11yNew} a11y`) : ""), e.ratio !== undefined ? formatRatio(e.ratio) : "", String(e.captures.filter((x) => !x.error).length), e.subject ?? ""]),
       ),
     );
     if (values.pages) {
       for (const e of commits) {
         console.log(`\n${c.bold(e.commit.slice(0, 7))} ${e.subject ?? ""}${e.against ? c.dim(`  against ${e.against.slice(0, 7)}`) : ""}`);
         for (const x of e.captures) console.log(`  ${x.changed ? c.yellow("●") : x.error ? c.red("✗") : c.dim("○")} ${x.path}${x.viewport === "mobile" ? c.dim(" (phone)") : ""}  ${describeCapture(x)}`);
+        for (const line of describeHealth(e)) console.log(`  ${c.yellow("▲")} ${line}`);
       }
     }
     console.log(c.dim(`\nScreenshots in ${visualFolder(project.dir)}. Before and after side by side: the Git page in dx ui.`));

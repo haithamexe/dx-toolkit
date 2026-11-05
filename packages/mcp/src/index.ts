@@ -68,7 +68,7 @@ import {
   type PageCheck,
   type Project,
 } from "@dx/core";
-import { CHAOS_LEVELS, chaosReport, findGraveyard, loadChaos, probeEnv, setChaos, type BehaviourDiff, type GremlinRun } from "@dx/core";
+import { dataTarget, listScenes, loadData, loadScene, makeScene, readDataSchema, saveScene, sceneSlug, type AttackReport, describeHealth, CHAOS_LEVELS, chaosReport, findGraveyard, loadChaos, probeEnv, setChaos, type BehaviourDiff, type GremlinRun } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
 import { callRecord, recordCall, type CallResult } from "./calls.js";
 
@@ -1447,6 +1447,7 @@ server.registerTool(
       `${e.commit.slice(0, 7)} ${e.subject ?? ""}`.trim(),
       `${describeVisualCommit(e)}${e.against ? ` (against ${e.against.slice(0, 7)})` : ""}. Captured ${new Date(e.at).toLocaleString()} from ${e.baseUrl ?? "the dev server"}.`,
       ...e.captures.map((c) => `- ${c.path}${c.viewport === "mobile" ? " (phone)" : ""}: ${describeCapture(c)}${c.box ? ` [box x=${c.box.x} y=${c.box.y} ${c.box.width}×${c.box.height} of ${c.width}×${c.height}]` : ""}`),
+      ...describeHealth(e).map((x) => `- ${x}`),
     ];
     const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: lines.join("\n") }];
     // The diff images of the pages that changed most (at most two), else the first page as it looks.
@@ -1664,6 +1665,89 @@ server.registerTool(
         ...part("Mocks nothing asked for", g.mocks),
       ].join("\n"),
     );
+  },
+);
+
+server.registerTool(
+  "security_check",
+  {
+    title: "A friendly security pass on the user's own app (XSS, IDOR, CSRF, CORS, cookies, headers, stack traces, login limits)",
+    description:
+      "Tries the requests and pages in a project's activity history against its own dev server on this computer (started if needed): " +
+      "script that comes back unescaped (reflected, and stored through the app's forms, checked in a headless browser), signed-in calls " +
+      "that answer without a session, CORS that lets any site read answers, cookies without HttpOnly/SameSite, missing security headers, " +
+      "stack traces and SQL errors after malformed input, and logins that take 20 wrong passwords. Each finding has the request that shows " +
+      "it, what to fix, and the route's file and line when found. It sends a few test records and wrong passwords to the development " +
+      "database unless read_only is true. Use it after adding routes or forms.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      read_only: z.boolean().optional().describe("Skip the checks that change data"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ project: name, read_only }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      const r = await chaosJob<AttackReport>("/api/chaos/attack", { dir: project.dir, readOnly: read_only === true }, 10 * 60_000);
+      const lines = [`${project.name}: ${r.requests} requests. Tried: ${r.tried.join(", ")}.`, ...(r.skipped.length ? [`Not tried: ${r.skipped.join("; ")}.`] : [])];
+      if (!r.findings.length) lines.push("Nothing found.");
+      for (const f of r.findings) lines.push(`- [${f.severity}] ${f.title}${f.where ? ` (${f.where})` : ""}\n  fix: ${f.fix}\n  proof: ${f.proof}`);
+      return text(lines.join("\n"));
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "realistic_data",
+  {
+    title: "Fill the development database with realistic, connected data (scenes)",
+    description:
+      "Reads the project's database schema (Prisma, or CREATE TABLE in SQL migrations) and makes believable, connected rows for it: users " +
+      "with orders, orders with items, and edge cases (an empty one, a 200-character name, emoji, missing optional values, a deleted user " +
+      "who still has records). action: list (the schema and saved scenes), make (a scene from a recipe: typical, big-customer, first-time, " +
+      "empty; nothing is written to the database), load (replaces the database's rows with a scene; what was there is saved first as a " +
+      "backup scene). Only a database on this computer.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      action: z.enum(["list", "make", "load"]),
+      recipe: z.enum(["typical", "big-customer", "first-time", "empty"]).optional(),
+      seed: z.number().int().min(0).optional(),
+      scene: z.string().max(80).optional().describe("For load: a scene's name or slug from list or make"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ project: name, action, recipe, seed, scene }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const schema = readDataSchema(project.dir);
+    if (!schema) return failure(`No database schema found in ${project.name}: a Prisma schema, or CREATE TABLE in SQL migration files.`);
+    const target = dataTarget(project, schema);
+    try {
+      if (action === "list") {
+        const scenes = listScenes(project.dir);
+        return text(
+          [
+            `${schema.tables.length} tables from ${schema.file}: ${schema.tables.map((t) => t.name).join(", ")}.`,
+            target.ok ? `Loads into ${target.where}.` : `Can't load here: ${target.why}`,
+            scenes.length ? `Scenes:\n${scenes.map((s) => `- ${s.slug} (${s.kind}, ${s.rows} rows)`).join("\n")}` : "No scenes yet.",
+          ].join("\n"),
+        );
+      }
+      if (action === "make") {
+        const s = makeScene(schema, recipe ?? "typical", seed ?? Math.floor(Math.random() * 9000) + 1000);
+        s.name = `${s.name} #${s.seed}`;
+        saveScene(project.dir, s);
+        return text(`Made scene ${sceneSlug(s.name)}: ${Object.entries(s.rows).map(([t, r]) => `${r.length} ${t}`).join(", ")}. Load it with action load.`);
+      }
+      if (!scene) return failure("Which scene? Give its slug from action list or make.");
+      const r = await loadData(project, schema, loadScene(project.dir, sceneSlug(scene)), { source: "mcp" });
+      return text(`Loaded ${r.scene} into ${r.where}: ${r.rows} rows in ${r.tables} tables.${r.backup ? ` The previous data is the scene "${r.backup}".` : ""}`);
+    } catch (err) {
+      return failure((err as Error).message);
+    }
   },
 );
 

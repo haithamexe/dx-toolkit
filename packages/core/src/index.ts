@@ -60,3 +60,8 @@ export * from "./tools/gremlins.js";
 export * from "./tools/envprobe.js";
 export * from "./tools/behaviour.js";
 export * from "./tools/graveyard.js";
+export * from "./tools/pagehealth.js";
+export * from "./tools/attack.js";
+export * from "./tools/seeddata.js";
+export * from "./tools/seedload.js";
+export * from "./tools/qr.js";
