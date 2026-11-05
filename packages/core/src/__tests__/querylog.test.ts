@@ -9,7 +9,8 @@ import { after, test } from "node:test";
 // out, each matched to the request it ran in, and what's worth fixing. Plus a real Postgres in Docker.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "dx-queries-home-"));
 process.env.DX_HOME = home;
-const { shapeSql, parsePostgresLog, parseMysqlSlowLog, attributeQueries, queryFindings, setQueryLog, queryLogState, queryReport, QUERY_LIMITS } = await import("../tools/querylog.js");
+const { shapeSql, parsePostgresLog, parseMysqlSlowLog, attributeQueries, queryFindings, setQueryLog, queryLogState, queryReport, readQueries, QUERY_LIMITS } = await import("../tools/querylog.js");
+const { databaseLog, findDatabases } = await import("../tools/db.js");
 type Ev = import("../tools/activity.js").ActivityEvent;
 
 test("values never stay in a statement", () => {
@@ -140,7 +141,12 @@ test("a real Postgres: logging on, statements matched to requests, and back off"
   }
   assert.equal(r.on, true);
   const orders = r.requests.find((x) => x.path === "/api/orders");
-  assert.ok(orders && orders.queries >= 11, JSON.stringify(r.requests));
+  if (!orders || orders.queries < 11) {
+    // What was read, to tell a log that didn't have the lines from lines that didn't match.
+    const { queries } = await readQueries(project, r.since!);
+    const log = await databaseLog(findDatabases(project)[0], r.since!);
+    assert.fail(JSON.stringify({ window: [events[0].at, ms], since: r.since, read: r.queries, outside: r.outside, first: queries.slice(0, 3), logLines: log.split("\n").length, logStart: log.slice(0, 600) }));
+  }
   assert.equal(orders!.repeated?.shape, "SELECT name FROM items WHERE order_id = ?");
   assert.equal(r.findings[0]?.kind, "n+1");
   await setQueryLog(project, false);
