@@ -1405,6 +1405,75 @@ summary.traffic-row {
   font-size: var(--t-xs);
 }
 
+/* ------------------------------------------------------------ chaos */
+.chaos-switch strong {
+  font-size: var(--t-md);
+}
+.chaos-faults {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s4);
+}
+.chaos-findings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chaos-findings > li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--border);
+}
+.chaos-findings > li:last-child {
+  border-bottom: 0;
+}
+.chaos-findings > li > .badge {
+  flex: none;
+  margin-top: 2px;
+}
+.chaos-finding-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chaos-finding-text details {
+  margin-top: var(--s1);
+}
+.chaos-steps {
+  margin: var(--s1) 0 0;
+  padding-left: var(--s5);
+  font-size: var(--t-sm);
+}
+.chaos-progress {
+  width: 100%;
+  height: var(--s2);
+  accent-color: var(--accent);
+}
+.chaos-grave {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chaos-grave > li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--s1) var(--s3);
+  padding: var(--s1) 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.chaos-grave > li:last-child {
+  border-bottom: 0;
+}
+@media (max-width: 860px) {
+  .chaos-findings > li {
+    flex-wrap: wrap;
+  }
+}
+
 /* ------------------------------------------------------------ env & secrets */
 .env-project > .env-head {
   display: flex;

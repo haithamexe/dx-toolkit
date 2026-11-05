@@ -53,6 +53,7 @@ const ICONS = {
   ports: "M7 3v5M17 3v5M5 8h14v3a7 7 0 0 1-14 0zM12 18v3",
   machine: "M3 5h18v11H3zM8 20h8M12 16v4",
   requests: "M4 8h13l-4-4M20 16H7l4 4",
+  chaos: "M13 2L4 14h7l-1 8 9-12h-7z",
   journal: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6",
   summary: "M4 19V9M10 19V5M16 19v-7M22 19H2",
   cleanup: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
@@ -936,6 +937,7 @@ const pages = [
   { id: "git", label: "Git", icon: "git", render: gitPage },
   { id: "activity", label: "Activity", icon: "activity", render: activityPage },
   { id: "requests", label: "Requests", icon: "requests", render: requestsPage },
+  { id: "chaos", label: "Chaos", icon: "chaos", render: chaosPage },
   { id: "env", label: "Env & secrets", icon: "key", render: envPage },
   { id: "journal", label: "Journal", icon: "journal", render: journalPage },
   { id: "summary", label: "Summary", icon: "summary", render: summaryPage },
@@ -2048,6 +2050,594 @@ function parseJsonEditsText(text) {
     out.push({ path: t.slice(0, i).trim(), value });
   }
   return out;
+}
+
+// ------------------------------------------------------------------ Chaos
+
+const CHAOS_TABS = [
+  ["chaos", "Chaos mode"],
+  ["gremlins", "Gremlins"],
+  ["clock", "Clock"],
+  ["phone", "Weak phone"],
+  ["env", "Missing values"],
+  ["behaviour", "Behaviour diff"],
+  ["graveyard", "Graveyard"],
+];
+const FINDING_KIND = { blank: "Blank page", uncaught: "Uncaught error", stuck: "Stuck loading", double: "Sent twice", server: "Server error", exception: "Exception", console: "Console error", network: "Request failed", overlay: "Error overlay" };
+const VERDICT = {
+  crashes: ["badge-danger", "Crashes without it"],
+  breaks: ["badge-warn", "Breaks the page"],
+  unnoticed: ["", "Nothing noticed"],
+  unused: ["badge-accent", "Never used in the code"],
+  skipped: ["", "Not tried (limit)"],
+};
+const CLOCK_PRESETS = [
+  ["New Year's Eve", () => ({ at: `${new Date().getFullYear()}-12-31T23:59:50`, timeZone: "" })],
+  ["Leap day", () => ({ at: "2028-02-29T09:00:00", timeZone: "" })],
+  ["Clocks go forward (Berlin)", () => ({ at: "2027-03-28T00:59:50Z", timeZone: "Europe/Berlin" })],
+  ["Clocks go back (New York)", () => ({ at: "2026-11-01T05:59:50Z", timeZone: "America/New_York" })],
+  ["UTC+14 (Kiritimati)", () => ({ at: "", timeZone: "Pacific/Kiritimati" })],
+  ["UTC−11 (Pago Pago)", () => ({ at: "", timeZone: "Pacific/Pago_Pago" })],
+  ["UTC+5:45 (Kathmandu)", () => ({ at: "", timeZone: "Asia/Kathmandu" })],
+  ["The year 2038", () => ({ at: "2038-01-19T03:13:50Z", timeZone: "UTC" })],
+];
+
+function chaosPage(root) {
+  let dir = pref("chaosDir", "");
+  let tab = pref("chaosTab", "chaos");
+  if (!CHAOS_TABS.some(([t]) => t === tab)) tab = "chaos";
+  let projects = [];
+  let state = null;
+  let stopped = false;
+  let timer = 0;
+
+  const holder = h("div", { class: "section" });
+  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("chaosDir", dir), load()) });
+  // Each tab reads the settings and runs again: a run started from the CLI or another tab shows up.
+  const tabs = segmented("Tool", CHAOS_TABS, tab, (v) => ((tab = v), setPref("chaosTab", v), load()));
+  tabs.classList.add("segmented-wrap");
+  append(
+    root,
+    pageHead(
+      "Chaos",
+      "Break your app on purpose, before your users do: failing calls, a careless user, another clock, a weak phone, a missing setting. Then see what changed between versions, and what nobody uses.",
+      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
+    ),
+    h("div", { class: "card card-pad toolbar" }, tabs),
+    holder,
+  );
+
+  (async () => {
+    try {
+      projects = await api("/api/projects");
+    } catch (err) {
+      holder.replaceChildren(errorView(err));
+      return;
+    }
+    if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
+    projectSelect.replaceChildren(...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    load();
+  })();
+
+  const project = () => projects.find((p) => p.dir === dir);
+  const q = () => `dir=${encodeURIComponent(dir)}`;
+
+  async function load() {
+    clearTimeout(timer);
+    if (!dir) return holder.replaceChildren(h("div", { class: "card" }, stateView("No projects", "dx looks for projects in your projects folders.")));
+    try {
+      state = await api(`/api/chaos?${q()}`);
+    } catch (err) {
+      return holder.replaceChildren(errorView(err, load));
+    }
+    draw();
+  }
+
+  function draw() {
+    clearTimeout(timer);
+    if (!state) return;
+    ({ chaos: chaosTab, gremlins: gremlinsTab, clock: clockTab, phone: phoneTab, env: envTab, behaviour: behaviourTab, graveyard: graveyardTab })[tab]();
+  }
+
+  async function save(patch, said) {
+    try {
+      state.config = await api("/api/chaos", { method: "POST", body: { dir, ...patch } });
+      if (said) toast(said);
+      return true;
+    } catch (err) {
+      toast(err.message, "error");
+      return false;
+    }
+  }
+
+  const field = (label, control, hint) => h("label", { class: "field" }, h("span", { class: "field-label" }, label), control, hint ? h("span", { class: "field-hint" }, hint) : null);
+  // The app's address through dx, when its dev server runs.
+  const where = () => project()?.dev?.localUrl ?? project()?.dev?.url ?? "";
+  const toActivity = (id) => {
+    setPref("activitySel", `p:${dir}`);
+    location.hash = "#/activity";
+    if (id) toast("Opened the project's history; the event is in its timeline.");
+  };
+
+  // ---------------------------------------------------------------- Chaos mode
+
+  function chaosTab() {
+    const c = state.config;
+    const level = state.levels.find((l) => l.id === c.level) ?? state.levels[0];
+    const report = h("div", { class: "section" }, loadingView("Reading what happened…"));
+    const onBox = h("input", {
+      type: "checkbox",
+      checked: c.on,
+      onchange: async (e) => {
+        const box = e.currentTarget;
+        if (!(await save({ on: box.checked }, box.checked ? `Chaos on: ${level.name}, #${state.config.seed}` : "Chaos off: calls go through untouched"))) box.checked = !box.checked;
+        draw();
+      },
+    });
+    const levels = segmented(
+      "How bad",
+      state.levels.map((l) => [l.id, l.name]),
+      c.level,
+      async (v) => {
+        await save({ level: v, faults: [] });
+        draw();
+      },
+    );
+    const own = c.faults.length ? c.faults : level.faults;
+    const faultBoxes = state.faults.map((f) =>
+      h(
+        "label",
+        { class: "check", title: f.about },
+        h("input", {
+          type: "checkbox",
+          checked: own.includes(f.id),
+          onchange: async () => {
+            const picked = faultBoxes.filter((b) => b.querySelector("input").checked).map((b) => b.dataset.f);
+            await save({ faults: picked.length ? picked : [] });
+          },
+        }),
+        f.name,
+      ),
+    );
+    faultBoxes.forEach((b, i) => (b.dataset.f = state.faults[i].id));
+    const seed = h("input", { class: "input lab-status mono", type: "number", min: "0", value: c.seed, "aria-label": "Seed" });
+    const paths = h("input", { class: "input mono", value: c.paths ?? "", placeholder: "all API calls, or a pattern like /api/**" });
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("label", { class: "check chaos-switch" }, onBox, h("strong", null, "Chaos mode")), c.on ? h("span", { class: "badge badge-danger" }, `Breaking calls · #${c.seed}`) : h("span", { class: "badge" }, "Off")),
+        h("p", { class: "dim" }, `${project()?.name ?? "The project"}'s API calls through dx (its .localhost address, or the address dx records) are broken the way real networks and servers break them. Pages, scripts and styles always load. Seeded, so #${c.seed} breaks the same calls the same way again.`),
+        levels,
+        h("p", { class: "dim" }, level.about),
+        h("fieldset", { class: "lab-set" }, h("legend", null, "What can go wrong"), h("div", { class: "chaos-faults" }, faultBoxes)),
+        h(
+          "div",
+          { class: "lab-grid" },
+          field("Seed", h("div", { class: "toolbar" }, seed, btn("Use", () => save({ seed: Number(seed.value) }, `Seed #${seed.value}: counting calls from the start`).then(draw), { small: true }), btn("New", () => save({ seed: Math.floor(1000 + Math.random() * 9000) }, "New seed").then(draw), { small: true, kind: "ghost" })), "The same seed breaks the same calls again"),
+          field("Only these calls", h("div", { class: "toolbar" }, paths, btn("Use", () => save({ paths: paths.value }, paths.value ? `Only ${paths.value}` : "Every API call"), { small: true })), "A path pattern: * is one part, ** any number"),
+        ),
+        h(
+          "div",
+          { class: "toolbar" },
+          btn("Start the run again", () => save({ restart: true }, "Run restarted: the report starts now").then(draw), { kind: "ghost", iconName: "refresh", disabled: !c.on, title: "Counting calls from zero, so a replay meets the same breakage" }),
+          where() ? h("a", { class: "btn btn-ghost", href: where(), target: "_blank", rel: "noopener" }, icon("external"), "Open the app") : null,
+        ),
+      ),
+      h("h2", { class: "section-title" }, "What broke"),
+      report,
+    );
+    const poll = async () => {
+      if (stopped || tab !== "chaos") return;
+      try {
+        drawReport(report, await api(`/api/chaos/report?${q()}`));
+      } catch (err) {
+        report.replaceChildren(errorView(err));
+      }
+      if (state.config.on) timer = setTimeout(poll, 4000);
+    };
+    poll();
+  }
+
+  function drawReport(el, r) {
+    const stats = h(
+      "div",
+      { class: "stats" },
+      statTile(r.calls, "API calls"),
+      statTile(r.broken, "broken on purpose"),
+      statTile(r.findings.length, r.findings.length === 1 ? "problem found" : "problems found"),
+      statTile(r.visits, r.visits === 1 ? "visit" : "visits"),
+    );
+    const faults = Object.entries(r.byFault);
+    const list = r.findings.length
+      ? h(
+          "ul",
+          { class: "card chaos-findings" },
+          r.findings.map((f) =>
+            h(
+              "li",
+              null,
+              h("span", { class: `badge ${f.kind === "double" || f.kind === "stuck" ? "badge-warn" : "badge-danger"}` }, FINDING_KIND[f.kind] ?? f.kind),
+              h(
+                "div",
+                { class: "chaos-finding-text" },
+                h("strong", null, f.title),
+                f.detail ? h("div", { class: "dim" }, f.detail) : null,
+                f.after?.length ? h("div", { class: "dim" }, `After: ${f.after.join(" · ")}`) : null,
+                h("div", { class: "dim" }, `${relativeTime(Date.parse(f.at))}${f.page ? ` · ${f.page}` : ""}`),
+              ),
+              btn("History", () => toActivity(f.id), { small: true, kind: "ghost", iconName: "activity", title: "Open the project's history at this visit" }),
+            ),
+          ),
+        )
+      : h("div", { class: "card" }, stateView(r.calls ? "Nothing broke yet" : "No calls yet", r.calls ? "The app took everything chaos threw at it so far. Keep clicking, or let Gremlins loose." : "Use the app at its .localhost address (or let Gremlins loose): its calls show up here as they're broken."));
+    el.replaceChildren(stats, faults.length ? h("div", { class: "machine-badges" }, faults.map(([k, n]) => h("span", { class: "badge" }, `${k} ×${n}`))) : null, list);
+  }
+
+  // ---------------------------------------------------------------- jobs
+
+  function jobView(kind, render) {
+    const el = h("div", { class: "section", "aria-live": "polite" });
+    const show = (job) => {
+      if (!job) return el.replaceChildren();
+      const running = !job.finishedAt;
+      const bar = h("progress", { class: "chaos-progress", max: Math.max(1, job.total), value: job.done });
+      el.replaceChildren(
+        h(
+          "div",
+          { class: "card card-pad section" },
+          h(
+            "div",
+            { class: "section-head" },
+            h("div", null, h("strong", null, running ? job.step : job.phase === "failed" ? "Didn't finish" : job.step), job.error ? h("div", { class: "prepare-fix" }, job.error) : null),
+            running ? btn("Stop", (ev) => busy(ev.currentTarget, "Stopping…", () => api("/api/chaos/job/stop", { method: "POST", body: { id: job.id } })), { small: true, kind: "danger-ghost", iconName: "stop" }) : h("span", { class: "dim" }, relativeTime(Date.parse(job.finishedAt))),
+          ),
+          running && job.total ? bar : null,
+        ),
+        job.result ? render(job.result) : null,
+      );
+    };
+    const follow = async (job) => {
+      show(job);
+      if (!job || job.finishedAt || stopped || tab !== kind) return;
+      timer = setTimeout(async () => {
+        try {
+          const next = await api(`/api/chaos/job?id=${encodeURIComponent(job.id)}`);
+          state.jobs[kind] = next;
+          follow(next);
+        } catch (err) {
+          el.replaceChildren(errorView(err));
+        }
+      }, 1000);
+    };
+    follow(state.jobs[kind]);
+    return { el, follow };
+  }
+
+  async function start(kind, url, body, b) {
+    const job = await busy(b, "Starting…", () => api(url, { method: "POST", body: { dir, ...body } }));
+    if (!job) return;
+    state.jobs[kind] = job;
+    draw();
+  }
+
+  // ---------------------------------------------------------------- Gremlins
+
+  function gremlinsTab() {
+    const path = h("input", { class: "input mono", value: pref("gremlinPath", "/"), placeholder: "/" });
+    const actions = h("input", { class: "input lab-status", type: "number", min: "5", max: "300", value: pref("gremlinActions", "40") });
+    const seed = h("input", { class: "input lab-status mono", type: "number", placeholder: "new" });
+    const bold = h("input", { type: "checkbox" });
+    const phone = h("input", { type: "checkbox", checked: !!state.config.phone });
+    const job = jobView("gremlins", gremlinResult);
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("p", { class: "dim" }, "A headless browser goes through the app by itself, like an impatient person: clicks whatever it finds, types nonsense into fields, double-clicks submit, presses Enter, goes back halfway. Only on this computer. Each problem comes with the steps that led to it. With Chaos mode on, its calls are broken too."),
+        h(
+          "div",
+          { class: "lab-grid" },
+          field("Start at", path, "A path on the project's dev server"),
+          field("Actions", actions, "5 to 300"),
+          field("Seed", seed, "Empty for a new run; the same seed does the same things"),
+        ),
+        h("label", { class: "check" }, bold, "Also click delete, sign out, reset and other controls that look destructive"),
+        h("label", { class: "check" }, phone, "As a cheap phone on 3G"),
+        h(
+          "div",
+          { class: "toolbar" },
+          btn("Let them loose", (ev) => {
+            setPref("gremlinPath", path.value);
+            setPref("gremlinActions", actions.value);
+            start("gremlins", "/api/chaos/gremlins", { path: path.value || "/", actions: Number(actions.value), seed: seed.value ? Number(seed.value) : undefined, bold: bold.checked, phone: phone.checked }, ev.currentTarget);
+          }, { kind: "primary", iconName: "play" }),
+        ),
+      ),
+      job.el,
+    );
+  }
+
+  function gremlinResult(run) {
+    const head = h("p", { class: "dim" }, `#${run.seed} · ${plural(run.actions, "action")} · ${plural(run.pages.length, "page")} · ${Math.round(run.ms / 1000)} s${run.skipped.length ? ` · left alone: ${run.skipped.slice(0, 5).join(", ")}${run.skipped.length > 5 ? "…" : ""}` : ""}`);
+    if (!run.findings.length) return h("div", { class: "section" }, head, h("div", { class: "card" }, stateView("The gremlins found nothing", "No exceptions, console errors, server errors, failed calls or blank pages. Try more actions, another seed, or turn Chaos mode on.")));
+    return h(
+      "div",
+      { class: "section" },
+      head,
+      h(
+        "ul",
+        { class: "card chaos-findings" },
+        run.findings.map((f) =>
+          h(
+            "li",
+            null,
+            h("span", { class: `badge ${f.kind === "console" ? "badge-warn" : "badge-danger"}` }, FINDING_KIND[f.kind] ?? f.kind),
+            h(
+              "div",
+              { class: "chaos-finding-text" },
+              h("strong", null, f.text),
+              h("div", { class: "dim" }, `${f.step ? `After step ${f.step}` : "While the page loaded"}${f.count > 1 ? ` · ${f.count} times` : ""}${f.url ? ` · ${f.url}` : ""}`),
+              f.steps.length ? h("details", null, h("summary", null, `${plural(f.steps.length, "step")} to get there`), h("ol", { class: "chaos-steps mono" }, f.steps.map((s) => h("li", null, stepLabel(s))))) : null,
+            ),
+            h(
+              "div",
+              { class: "toolbar" },
+              btn("Replay", (ev) => replaySteps(ev.currentTarget, run, f), { small: true, iconName: "play", title: "Do these steps again in a headless browser and see whether it happens again" }),
+              copyButton(JSON.stringify(f.steps, null, 2), "Copy steps"),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  function stepLabel(s) {
+    if (s.click) return `${s.double ? "double-click" : "click"} ${s.click}`;
+    if (s.type !== undefined) return `type ${JSON.stringify(s.type.length > 40 ? `${s.type.slice(0, 40)}…` : s.type)}${s.into ? ` into ${s.into}` : ""}`;
+    if (s.press) return `press ${s.press}`;
+    if (s.back) return "go back";
+    if (s.goto) return `go to ${s.goto}`;
+    return "…";
+  }
+
+  async function replaySteps(b, run, f) {
+    const start = new URL(run.url).pathname + new URL(run.url).search;
+    const r = await busy(b, "Replaying…", () => api("/api/check", { method: "POST", body: { dir, path: start, browser: true, steps: f.steps, timeoutMs: 120_000 } }));
+    if (!r) return;
+    const p = r.page ?? r;
+    const n = (p.exceptions?.length ?? 0) + (p.consoleErrors?.length ?? 0) + (p.failedRequests?.length ?? 0);
+    toast(n ? `It happened again: ${plural(n, "problem")} on the page` : "It didn't happen this time (with Chaos mode, try the run's seed again)", n ? "error" : "ok", { ms: 6000 });
+  }
+
+  // ---------------------------------------------------------------- Clock
+
+  function clockTab() {
+    const c = state.config.clock ?? {};
+    // A moment as the clocks of a time zone show it (this computer's when none), for the date field.
+    const local = (iso, tz) => {
+      if (!iso) return "";
+      const parts = {};
+      for (const p of new Intl.DateTimeFormat("en-US", { timeZone: tz || undefined, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(iso))) parts[p.type] = p.value;
+      return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
+    };
+    const at = h("input", { class: "input", type: "datetime-local", step: "1", value: local(c.at, c.timeZone) });
+    const frozen = h("input", { type: "checkbox", checked: !!c.frozen });
+    const zone = h("input", { class: "input mono", value: c.timeZone ?? "", placeholder: "your computer's", list: "chaos-zones" });
+    const zones = h("datalist", { id: "chaos-zones" }, ["UTC", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "America/Sao_Paulo", "Asia/Tokyo", "Asia/Kolkata", "Asia/Kathmandu", "Australia/Sydney", "Pacific/Auckland", "Pacific/Kiritimati", "Pacific/Pago_Pago"].map((z) => h("option", { value: z })));
+    const apply = () => {
+      // The field's time is read on the chosen zone's clocks by the server.
+      const v = { at: at.value || "", frozen: frozen.checked, timeZone: zone.value.trim() };
+      return save({ clock: v.at || v.timeZone ? v : null }, v.at || v.timeZone ? "Clock set: reload the app's pages to see it" : "Real clock again").then(draw);
+    };
+    const on = !!(c.at || c.timeZone);
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("strong", null, "The page's clock"), on ? h("span", { class: "badge badge-warn" }, `${c.at ? new Date(c.at).toLocaleString() : "Now"}${c.timeZone ? ` · ${c.timeZone}` : ""}${c.frozen ? " · frozen" : ""}`) : h("span", { class: "badge" }, "Real time")),
+        h("p", { class: "dim" }, "Pages loaded through dx see another time and time zone: Date, Date.now() and date formatting. Timers keep their pace, and the dev server keeps the real time. Reload the app's pages after a change."),
+        h("div", { class: "machine-badges" }, CLOCK_PRESETS.map(([label, make]) => btn(label, () => {
+          const p = make();
+          at.value = p.at ? (p.at.endsWith("Z") ? local(p.at, p.timeZone) : p.at) : "";
+          zone.value = p.timeZone;
+        }, { small: true, kind: "ghost" }))),
+        h("div", { class: "lab-grid" }, field("Starts at", at, "On the chosen time zone's clocks; it runs on from there"), field("Time zone", zone, "A name like Europe/Berlin"), zones),
+        h("label", { class: "check" }, frozen, "Frozen: the time doesn't move"),
+        h("div", { class: "toolbar" }, btn("Set the clock", apply, { kind: "primary" }), on ? btn("Real time again", () => save({ clock: null }, "Real clock again").then(draw), { kind: "ghost" }) : null),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------- Weak phone
+
+  function phoneTab() {
+    const p = state.phone;
+    const b = p.browser;
+    const box = h("input", {
+      type: "checkbox",
+      checked: !!state.config.phone,
+      onchange: async (e) => {
+        const el = e.currentTarget;
+        if (!(await save({ phone: el.checked }, el.checked ? "Weak phone on: every dx browser tab is a cheap phone on 3G" : "Weak phone off"))) el.checked = !el.checked;
+        load();
+      },
+    });
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("label", { class: "check chaos-switch" }, box, h("strong", null, "Weak phone in a tunnel")),
+        h("p", { class: "dim" }, "Every tab of the dx browser, and Gremlins from this page, as a cheap phone: what the app is like for someone without a fast laptop."),
+        h(
+          "div",
+          { class: "stats" },
+          statTile(`${p.width} × ${p.height}`, "screen, with touch"),
+          statTile(`${p.cpu}× slower`, "CPU"),
+          statTile(`${Math.round(p.latencyMs)} ms`, "network delay"),
+          statTile(`${((p.downBytes * 8) / 1e6).toFixed(1)} Mbit/s`, "download (3G)"),
+        ),
+        h(
+          "div",
+          { class: "toolbar" },
+          b.found
+            ? btn(b.open ? "Open the app in the dx browser" : "Start the dx browser on the app", (ev) => busy(ev.currentTarget, "Opening…", async () => {
+                const url = where();
+                await api("/api/browser/open", { method: "POST", body: url ? { url } : {} });
+                toast("Opened in the dx browser");
+              }), { iconName: "external" })
+            : h("span", { class: "dim" }, "No Chrome, Edge, Chromium or Brave was found for the dx browser."),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------- Missing values
+
+  function envTab() {
+    const path = h("input", { class: "input mono", value: "/", placeholder: "/" });
+    const job = jobView("env", envResult);
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("p", { class: "dim" }, "Which .env values actually matter. dx starts the app on a port of its own once as it is, then once per value with only that value blank, checks a page each time and compares. Your running dev server keeps running, and .env isn't changed. About 15 seconds a value."),
+        h("div", { class: "lab-grid" }, field("Page to check", path, "A path on the app")),
+        h("div", { class: "toolbar" }, btn("Try each value missing", (ev) => start("env", "/api/chaos/env", { path: path.value || "/" }, ev.currentTarget), { kind: "primary", iconName: "play" })),
+      ),
+      job.el,
+    );
+  }
+
+  function envResult(r) {
+    const base = r.baseline;
+    return h(
+      "div",
+      { class: "section" },
+      base?.problems?.length ? h("p", { class: "dim" }, `With every value set it already had: ${base.problems.slice(0, 3).join(" · ")}. Those don't count against any value.`) : null,
+      h(
+        "div",
+        { class: "card table-wrap" },
+        h(
+          "table",
+          { class: "table" },
+          h("thead", null, h("tr", null, h("th", { scope: "col" }, "Value"), h("th", { scope: "col" }, "Without it"), h("th", { scope: "col" }, "What happened"), h("th", { scope: "col" }, "Used in"))),
+          h(
+            "tbody",
+            null,
+            r.values.map((v) =>
+              h(
+                "tr",
+                null,
+                h("td", { class: "mono" }, v.key),
+                h("td", null, h("span", { class: `badge ${VERDICT[v.verdict]?.[0] ?? ""}` }, VERDICT[v.verdict]?.[1] ?? v.verdict)),
+                h("td", null, v.problems.length ? h("ul", { class: "chaos-steps" }, v.problems.map((p) => h("li", null, p))) : h("span", { class: "dim" }, v.verdict === "unnoticed" ? "The app started and the page loaded as before" : "—")),
+                h("td", { class: "dim mono" }, v.usedCount ? `${v.usedIn.join(", ")}${v.usedCount > v.usedIn.length ? ` +${v.usedCount - v.usedIn.length}` : ""}` : "nowhere"),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------- Behaviour diff
+
+  function behaviourTab() {
+    const commit = h("input", { class: "input mono", placeholder: "the last commit (or the one before, with no changes)" });
+    const pages = h("input", { class: "input mono", placeholder: "your most visited pages" });
+    const job = jobView("behaviour", behaviourResult);
+    holder.replaceChildren(
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("p", { class: "dim" }, "Your working copy and an earlier commit side by side: the same pages loaded on both, and the calls they made, their errors and warnings compared. A regression test nobody had to write. The commit runs as a snapshot (Run any commit), on a port of its own."),
+        h("div", { class: "lab-grid" }, field("Compare with", commit, "A commit hash; empty for the last one"), field("Pages", pages, "Paths separated by commas, at most 3")),
+        h(
+          "div",
+          { class: "toolbar" },
+          btn("Compare", (ev) => {
+            const paths = pages.value.split(",").map((s) => s.trim()).filter(Boolean);
+            start("behaviour", "/api/chaos/behaviour", { commit: commit.value.trim() || undefined, paths: paths.length ? paths : undefined }, ev.currentTarget);
+          }, { kind: "primary", iconName: "git" }),
+        ),
+      ),
+      job.el,
+    );
+  }
+
+  function behaviourResult(r) {
+    const tone = { worse: "badge-danger", better: "badge-ok", change: "" };
+    const word = { worse: "Worse", better: "Better", change: "Changed" };
+    return h(
+      "div",
+      { class: "section" },
+      h("p", { class: "dim" }, `Against ${r.against}`),
+      r.diffs.map((d) =>
+        h(
+          "div",
+          { class: "card card-pad section" },
+          h("div", { class: "section-head" }, h("strong", { class: "mono" }, d.path), h("span", { class: "dim" }, `${plural(d.after.calls.length, "endpoint")} called · ${plural(d.after.errors, "error")} now, ${d.before.errors} before`)),
+          d.same
+            ? h("p", { class: "dim" }, "Behaves the same: the same calls, answers, errors and warnings.")
+            : h("ul", { class: "chaos-findings" }, d.changes.map((c) => h("li", null, h("span", { class: `badge ${tone[c.tone]}` }, word[c.tone]), h("div", { class: "chaos-finding-text" }, c.text)))),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------- Graveyard
+
+  function graveyardTab() {
+    const out = h("div", { class: "section" }, loadingView("Reading the code and the history…"));
+    holder.replaceChildren(
+      h("div", { class: "card card-pad" }, h("p", { class: "dim" }, "Routes and pages the code declares (and mocks kept for it) that nothing used while dx was watching: dead code found from what actually ran. It's only as long as the history dx keeps (Health & settings, activity days).")),
+      out,
+    );
+    (async () => {
+      try {
+        const g = await api(`/api/chaos/graveyard?${q()}&days=30`);
+        const block = (title, list, empty) => {
+          const dead = list.filter((e) => !e.uses);
+          const alive = list.filter((e) => e.uses);
+          return h(
+            "div",
+            { class: "card card-pad section" },
+            h("div", { class: "section-head" }, h("strong", null, title), h("span", { class: "dim" }, list.length ? `${dead.length} of ${list.length} unused` : "none found")),
+            !list.length
+              ? h("p", { class: "dim" }, empty)
+              : dead.length
+                ? h("ul", { class: "chaos-grave" }, dead.map((e) => h("li", null, h("span", { class: "mono" }, e.what), h("span", { class: "dim mono" }, fromLink(e.from)))))
+                : h("p", { class: "dim" }, "Every one was used."),
+            alive.length ? h("details", null, h("summary", null, `${alive.length} used`), h("ul", { class: "chaos-grave" }, alive.map((e) => h("li", null, h("span", { class: "mono" }, e.what), h("span", { class: "dim" }, `${plural(e.uses, "time")}, last ${relativeTime(Date.parse(e.lastUsed))}`))))) : null,
+          );
+        };
+        out.replaceChildren(
+          h("p", { class: "dim" }, `The last ${plural(g.days, "day")}: ${plural(g.events, "request and page event", "requests and page events")}${g.unmatched ? `; ${plural(g.unmatched, "call")} matched no route dx found` : ""}.`),
+          g.events ? null : h("div", { class: "card" }, stateView("No history yet", "Use the app at its .localhost address first: until something is recorded, everything looks unused.")),
+          block("API routes never called", g.endpoints, "No routes found in the code or a saved API spec."),
+          block("Pages never opened", g.pages, "No pages found from file-based routing or router paths."),
+          block("Mocks nothing asked for", g.mocks, "No mocks for this project."),
+        );
+      } catch (err) {
+        out.replaceChildren(errorView(err));
+      }
+    })();
+  }
+
+  function fromLink(from) {
+    const m = /^(.*\.[a-z]+):(\d+)$/i.exec(from);
+    return m ? openAt(dir, m[1], Number(m[2])) : from;
+  }
+
+  function statTile(value, label) {
+    return h("div", { class: "card stat" }, h("div", { class: "stat-value" }, value), h("div", { class: "stat-label" }, label));
+  }
+
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
 }
 
 function requestsPage(root) {

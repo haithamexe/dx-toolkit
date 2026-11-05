@@ -4,6 +4,7 @@ import type { Readable, Writable } from "node:stream";
 import { dxPath } from "../config.js";
 import type { ActivityEvent, ActivityInput } from "./activity.js";
 import { browserInstallFix, findBrowser } from "./browser.js";
+import { applyEmulation, type Emulation } from "./emulation.js";
 import { classify, isTextType, maskBody, maskHeaders, maskText, maskUrl } from "./mask.js";
 import { deploymentFrom, type SiteTarget } from "./sites.js";
 
@@ -42,6 +43,9 @@ export interface DxBrowser {
   pages(): number;
   /** Opens an address in a new tab. */
   open(url: string): Promise<void>;
+  /** Every tab, now and later, as a cheap phone on 3G (or back to normal). */
+  emulate(e: Emulation): Promise<void>;
+  emulation(): Emulation;
   close(): Promise<void>;
   /** Settles when the browser has gone, closed by you or by dx. */
   closed: Promise<void>;
@@ -274,6 +278,10 @@ export class CdpRecorder {
   private sessions = new Map<string, Session>();
   /** Targets set up and running, by target id, for loading an address only once dx listens. */
   private ready = new Map<string, string>();
+  /** Applied to every tab as it's attached. */
+  emulation: Emulation = {};
+  /** The browser's own user agent, to go back to after the phone's. */
+  userAgent?: string;
   private waiters = new Map<string, (sessionId: string) => void>();
   /**
    * How far the browser's clock is from this process's (a few ms): events the browser stamps
@@ -342,12 +350,25 @@ export class CdpRecorder {
       send("Log.enable", {}, sessionId),
       send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId),
     ];
+    if (info.type === "page" && (this.emulation.phone || this.emulation.timeZone)) steps.push(applyEmulation((m, p) => send(m, p, sessionId), this.emulation));
     await Promise.all(steps.map((p) => p.catch(() => undefined)));
     if (waiting) await send("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => undefined);
     if (this.sessions.has(sessionId)) {
       this.ready.set(info.targetId, sessionId);
       this.waiters.get(info.targetId)?.(sessionId);
       this.waiters.delete(info.targetId);
+    }
+  }
+
+  /** Changes every page tab now, and the ones opened later. */
+  async emulate(e: Emulation): Promise<void> {
+    const before = this.emulation;
+    this.emulation = { ...e };
+    const send = this.options.send;
+    for (const sess of [...this.sessions.values()].filter((x) => x.type === "page")) {
+      const to = (m: string, p: object) => send(m, p, sess.id);
+      if (before.phone || before.timeZone) await applyEmulation(to, before, { undo: true, userAgent: this.userAgent });
+      await applyEmulation(to, this.emulation);
     }
   }
 
@@ -755,7 +776,10 @@ export async function launchDxBrowser(options: DxBrowserOptions): Promise<DxBrow
 
   // Ready when it answers; a browser that quits first was handed the address by one already open with this profile.
   // As long as the start itself may take: a browser's first start on a fresh machine is slow (CI took over 30 s).
-  const ready = conn.send("Browser.getVersion", {}, undefined, START_TIMEOUT_MS);
+  const ready = conn.send<{ userAgent?: string }>("Browser.getVersion", {}, undefined, START_TIMEOUT_MS).then((v) => {
+    recorder.userAgent = v?.userAgent;
+    return v;
+  });
   const quit = new Promise<never>((_, reject) => {
     proc.once("error", (e) => reject(new Error(`Couldn't start the browser: ${e.message}`)));
     proc.once("exit", (code) =>
@@ -814,6 +838,8 @@ export async function launchDxBrowser(options: DxBrowserOptions): Promise<DxBrow
     startedAt: new Date().toISOString(),
     pages: () => recorder.pages(),
     open,
+    emulate: (e) => recorder.emulate(e),
+    emulation: () => ({ ...recorder.emulation }),
     async close() {
       if (exited) return;
       await conn.send("Browser.close", {}).catch(() => undefined);

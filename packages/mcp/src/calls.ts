@@ -62,6 +62,13 @@ const SAFE_KEYS = new Set([
   "site",
   "env",
   "method",
+  "on",
+  "level",
+  "seed",
+  "actions",
+  "commit",
+  "phone",
+  "time_zone",
 ]);
 /** Arguments whose size is worth knowing but whose content isn't kept. */
 const COUNTED_KEYS = new Set(["steps", "files", "services", "query", "note", "text", "body", "headers", "search", "match"]);

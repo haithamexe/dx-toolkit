@@ -68,6 +68,7 @@ import {
   type PageCheck,
   type Project,
 } from "@dx/core";
+import { CHAOS_LEVELS, chaosReport, findGraveyard, loadChaos, probeEnv, setChaos, type BehaviourDiff, type GremlinRun } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
 import { callRecord, recordCall, type CallResult } from "./calls.js";
 
@@ -1459,6 +1460,210 @@ server.registerTool(
       }
     }
     return { content };
+  },
+);
+
+// ------------------------------------------------------------------ Chaos
+
+/** Starts a run in the dashboard (where the dev servers are) and waits for it to finish. */
+async function chaosJob<T>(url: string, body: Record<string, unknown>, maxMs: number): Promise<T> {
+  const client = await ensureDashboard();
+  let job = await client.post<{ id: string; finishedAt?: string; error?: string; result?: T }>(url, body);
+  const end = Date.now() + maxMs;
+  while (!job.finishedAt) {
+    if (Date.now() > end) {
+      await client.post("/api/chaos/job/stop", { id: job.id }).catch(() => undefined);
+      throw new Error("It took too long and was stopped. The dashboard's Chaos page has what it found so far.");
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+    job = await client.get(`/api/chaos/job?id=${job.id}`);
+  }
+  if (job.error) throw new Error(job.error);
+  return job.result as T;
+}
+
+server.registerTool(
+  "chaos_mode",
+  {
+    title: "Break the app's API calls on purpose (chaos mode), or say what broke",
+    description:
+      "Chaos mode breaks a project's API calls as they pass through dx (its .localhost address, or the address dx records) the way real " +
+      "networks and servers do: slow, 500s, dropped halfway, a 401 as if the session expired, answers out of order, 429s, odd data (a field " +
+      "null, empty or 10,000 characters long). Pages, scripts and styles always load. Seeded: the same seed breaks the same calls the same way. " +
+      "Levels: wifi (slow and patchy), deploy (server misbehaving), blackfriday (everything, under load). Also sets the page's fake clock " +
+      "(clock_at, time_zone, frozen) and the weak phone (phone). With no settings it only reports: what was broken since the run started, " +
+      "and what the app did about it (blank pages, uncaught errors, loading indicators that never stopped, the same order sent twice).",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      on: z.boolean().optional().describe("Turn chaos mode on or off"),
+      level: z.enum(["wifi", "deploy", "blackfriday"]).optional(),
+      seed: z.number().int().min(0).optional().describe("The same seed breaks the same calls the same way"),
+      only: z.string().max(300).optional().describe("Only calls whose path matches, e.g. /api/cart/**"),
+      clock_at: z.string().max(40).optional().describe('The time the app\'s pages see, e.g. "2026-12-31T23:59:50" (on the time zone\'s clocks); "off" for the real clock'),
+      time_zone: z.string().max(60).optional().describe("The time zone the pages see, e.g. Pacific/Auckland"),
+      frozen: z.boolean().optional().describe("The fake clock doesn't move"),
+      phone: z.boolean().optional().describe("The dx browser and gremlins as a cheap phone on 3G"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name, on, level, seed, only, clock_at, time_zone, frozen, phone }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const patch: Record<string, unknown> = {};
+    if (on !== undefined) patch.on = on;
+    if (level) patch.level = level;
+    if (seed !== undefined) patch.seed = seed;
+    if (only !== undefined) patch.paths = only;
+    if (phone !== undefined) patch.phone = phone;
+    if (clock_at !== undefined || time_zone !== undefined) patch.clock = clock_at === "off" ? null : { at: clock_at ?? "", timeZone: time_zone ?? "", frozen: frozen === true };
+    let cfg;
+    try {
+      if (Object.keys(patch).length) {
+        // Through the dashboard when it runs (it owns the dx browser), else straight to the file.
+        const client = await findDashboard();
+        cfg = client ? await client.post<ReturnType<typeof loadChaos>>("/api/chaos", { dir: project.dir, ...patch }) : setChaos(project.dir, project.name, patch);
+      } else cfg = loadChaos(project.dir, project.name);
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+    const since = cfg.startedAt ? new Date(cfg.startedAt) : new Date(Date.now() - 3_600_000);
+    const r = chaosReport(readActivity({ dir: project.dir, since, limit: 20_000 }), since.toISOString());
+    const lines = [
+      `${project.name}: chaos ${cfg.on ? `on (${CHAOS_LEVELS[cfg.level].name}, seed ${cfg.seed}${cfg.paths ? `, only ${cfg.paths}` : ""})` : "off"}${cfg.clock ? `; pages see ${cfg.clock.at ?? "the real time"}${cfg.clock.timeZone ? ` in ${cfg.clock.timeZone}` : ""}${cfg.clock.frozen ? ", frozen" : ""}` : ""}${cfg.phone ? "; weak phone on" : ""}.`,
+      `Since ${since.toISOString()}: ${r.calls} API calls, ${r.broken} broken on purpose${Object.keys(r.byFault).length ? ` (${Object.entries(r.byFault).map(([k, n]) => `${k} ×${n}`).join(", ")})` : ""}.`,
+      ...(r.findings.length
+        ? r.findings.slice(0, 30).map((f) => `- ${f.kind}: ${f.title}${f.detail ? ` (${f.detail.split("\n")[0].slice(0, 160)})` : ""}${f.after?.length ? `; after ${f.after.join(", ")}` : ""}`)
+        : [r.calls ? "Nothing broke." : "No calls yet: open the app at its .localhost address, or run run_gremlins."]),
+    ];
+    return text(lines.join("\n"));
+  },
+);
+
+server.registerTool(
+  "run_gremlins",
+  {
+    title: "Let gremlins loose on the app: a headless browser that clicks, types and double-submits at random",
+    description:
+      "A headless browser goes through a project's app by itself, on this computer only, through the dev server dx runs: clicks what it " +
+      "finds, types nonsense into fields, double-clicks submit buttons, presses Enter, goes back halfway. Controls that look destructive " +
+      "(delete, sign out, reset) are left alone unless bold is true. Returns each problem (exceptions, console errors, 5xx answers, failed " +
+      "calls, blank pages, error overlays) with the steps that led to it, in the format check_url's steps take, to reproduce it. Seeded. " +
+      "With chaos_mode on, its calls are broken too. Takes up to a few minutes.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      path: z.string().max(300).optional().describe("Where to start, a path on the app (default /)"),
+      actions: z.number().int().min(5).max(300).optional().describe("How many things to do (default 40)"),
+      seed: z.number().int().min(1).optional(),
+      phone: z.boolean().optional().describe("As a cheap phone on 3G"),
+      bold: z.boolean().optional().describe("Also click destructive-looking controls"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ project: name, path, actions, seed, phone, bold }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      const run = await chaosJob<GremlinRun>("/api/chaos/gremlins", { dir: project.dir, path, actions, seed, phone, bold }, 10 * 60_000);
+      const lines = [`Gremlins #${run.seed} on ${run.url}: ${run.actions} actions, ${run.pages.length} page(s), ${Math.round(run.ms / 1000)} s.${run.skipped.length ? ` Left alone: ${run.skipped.slice(0, 8).join(", ")}.` : ""}`];
+      if (!run.findings.length) lines.push("No problems found.");
+      for (const f of run.findings) lines.push(`- ${f.kind}: ${f.text} (${f.step ? `after step ${f.step}` : "while the page loaded"}${f.count > 1 ? `, ${f.count} times` : ""})\n  steps: ${JSON.stringify(f.steps)}`);
+      return text(lines.join("\n"));
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "behaviour_diff",
+  {
+    title: "Did a change alter how the app behaves: calls, errors and warnings against an earlier commit",
+    description:
+      "Loads the same pages on the working copy (its dev server) and on an earlier commit (run as a snapshot on its own port), and compares " +
+      "the API calls they make (by method and path, with how often and what they answer), errors, warnings, and the page's status and title. " +
+      "\"GET /api/cart is called 3 times, was 1; new warning: …\". The commit defaults to HEAD when there are uncommitted changes, else the " +
+      "commit before. Pages default to the most visited ones. Use it after a change as a regression check nobody had to write.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      commit: z.string().regex(/^[0-9a-fA-F]{4,40}$/).optional(),
+      paths: z.array(z.string().max(300)).max(3).optional().describe("Paths to load, e.g. [\"/\", \"/cart\"]"),
+      visit: z.string().max(40).optional().describe("A visit id from the activity history: its clicks are replayed on both"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name, commit, paths, visit }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      const r = await chaosJob<{ against: string; diffs: BehaviourDiff[] }>("/api/chaos/behaviour", { dir: project.dir, commit, paths, visit }, 15 * 60_000);
+      const lines = [`Working copy against ${r.against}:`];
+      for (const d of r.diffs) {
+        lines.push(`${d.path}: ${d.same ? "behaves the same" : `${d.changes.length} change(s)`}`);
+        for (const c of d.changes) lines.push(`- [${c.tone}] ${c.text}`);
+      }
+      return text(lines.join("\n"));
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "env_values_that_matter",
+  {
+    title: "Which .env values matter: the app started once per value with that value blank",
+    description:
+      "Starts the project's dev command on a port of its own, once as it is and once per .env value with only that value blank (the file " +
+      "isn't changed; the running dev server keeps running), checks a page each time, and compares. Says which values crash the app, which " +
+      "break the page (and how), which nothing notices, and which the code never mentions. Values themselves are never read out. Takes " +
+      "about 15 seconds per value.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      path: z.string().max(300).optional().describe("The page to check each time (default /)"),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name, path }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const r = await probeEnv(project, { path });
+    recordRun("env-probe", !r.error, `${project.name}: ${r.error ?? "values checked"}`, "mcp", { project: project.name });
+    if (r.error) return failure(r.error);
+    const word = { crashes: "crashes without it", breaks: "breaks the page without it", unnoticed: "nothing noticed without it", unused: "never used in the code", skipped: "not tried" };
+    return text([`${project.name} (page ${r.path}):`, ...r.values.map((v) => `- ${v.key}: ${word[v.verdict]}${v.problems.length ? ` (${v.problems.slice(0, 3).join("; ")})` : ""}${v.usedCount ? ` [used in ${v.usedIn.join(", ")}]` : ""}`)].join("\n"));
+  },
+);
+
+server.registerTool(
+  "find_unused",
+  {
+    title: "API routes, pages and mocks nobody used (the endpoint graveyard)",
+    description:
+      "Routes the code declares (Express, Fastify, Hono, Next.js, SvelteKit, Nuxt, FastAPI, Flask, and the saved API spec), pages from " +
+      "file-based routing and router paths, and mocks, matched against the activity history (as many days as dx keeps). Lists what " +
+      "was never called or opened. Dead code from what actually ran; only as complete as the history.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      days: z.number().int().min(1).max(90).optional(),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name, days }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const g = findGraveyard(project.dir, project.name, { days });
+    const part = (title: string, list: typeof g.endpoints) => {
+      const dead = list.filter((e) => !e.uses);
+      return [`${title} (${dead.length} of ${list.length}):`, ...dead.map((e) => `- ${e.what} (${e.from})`)];
+    };
+    return text(
+      [
+        `${project.name}, the last ${g.days} day(s): ${g.events} requests and page events${g.unmatched ? `; ${g.unmatched} call(s) matched no route found` : ""}.`,
+        ...part("API routes never called", g.endpoints),
+        ...part("Pages never opened", g.pages),
+        ...part("Mocks nothing asked for", g.mocks),
+      ].join("\n"),
+    );
   },
 );
 

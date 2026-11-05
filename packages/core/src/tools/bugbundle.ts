@@ -217,6 +217,8 @@ function cleanStep(s: PageStep, strip: (s: string) => string): PageStep {
   const out: PageStep = {};
   if (s.goto !== undefined) out.goto = pathOnly(strip(s.goto));
   if (s.click !== undefined) out.click = s.click.slice(0, 500);
+  if (s.double && s.click !== undefined) out.double = true;
+  if (s.back) out.back = true;
   if (s.type !== undefined) out.type = s.type.slice(0, 500);
   if (s.into !== undefined) out.into = s.into.slice(0, 500);
   if (s.press !== undefined) out.press = s.press.slice(0, 40);
@@ -265,7 +267,7 @@ export function pathStripper(projectDir: string, home = os.homedir()): (s: strin
 // ------------------------------------------------------------------ import
 
 const TOP_KEYS = new Set(["format", "version", "createdAt", "project", "git", "dev", "steps", "notes", "error", "events"]);
-const STEP_KEYS = new Set(["goto", "click", "type", "into", "press", "waitFor", "timeoutMs"]);
+const STEP_KEYS = new Set(["goto", "click", "double", "back", "type", "into", "press", "waitFor", "timeoutMs"]);
 const EVENT_STRINGS: (keyof BugEvent)[] = ["text", "service", "page", "url", "method", "error", "requestBody", "responseBody", "target", "source", "stack", "visit"];
 const LEVELS = new Set(["log", "info", "warn", "error", "debug"]);
 const FROMS = new Set(["proxy", "browser", "server", "check", "dx-browser"]);
@@ -330,6 +332,8 @@ function readStep(x: unknown, n: number): PageStep {
   if (o.goto !== undefined) s.goto = localPath(o.goto, `Step ${n}'s address`);
   for (const k of ["click", "type", "into", "waitFor"] as const) if (o[k] !== undefined) s[k] = strict(o[k], 500, `Step ${n}'s ${k}`);
   if (o.press !== undefined) s.press = strict(o.press, 40, `Step ${n}'s key`);
+  if (o.double === true && s.click) s.double = true;
+  if (o.back === true) s.back = true;
   if (o.timeoutMs !== undefined) {
     if (typeof o.timeoutMs !== "number" || !Number.isFinite(o.timeoutMs)) throw new BugBundleError(`Step ${n}'s timeoutMs must be a number.`);
     s.timeoutMs = Math.min(60_000, Math.max(500, Math.round(o.timeoutMs)));

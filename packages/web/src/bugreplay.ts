@@ -93,7 +93,7 @@ async function run(job: BugReplayJob, project: Project, bundle: BugBundle, hash?
   recordRun("bug-replay", true, `${project.name} at ${job.target}: ${job.verdict.summary}`, "web", { project: project.name });
 }
 
-function readyUrl(d: ReturnType<typeof devServer>, job: BugReplayJob): string | undefined {
+export function readyUrl(d: ReturnType<typeof devServer>, job: { phase: string; step?: string }): string | undefined {
   if (!d) return undefined;
   if (d.status === "failed" || d.status === "stopped") throw new Error(`The dev server ${d.status === "failed" ? "failed to start" : "stopped"}${d.exitCode !== undefined && d.exitCode !== null ? ` (exit code ${d.exitCode})` : ""}. The Projects page shows its output.`);
   if (d.status !== "ready") {
@@ -105,7 +105,7 @@ function readyUrl(d: ReturnType<typeof devServer>, job: BugReplayJob): string | 
   return d.localUrl ?? d.url;
 }
 
-async function waitFor<T>(ms: number, check: () => T | undefined): Promise<T> {
+export async function waitFor<T>(ms: number, check: () => T | undefined): Promise<T> {
   const until = Date.now() + ms;
   for (;;) {
     const v = check();

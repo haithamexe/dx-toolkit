@@ -25,6 +25,7 @@ import { gitCommand } from "./commands/git.js";
 import { machineCommand } from "./commands/machine.js";
 import { updateCommand } from "./commands/update.js";
 import { prepareCommand } from "./commands/prepare.js";
+import { chaosCommand } from "./commands/chaos.js";
 import { runCommand } from "./commands/run.js";
 import { bugCommand } from "./commands/bug.js";
 import { mockCommand } from "./commands/mock.js";
@@ -66,6 +67,7 @@ const commands: Command[] = [
   terminalCommand,
   gitCommand,
   visualCommand,
+  chaosCommand,
   machineCommand,
   updateCommand,
   prepareCommand,

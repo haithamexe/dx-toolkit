@@ -8,10 +8,20 @@
   if (window.__dxRecorder) return;
   window.__dxRecorder = true;
 
+  // The real clock, kept before a fake one (Chaos mode's clock) replaces Date for the page.
+  var RealDate = Date;
+  var realNow = RealDate.now.bind(RealDate);
+  var settings = window.__dxSettings || {};
+  try {
+    if (settings.clock) fakeClock(settings.clock);
+  } catch (e) {
+    // a page without classes or Proxy keeps its own clock
+  }
+
   var ENDPOINT = "/__dx/events";
   var MAX_TEXT = 4000;
   var MAX_BODY = 16384;
-  var visit = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  var visit = Math.random().toString(36).slice(2, 10) + realNow().toString(36);
   var queue = [];
   var timer = 0;
   var send = window.fetch ? window.fetch.bind(window) : null;
@@ -25,9 +35,10 @@
 
   function push(ev) {
     try {
-      ev.at = Date.now();
+      ev.at = realNow();
       ev.page = location.href;
       queue.push(ev);
+      if (ev.type === "error" && !ev.problem) setTimeout(function () { checkBlank("an error"); }, 1000);
       if (queue.length > 500) queue.splice(0, queue.length - 500);
       // Errors go at once: they're what matters most, and a tab that's closed next would lose them.
       var urgent = ev.type === "error" || ev.level === "error";
@@ -199,7 +210,7 @@
   });
   addEventListener("popstate", function () {
     // A link to a #hash fires this too: right after a click, it's the click, not the back button.
-    routeChanged(Date.now() - lastClick < 1000 ? "link" : "back or forward");
+    routeChanged(realNow() - lastClick < 1000 ? "link" : "back or forward");
   });
   addEventListener("hashchange", function () {
     routeChanged("hash");
@@ -244,7 +255,7 @@
   document.addEventListener(
     "click",
     function (e) {
-      lastClick = Date.now();
+      lastClick = realNow();
       try {
         var el = e.target && e.target.closest ? e.target.closest(CONTROL) : null;
         if (!el) return;
@@ -308,7 +319,7 @@
 
   if (send) {
     window.fetch = function (input, init) {
-      var started = Date.now();
+      var started = realNow();
       var url;
       var method = "GET";
       try {
@@ -325,7 +336,7 @@
       p.then(
         function (res) {
           ev.status = res.status;
-          ev.ms = Date.now() - started;
+          ev.ms = realNow() - started;
           var type = res.headers.get("content-type") || "";
           ev.resType = type;
           if (bodies && textType(type)) {
@@ -344,7 +355,7 @@
           } else push(ev);
         },
         function (err) {
-          ev.ms = Date.now() - started;
+          ev.ms = realNow() - started;
           ev.error = clip((err && err.message) || String(err), 300);
           push(ev);
         },
@@ -377,12 +388,12 @@
       var x = this;
       var d = x.__dx;
       if (d && !proxied(d.url) && /^https?:$/.test(d.url.protocol)) {
-        var started = Date.now();
+        var started = realNow();
         var bodies = loopback(d.url);
         x.addEventListener("loadend", function () {
           try {
             var type = x.getResponseHeader("content-type") || "";
-            var ev = { type: "request", method: d.method, url: d.url.href, status: x.status || undefined, ms: Date.now() - started, reqType: d.type, resType: type };
+            var ev = { type: "request", method: d.method, url: d.url.href, status: x.status || undefined, ms: realNow() - started, reqType: d.type, resType: type };
             if (!x.status) ev.error = "no answer";
             if (bodies && typeof body === "string") ev.req = clip(body, MAX_BODY);
             if (bodies && textType(type) && (x.responseType === "" || x.responseType === "text")) ev.res = clip(x.responseText, MAX_BODY * 2);
@@ -394,5 +405,174 @@
       }
       return sendXhr.apply(this, arguments);
     };
+  }
+
+  // ------------------------------------------------------------ a page gone blank, a spinner that never stops
+
+  var reportedBlank = false;
+  var spinners = typeof WeakMap === "function" ? new WeakMap() : null;
+  var reportedStuck = {};
+
+  function visibleBox(el) {
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden";
+  }
+
+  // Nothing left to see: no text, no image, no control. What a front end shows after a crash
+  // that unmounted it. Error overlays (Vite, Next.js) count as something to see.
+  function checkBlank(why) {
+    try {
+      if (reportedBlank || !document.body || document.visibilityState === "hidden") return;
+      if ((document.body.innerText || "").trim()) return;
+      var things = document.body.querySelectorAll("img, svg, canvas, video, iframe, input, button, select, textarea, vite-error-overlay, nextjs-portal");
+      for (var i = 0; i < things.length && i < 200; i++) if (visibleBox(things[i])) return;
+      reportedBlank = true;
+      push({ type: "error", problem: "blank", text: "The page went blank" + (why ? " after " + why : "") + ": nothing visible is left on " + short(location.href) });
+    } catch (e) {
+      // never get in the page's way
+    }
+  }
+
+  var SPIN = '[aria-busy="true"], [role="progressbar"], .spinner, .loader, .loading, [class*="spinner"], [class*="Spinner"], [class*="loading"], [class*="Loading"], [class*="skeleton"], [class*="Skeleton"]';
+
+  // A loading indicator still showing 15 s after it appeared: an answer that never came, or an
+  // error the page didn't handle.
+  function checkSpinners() {
+    try {
+      if (!spinners || document.visibilityState === "hidden") return;
+      var now = realNow();
+      var list = document.querySelectorAll(SPIN);
+      for (var i = 0; i < list.length && i < 50; i++) {
+        var el = list[i];
+        if (!visibleBox(el)) {
+          spinners.delete(el);
+          continue;
+        }
+        var first = spinners.get(el);
+        if (!first) {
+          spinners.set(el, now);
+          continue;
+        }
+        if (now - first < 15000) continue;
+        var desc = clip(show(el), 80);
+        if (reportedStuck[desc]) continue;
+        reportedStuck[desc] = true;
+        push({ type: "error", problem: "stuck", text: "A loading indicator " + desc + " was still showing after 15 s on " + short(location.href) });
+      }
+    } catch (e) {
+      // never get in the page's way
+    }
+  }
+
+  addEventListener("load", function () {
+    setTimeout(function () {
+      checkBlank("loading");
+    }, 3000);
+  });
+  setInterval(checkSpinners, 3000);
+
+  // ------------------------------------------------------------ the fake clock
+
+  // The page sees another time (and time zone) than the computer's: Date, Date.now() and
+  // formatting. Timers and performance.now() are left alone, so the page still runs at its pace.
+  function fakeClock(c) {
+    var start = realNow();
+    var at = c.at ? RealDate.parse(c.at) : start;
+    var offset = at - start;
+    var frozen = !!c.frozen;
+    var now = function () {
+      return frozen ? at : realNow() + offset;
+    };
+    if (c.at) {
+      var FakeDate = class Date extends RealDate {
+        constructor() {
+          if (arguments.length === 0) super(now());
+          else super(...arguments);
+        }
+        static now() {
+          return Math.floor(now());
+        }
+      };
+      // Date() without new gives the time as text.
+      window.Date = new Proxy(FakeDate, {
+        apply: function () {
+          return new FakeDate().toString();
+        },
+      });
+    }
+    if (c.timeZone) fakeZone(c.timeZone);
+  }
+
+  function fakeZone(tz) {
+    var RealFormat = Intl.DateTimeFormat;
+    var fmt = new RealFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric", weekday: "short", timeZoneName: "shortOffset" });
+    var proto = RealDate.prototype;
+    var getTime = proto.getTime;
+    var orig = { toLocaleString: proto.toLocaleString, toLocaleDateString: proto.toLocaleDateString, toLocaleTimeString: proto.toLocaleTimeString };
+    var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    function parts(d) {
+      var t = getTime.call(d);
+      if (isNaN(t)) return null;
+      var o = {};
+      fmt.formatToParts(new RealDate(t)).forEach(function (p) {
+        o[p.type] = p.value;
+      });
+      var p = { y: +o.year, m: +o.month - 1, d: +o.day, h: +o.hour % 24, mi: +o.minute, s: +o.second, wd: DAYS.indexOf(o.weekday), t: t };
+      // Minutes ahead of UTC, from the wall-clock time in the zone.
+      p.off = Math.round((RealDate.UTC(p.y, p.m, p.d, p.h, p.mi, p.s) - (t - (((t % 1000) + 1000) % 1000))) / 60000);
+      return p;
+    }
+    function get(key) {
+      return function () {
+        var p = parts(this);
+        return p ? p[key] : NaN;
+      };
+    }
+    function pad(n) {
+      return (n < 10 ? "0" : "") + n;
+    }
+    function gmt(off) {
+      var a = Math.abs(off);
+      return "GMT" + (off >= 0 ? "+" : "-") + pad(Math.floor(a / 60)) + pad(a % 60);
+    }
+    proto.getFullYear = get("y");
+    proto.getMonth = get("m");
+    proto.getDate = get("d");
+    proto.getDay = get("wd");
+    proto.getHours = get("h");
+    proto.getMinutes = get("mi");
+    proto.getSeconds = get("s");
+    proto.getTimezoneOffset = function () {
+      var p = parts(this);
+      return p ? -p.off : NaN;
+    };
+    proto.toDateString = function () {
+      var p = parts(this);
+      return p ? DAYS[p.wd] + " " + MONTHS[p.m] + " " + pad(p.d) + " " + p.y : "Invalid Date";
+    };
+    proto.toTimeString = function () {
+      var p = parts(this);
+      return p ? pad(p.h) + ":" + pad(p.mi) + ":" + pad(p.s) + " " + gmt(p.off) + " (" + tz + ")" : "Invalid Date";
+    };
+    proto.toString = function () {
+      var p = parts(this);
+      return p ? this.toDateString() + " " + this.toTimeString() : "Invalid Date";
+    };
+    ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"].forEach(function (name) {
+      proto[name] = function (locales, options) {
+        var o = Object.assign({}, options);
+        if (!o.timeZone) o.timeZone = tz;
+        return orig[name].call(this, locales, o);
+      };
+    });
+    var Format = function (locales, options) {
+      var o = Object.assign({}, options);
+      if (!o.timeZone) o.timeZone = tz;
+      return new RealFormat(locales, o);
+    };
+    Format.prototype = RealFormat.prototype;
+    Format.supportedLocalesOf = RealFormat.supportedLocalesOf;
+    Intl.DateTimeFormat = Format;
   }
 })();

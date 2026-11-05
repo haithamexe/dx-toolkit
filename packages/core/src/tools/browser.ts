@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { dxPath } from "../config.js";
+import { applyEmulation, type Emulation } from "./emulation.js";
 
 /**
  * Loads a page in a headless Chrome, Edge, Chromium or Brave already on this computer and reports
@@ -45,6 +46,8 @@ export interface PageCheck {
   consoleErrors: BrowserMessage[];
   consoleWarnings: BrowserMessage[];
   failedRequests: FailedRequest[];
+  /** With `requests`: the page's API calls and page loads, in order. */
+  requests?: FailedRequest[];
   /** The text of a dev server's error overlay (Vite, Next.js, webpack), when one is showing. */
   overlay?: string;
   /** A PNG of the page, when asked for. */
@@ -66,6 +69,10 @@ export interface PageStep {
   goto?: string;
   /** Click an element. */
   click?: string;
+  /** With click: click it twice, quickly, as an impatient person does. */
+  double?: boolean;
+  /** Go back one page, like the browser's back button. */
+  back?: boolean;
   /** Type this text… */
   type?: string;
   /** …into this field (otherwise into the focused one). */
@@ -106,6 +113,10 @@ export interface PageCheckOptions {
   timeoutMs?: number;
   /** How long to keep listening after the page has loaded, for errors that come late (default 1.5s). */
   settleMs?: number;
+  /** Load it as a cheap phone on 3G, or in another time zone. */
+  emulate?: Emulation;
+  /** Keep every request the page made (method, address, status), not only the failed ones. */
+  requests?: boolean;
 }
 
 const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\]|[\w.-]+\.localhost)$/i;
@@ -264,6 +275,10 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
         }
         case "Network.responseReceived": {
           const r = p.response as { status: number; url: string };
+          if (options.requests && /^(XHR|Fetch|Document|EventSource)$/.test(String(p.type)) && (result.requests ??= []).length < 500) {
+            const q = requests.get(p.requestId as string);
+            result.requests.push({ url: r.url, method: q?.method, status: r.status, type: p.type as string, ...(step ? { step } : {}) });
+          }
           if (p.type === "Document" && documentStatus === undefined) documentStatus = r.status;
           // The browser asks for /favicon.ico by itself; a missing one isn't the page's fault.
           if (r.status >= 400 && !(p.type === "Other" && new URL(r.url).pathname === "/favicon.ico")) {
@@ -281,6 +296,7 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
             const text = p.errorText as string;
             if (p.canceled || text === "net::ERR_ABORTED") break;
             push(result.failedRequests, { url: req?.url ?? "", method: req?.method, error: text, type: p.type as string | undefined });
+            if (options.requests && /^(XHR|Fetch|Document|EventSource)$/.test(String(p.type)) && (result.requests ??= []).length < 500) result.requests.push({ url: req?.url ?? "", method: req?.method, error: text, type: p.type as string, ...(step ? { step } : {}) });
           }
           break;
         }
@@ -296,6 +312,7 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
     });
 
     await Promise.all([page("Runtime.enable"), page("Log.enable"), page("Network.enable"), page("Page.enable")]);
+    if (options.emulate) await applyEmulation(page, options.emulate);
     const nav = (await page("Page.navigate", { url: options.url })) as { errorText?: string };
     if (nav.errorText) {
       result.error = nav.errorText === "net::ERR_CONNECTION_REFUSED" ? "Nothing is listening at that address. Is the dev server running?" : nav.errorText;
@@ -357,6 +374,9 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
               for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
                 await page("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 });
               }
+              if (s.double) {
+                for (const type of ["mousePressed", "mouseReleased"]) await page("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 2 });
+              }
               await idle(Math.max(3000, max / 2));
             } else if (s.type !== undefined) {
               if (s.into) {
@@ -371,6 +391,9 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
               await page("Input.dispatchKeyEvent", { type: "keyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, ...(k.text ? { text: k.text } : {}) });
               await page("Input.dispatchKeyEvent", { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk });
               await idle(Math.max(3000, max / 2));
+            } else if (s.back) {
+              await evaluate("history.back()");
+              await idle(Math.max(3000, max / 2));
             } else if (s.waitFor) {
               const w = s.waitFor;
               const check = w.startsWith("url=")
@@ -378,7 +401,7 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
                 : () => findBox(w).then((b) => !!b);
               if (!(await waitUntil(check, max))) throw new Error(`${w} didn't show within ${Math.round(max / 1000)}s.`);
             } else if (!s.screenshot) {
-              throw new Error("A step needs one of goto, click, type, press, waitFor or screenshot.");
+              throw new Error("A step needs one of goto, click, back, type, press, waitFor or screenshot.");
             }
           } catch (err) {
             sr.ok = false;
@@ -446,6 +469,8 @@ export interface BrowserPage {
    * it couldn't load.
    */
   navigate(url: string, options?: { timeoutMs?: number; settleMs?: number }): Promise<number | undefined>;
+  /** Every DevTools event from this tab (Runtime, Network, Page are on). */
+  onEvent(listener: (method: string, params: Record<string, unknown>) => void): void;
 }
 
 export interface BrowserSession {
@@ -485,7 +510,9 @@ export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>
       let lastNetwork = Date.now();
       let loaded = false;
       let status: number | undefined;
+      const listeners: Array<(method: string, params: Record<string, unknown>) => void> = [];
       conn.on(sessionId, (method, p) => {
+        for (const l of listeners) l(method, p);
         if (method === "Network.requestWillBeSent") {
           inflight.add(p.requestId as string);
           lastNetwork = Date.now();
@@ -516,7 +543,7 @@ export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>
         while (Date.now() < end && !(Date.now() >= quietFrom && inflight.size === 0 && Date.now() - lastNetwork > 300)) await sleep(100);
         return status;
       };
-      return { send, evaluate, navigate };
+      return { send, evaluate, navigate, onEvent: (l) => void listeners.push(l) };
     };
     return await fn({ browser: found.name, newPage });
   } finally {
@@ -536,7 +563,7 @@ export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>
 const FIND = `(sel) => {
   if (!sel.startsWith("text=")) { try { return document.querySelector(sel); } catch { return null; } }
   const want = sel.slice(5).trim().toLowerCase();
-  const textOf = (e) => (e.innerText || e.value || e.getAttribute("aria-label") || "").trim().toLowerCase();
+  const textOf = (e) => (e.innerText || e.value || e.getAttribute("aria-label") || "").trim().replace(/\\s+/g, " ").toLowerCase();
   const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const pick = (list) => list.find((e) => visible(e) && textOf(e) === want) || list.find((e) => visible(e) && textOf(e).includes(want));
   const actions = [...document.querySelectorAll("button, a, [role=button], [role=link], [role=tab], [role=menuitem], input[type=submit], input[type=button], label, summary")];
@@ -555,7 +582,8 @@ const KEYS: Record<string, { key: string; code: string; vk: number; text?: strin
 
 export function describeStep(s: PageStep): string {
   if (s.goto) return `go to ${s.goto}`;
-  if (s.click) return `click ${s.click}`;
+  if (s.click) return `${s.double ? "double-click" : "click"} ${s.click}`;
+  if (s.back) return "go back";
   if (s.type !== undefined) return `type "${s.type.length > 40 ? `${s.type.slice(0, 40)}…` : s.type}"${s.into ? ` into ${s.into}` : ""}`;
   if (s.press) return `press ${s.press}`;
   if (s.waitFor) return `wait for ${s.waitFor}`;

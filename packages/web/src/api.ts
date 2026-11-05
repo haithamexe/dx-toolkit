@@ -174,6 +174,7 @@ import { removeSnapshotRun, runSnapshot, snapshotViews } from "./snapshots.js";
 import { bugReplayJob, startBugReplay } from "./bugreplay.js";
 import { forgetMocks, mockServerFor } from "./mocks.js";
 import { labRoutes } from "./labapi.js";
+import { chaosRoutes } from "./chaosapi.js";
 import { closeDxBrowser, dxBrowserStatus, forgetSites, openDxBrowser } from "./dxbrowser.js";
 import {
   clearDevServer,
@@ -1135,7 +1136,7 @@ interface DepsJob {
 let depsJob: DepsJob = { running: false, done: 0, total: 0, current: "" };
 
 export async function handleApi(req: ApiRequest): Promise<unknown> {
-  const handler = routes[`${req.method} ${req.path}`] ?? labRoutes[`${req.method} ${req.path}`];
+  const handler = routes[`${req.method} ${req.path}`] ?? labRoutes[`${req.method} ${req.path}`] ?? chaosRoutes[`${req.method} ${req.path}`];
   if (!handler) throw new HttpError(404, `No such API: ${req.method} ${req.path}`);
   return handler(req);
 }
@@ -1420,6 +1421,8 @@ function stepsOf(raw: unknown): PageStep[] | undefined {
     return {
       goto: str(o.goto),
       click: str(o.click),
+      double: o.double === true || undefined,
+      back: o.back === true || undefined,
       type: str(o.type),
       into: str(o.into),
       press: str(o.press),

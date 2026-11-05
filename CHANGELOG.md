@@ -6,6 +6,17 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ### Added
 
+- **The Chaos page: break the app on purpose, before your users do.**
+  - **Chaos mode** breaks a project's API calls as they pass through dx the way real networks and servers do: slow answers, 500s, connections dropped halfway, a 401 halfway through (an expired session), answers out of order, 429s and odd data (a field null, empty, -1 or 10,000 characters long). Pages, scripts and styles always load. Three levels (Bad Wi-Fi, Monday deploy, Black Friday) or the faults you pick, for every API call or a path pattern. Seeded, so the same seed breaks the same calls the same way, and **Start the run again** meets them again. **What broke** lists pages that went blank, errors nothing caught, loading indicators still spinning after 15 s and the same order sent twice, each with the chaos that hit first and a link to the visit.
+  - **Gremlins**: a headless browser goes through the app on its own, clicking, typing nonsense, double-clicking submit, pressing Enter and going back, and brings back each problem with the steps to reproduce it (**Replay**, **Copy steps**). Destructive-looking controls are left alone unless you ask. Seeded.
+  - **Clock**: the app's pages see another time and time zone (`Date`, `Date.now()`, formatting), with presets for New Year's Eve, a leap day, daylight-saving changes, UTC+14 and UTC−11, and 2038. Optionally frozen.
+  - **Weak phone**: every dx browser tab, and Gremlins, as a cheap phone on 3G (390 × 844 with touch, CPU 6× slower, Chrome's Fast 3G).
+  - **Missing values**: the app started once as it is and once per `.env` value with only that value blank, on a port of its own; which values crash it, break the page, go unnoticed, or are never used in the code. `.env` isn't changed.
+  - **Behaviour diff**: the working copy and an earlier commit (as a snapshot) loading the same pages, with their API calls, answers, errors and warnings compared.
+  - **Graveyard**: routes the code declares (Express, Fastify, Hono, Next.js, SvelteKit, Nuxt, FastAPI, Flask, the saved API spec), pages from file-based routing and router paths, and mocks, that nothing used in the activity history.
+  - The page notices for itself when it went blank or a spinner never stopped, so these show in Activity too. Page checks can now double-click and go back as steps.
+  - `dx chaos on|off|clock|phone|gremlins|env|diff|graveyard`, and the `chaos_mode`, `run_gremlins`, `behaviour_diff`, `env_values_that_matter` and `find_unused` MCP tools.
+
 - **Run gets the project ready first**, so Run works on a fresh clone or after a pull: packages installed when they're missing or the lock file changed, `.env` made from its example, Docker running for a stack's databases, `prisma generate`, workspace packages built, migrations applied (only to a database on this computer, never with a script that resets or seeds), and the usual port checked. Each step shows on the project's card with its output; a failed one stops the start and says why and how to fix it. `dx prepare <project>` shows or runs the plan, and `.devrc.json` adds steps of the project's own (`"prepare": [...]`) or turns it off.
 
 - **The Requests page**: Burp- and Postman-style tools for the app you run.

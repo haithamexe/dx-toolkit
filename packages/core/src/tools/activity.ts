@@ -67,6 +67,8 @@ export interface ActivityEvent {
   mocked?: boolean;
   /** For a request: changed on its way by these dx rules (Requests page), or by hand in Intercept. */
   rules?: string[];
+  /** For an error the page noticed itself: it went blank, or a loading indicator never stopped. */
+  problem?: "blank" | "stuck";
   /** For a click: how to find the control again (`#id`, `[data-testid=…]` or `text=Label`), for replaying it. */
   target?: string;
   /** file:line:column where it happened. */

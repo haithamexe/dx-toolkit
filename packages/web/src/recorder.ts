@@ -3,6 +3,7 @@ import type http from "node:http";
 import { fileURLToPath } from "node:url";
 import { maskText, type ActivityEvent } from "@dx/core";
 import { activitySettings, recordActivity, type NewActivity } from "./activity.js";
+import { chaosConfig } from "./chaos.js";
 import type { LocalRoute } from "./dev.js";
 import { maskBody, type TrafficEntry } from "./traffic.js";
 
@@ -27,12 +28,24 @@ function recorderScript(): Buffer {
   return script;
 }
 
+/**
+ * The project's page settings go in front of the script: the fake clock from Chaos mode. Only
+ * checked values (a date, a flag, a time zone name) from the user's own ~/.dx, as JSON.
+ */
+function withPageSettings(script: Buffer, route: LocalRoute): Buffer {
+  const clock = chaosConfig(route.dir)?.clock;
+  if (!clock) return script;
+  // Served as a script, not HTML, and every value is checked (a date, a flag, a zone name).
+  const settings = JSON.stringify({ clock });
+  return Buffer.concat([Buffer.from(`window.__dxSettings = ${settings};\n`), script]);
+}
+
 /** Handles the proxy's own paths. True when it answered the request. */
 export function handleRecorderRequest(req: http.IncomingMessage, res: http.ServerResponse, route: LocalRoute, origin: string): boolean {
   const pathname = (req.url ?? "/").split("?")[0];
   if (pathname === RECORDER_PATH && (req.method === "GET" || req.method === "HEAD")) {
     res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
-    res.end(req.method === "HEAD" ? undefined : recorderScript());
+    res.end(req.method === "HEAD" ? undefined : withPageSettings(recorderScript(), route));
     return true;
   }
   if (pathname !== EVENTS_PATH) return false;
@@ -96,6 +109,7 @@ export function acceptBrowserEvents(raw: string, route: LocalRoute, headless = f
     if (type === "action" && typeof e.target === "string" && e.target) base.target = e.target.slice(0, 300);
     if (type === "console") base.level = level ?? "log";
     if (type === "error") base.level = "error";
+    if (type === "error" && (e.problem === "blank" || e.problem === "stuck")) base.problem = e.problem;
     if (type === "request") {
       const url = str(e.url, 2000) ?? "";
       const method = (str(e.method, 10) ?? "GET").toUpperCase();

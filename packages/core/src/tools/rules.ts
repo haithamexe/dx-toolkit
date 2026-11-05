@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { dxPath } from "../config.js";
+import type { ChaosDecision } from "./chaos.js";
 
 /**
  * Rules for the traffic that passes through dx's proxy to a project's dev server, like Burp's
@@ -325,6 +326,8 @@ export interface RulePlan {
   needsRequestBody: boolean;
   /** The answer's body must be read whole (and uncompressed) before it goes back. */
   needsResponseBody: boolean;
+  /** Chaos mode's fault for this call, on top of the rules. */
+  chaos?: ChaosDecision;
 }
 
 export function planRules(rules: TrafficRule[]): RulePlan | undefined {

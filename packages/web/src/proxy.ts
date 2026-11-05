@@ -5,6 +5,7 @@ import tls from "node:tls";
 import { localRoutes, type LocalRoute } from "./dev.js";
 import { answerFromMocks, cacheAnswer, handleMockServer, mockServerByHost } from "./mocks.js";
 import { relayWithRules, rulePlanFor } from "./apilab.js";
+import { answered, callKey, chaosConfig, chaosFor, withChaos } from "./chaos.js";
 import { handleRecorderRequest, injector, requestActivity, shouldInject } from "./recorder.js";
 import { recordExchange } from "./traffic.js";
 
@@ -204,14 +205,19 @@ export function relay(req: http.IncomingMessage, res: http.ServerResponse, o: Re
   // Mock mode: the project's API answered from its recordings; pages and assets still go through.
   if (route && answerFromMocks(req, res, route, o.label)) return;
   // The Requests page's rules: changed, held, slowed or failed on the way.
-  const plan = route ? rulePlanFor(req, route) : undefined;
+  let plan = route ? rulePlanFor(req, route) : undefined;
+  // Chaos mode: some API calls slowed, failed, dropped or answered out of order, on purpose.
+  const chaos = route ? chaosFor(req, route) : undefined;
+  if (chaos) plan = withChaos(plan, chaos);
   if (plan && route) return void relayWithRules(req, res, { ...o, route }, plan);
+  const chaosOn = !!route && !!chaosConfig(route.dir)?.on;
   const rec = route ? recordExchange(req, route, o.label) : undefined;
   if (rec) req.on("data", (c: Buffer) => rec.request(c));
   let done = false;
   const finish = (error?: string) => {
     if (done) return;
     done = true;
+    if (chaosOn) answered(callKey(req.method ?? "GET", req.url ?? "/"));
     if (!rec || !route) return;
     rec.end(error);
     requestActivity(rec.entry, route, String(req.headers["user-agent"] ?? ""));

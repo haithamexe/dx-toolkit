@@ -92,13 +92,24 @@ export interface DxBrowserStatus {
   pages?: number;
   /** Whether the history is kept at all (activity on). */
   recording: boolean;
+  /** Every tab as a cheap phone on 3G (Chaos page). */
+  phone: boolean;
+}
+
+let phone = false;
+
+/** Every tab of the dx browser as a cheap phone on 3G, now (when it's open) and whenever it opens. */
+export async function setDxBrowserPhone(on: boolean): Promise<DxBrowserStatus> {
+  phone = on;
+  await current?.emulate({ phone });
+  return dxBrowserStatus();
 }
 
 export function dxBrowserStatus(): DxBrowserStatus {
   const recording = activitySettings().on;
-  if (current) return { open: true, browser: current.browser, found: true, pid: current.pid, startedAt: current.startedAt, pages: current.pages(), recording };
+  if (current) return { open: true, browser: current.browser, found: true, pid: current.pid, startedAt: current.startedAt, pages: current.pages(), recording, phone };
   const found = findBrowser();
-  return { open: false, found: !!found, browser: found?.name, recording };
+  return { open: false, found: !!found, browser: found?.name, recording, phone };
 }
 
 export function dxBrowserOpen(): boolean {
@@ -128,6 +139,7 @@ export async function openDxBrowser(url?: string, options: { profileDir?: string
   }).finally(() => (opening = undefined));
   const b = await opening;
   current = b;
+  if (phone) await b.emulate({ phone });
   void b.closed.then(() => {
     if (current === b) current = undefined;
   });

@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import http from "node:http";
 import crypto from "node:crypto";
-import { editBody, editHeaders, loadRules, MASK, maskBody, maskHeaders, matchRules, planRules, rulesFile, type Headers, type RulePlan, type RuleSet } from "@dx/core";
+import { breakJson, editBody, editHeaders, loadRules, MASK, maskBody, maskHeaders, matchRules, planRules, rulesFile, type Headers, type RulePlan, type RuleSet } from "@dx/core";
 import type { LocalRoute } from "./dev.js";
+import { answered, callKey, holdForNext } from "./chaos.js";
 import { hold } from "./intercept.js";
 import { cacheAnswer } from "./mocks.js";
 import { requestActivity } from "./recorder.js";
@@ -98,12 +99,14 @@ export async function relayWithRules(req: http.IncomingMessage, res: http.Server
   const { route } = o;
   const names = plan.rules.map((r) => r.name);
   const rec = recordExchange(req, route, o.label);
-  rec.entry.rules = [...names];
+  const chaos = plan.chaos;
+  rec.entry.rules = [...names, ...(chaos ? [chaos.label] : [])];
   const ua = String(req.headers["user-agent"] ?? "");
   let finished = false;
   const finish = (error?: string) => {
     if (finished) return;
     finished = true;
+    if (chaos) answered(callKey(req.method ?? "GET", req.url ?? "/"));
     rec.end(error);
     requestActivity(rec.entry, route, ua);
     cacheAnswer(route, rec.entry, rec.fullResponse());
@@ -125,6 +128,25 @@ export async function relayWithRules(req: http.IncomingMessage, res: http.Server
 
   if (plan.delayMs) await sleep(plan.delayMs);
   if (closed) return;
+
+  // Chaos answers that never reach the server: a session that expired, a rate limit, a 500.
+  if (chaos && (chaos.fault === "logout" || chaos.fault === "ratelimit" || chaos.fault === "flaky")) {
+    rec.request(body);
+    const [status, message, extra] =
+      chaos.fault === "logout"
+        ? [401, "Unauthorized: your session has expired (dx chaos mode)", { "www-authenticate": 'Bearer error="invalid_token"' }]
+        : chaos.fault === "ratelimit"
+          ? [429, "Too Many Requests (dx chaos mode)", { "retry-after": "5" }]
+          : [500, "Internal Server Error (dx chaos mode)", {}];
+    const b = Buffer.from(JSON.stringify({ error: message }));
+    const h = { "content-type": "application/json", "content-length": String(b.length), "x-dx-chaos": chaos.fault, ...extra };
+    rec.headers(status, h);
+    rec.response(b);
+    res.writeHead(status, h);
+    res.end(b);
+    return finish();
+  }
+  if (chaos?.fault === "timeout") plan.fail ??= "timeout";
 
   if (plan.fail) {
     rec.request(body);
@@ -220,7 +242,30 @@ export async function relayWithRules(req: http.IncomingMessage, res: http.Server
       delete resHeaders["content-encoding"];
       let t = text;
       for (const e of plan.response) if (e.body !== undefined || e.json?.length) t = editBody(t, e).body;
+      if (chaos?.fault === "baddata" && status < 300) {
+        const broken = breakJson(t, 0, chaos.salt);
+        if (broken) {
+          t = broken.text;
+          rec.entry.rules = rec.entry.rules!.map((r) => (r === chaos.label ? `${r}: ${broken.note}` : r));
+        } else rec.entry.rules = rec.entry.rules!.filter((r) => r !== chaos.label);
+      }
       outRes = Buffer.from(t, "utf8");
+    }
+    if (chaos?.fault === "reorder") {
+      await holdForNext(callKey(method, url));
+      if (closed) return;
+    }
+    if (chaos?.fault === "drop") {
+      // Headers and half the answer, then the connection closes: what a page sees when the network goes.
+      delete resHeaders["transfer-encoding"];
+      resHeaders["content-length"] = String(outRes.length);
+      rec.headers(status, resHeaders as http.IncomingHttpHeaders);
+      const half = outRes.subarray(0, Math.floor(outRes.length / 2));
+      rec.response(half);
+      res.writeHead(status, resHeaders as http.OutgoingHttpHeaders);
+      res.write(half);
+      finish("connection dropped halfway (dx chaos mode)");
+      return void setTimeout(() => res.destroy(), 50);
     }
     if (plan.interceptResponse) {
       const isText = text !== undefined && (!outRes.length || isTextType(String(resHeaders["content-type"] ?? "")));
