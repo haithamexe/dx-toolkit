@@ -1,7 +1,25 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import {
   attackApp,
+  checkTranslation,
+  comparePages,
+  createWorkingCopy,
+  detectPackageManager,
+  resolveUpgrade,
+  runChecks,
+  runInSnapshot,
+  saveSnapshot,
+  snapshotProject,
+  summarizeUpgrade,
+  unlinkPackages,
+  upgradeChoices,
+  upgradeCommand,
+  UpgradeError,
+  type UpgradeReport,
+  localeFolder,
+  localeImageFile,
   CHAOS_FAULTS,
   CHAOS_LEVELS,
   ChaosError,
@@ -23,6 +41,7 @@ import {
   type BehaviourDiff,
   type EnvProbe,
   type GremlinRun,
+  type LocaleReport,
   type PageStep,
   type Project,
 } from "@dx/core";
@@ -30,7 +49,7 @@ import { flushActivity } from "./activity.js";
 import { HttpError, knownProject, replayOf, type ApiRequest } from "./api.js";
 import { readyUrl, waitFor } from "./bugreplay.js";
 import { restartChaosCount } from "./chaos.js";
-import { devServer, startDevServer, stopDevServer } from "./dev.js";
+import { clearDevServer, devServer, startDevServer, stopDevServer } from "./dev.js";
 import { dxBrowserStatus, setDxBrowserPhone } from "./dxbrowser.js";
 import { runSnapshot, snapshotViews } from "./snapshots.js";
 
@@ -42,7 +61,7 @@ import { runSnapshot, snapshotViews } from "./snapshots.js";
  * the project's repository.
  */
 
-export type JobKind = "gremlins" | "env" | "behaviour" | "attack";
+export type JobKind = "gremlins" | "env" | "behaviour" | "attack" | "locale" | "upgrade";
 
 export interface ChaosJob {
   id: string;
@@ -56,7 +75,9 @@ export interface ChaosJob {
   startedAt: string;
   finishedAt?: string;
   error?: string;
-  result?: GremlinRun | EnvProbe | AttackReport | { against: string; diffs: BehaviourDiff[] };
+  result?: GremlinRun | EnvProbe | AttackReport | LocaleReport | UpgradeReport | { against: string; diffs: BehaviourDiff[] };
+  /** For an upgrade: the install's last lines, while it runs. */
+  lines?: string[];
 }
 
 const jobs = new Map<string, ChaosJob & { abort: AbortController }>();
@@ -123,14 +144,14 @@ export const chaosRoutes: Record<string, (req: ApiRequest) => unknown> = {
       levels: Object.entries(CHAOS_LEVELS).map(([id, l]) => ({ id, name: l.name, about: l.about, faults: Object.keys(l.odds) })),
       faults: CHAOS_FAULTS,
       phone: { ...PHONE, browser: dxBrowserStatus() },
-      jobs: { gremlins: latest("gremlins"), env: latest("env"), behaviour: latest("behaviour"), attack: latest("attack") },
+      jobs: { gremlins: latest("gremlins"), env: latest("env"), behaviour: latest("behaviour"), attack: latest("attack"), locale: latest("locale") },
     };
   },
 
   "POST /api/chaos": async (req) => {
     const project = knownProject(req.body.dir);
     const patch: Record<string, unknown> = {};
-    for (const k of ["on", "level", "faults", "seed", "paths", "clock", "phone", "restart"]) if (req.body[k] !== undefined) patch[k] = req.body[k];
+    for (const k of ["on", "level", "faults", "seed", "paths", "clock", "phone", "locale", "restart"]) if (req.body[k] !== undefined) patch[k] = req.body[k];
     let config;
     try {
       config = setChaos(project.dir, project.name, patch);
@@ -144,6 +165,7 @@ export const chaosRoutes: Record<string, (req: ApiRequest) => unknown> = {
     if (patch.on !== undefined) said.push(config.on ? `chaos on (${CHAOS_LEVELS[config.level].name}, #${config.seed})` : "chaos off");
     if (patch.clock !== undefined) said.push(config.clock ? `clock ${config.clock.at ?? "now"}${config.clock.timeZone ? ` in ${config.clock.timeZone}` : ""}` : "real clock");
     if (patch.phone !== undefined) said.push(config.phone ? "weak phone on" : "weak phone off");
+    if (patch.locale !== undefined) said.push(config.locale ? [config.locale.pseudo ? "pseudo text" : "", config.locale.rtl ? "right to left" : ""].filter(Boolean).join(" and ") + " on" : "languages back to normal");
     recordRun("chaos", true, `${project.name}: ${said.join(", ") || "settings changed"}`, "web", { project: project.name });
     return config;
   },
@@ -311,6 +333,131 @@ export const chaosRoutes: Record<string, (req: ApiRequest) => unknown> = {
       finish(job, err);
       recordRun("attack", false, `${project.name}: ${job.error}`, "web", { project: project.name });
     });
+    return view(job);
+  },
+
+  "POST /api/chaos/locale": (req) => {
+    const project = knownProject(req.body.dir);
+    const wanted = Array.isArray(req.body.paths) ? req.body.paths.filter((p: unknown): p is string => typeof p === "string").slice(0, 6) : [];
+    const rtl = req.body.rtl !== false;
+    const job = newJob("locale", project, "Starting");
+    void (async () => {
+      const base = await serverUrl(project, job);
+      job.phase = "running";
+      const paths = (wanted.length ? wanted : topVisitedPaths(project.dir, { limit: 4 })).map((p: string) => new URL(onServer(base, p)).pathname);
+      // Last run's pictures go: names are per page, and a page left out shouldn't show an old one.
+      fs.rmSync(localeFolder(project.dir), { recursive: true, force: true });
+      const r = await checkTranslation({ dir: project.dir, project: project.name, baseUrl: base, paths: paths.length ? paths : ["/"], rtl, signal: job.abort.signal, progress: (step, done, total) => ((job.step = step), (job.done = done), (job.total = total)) });
+      job.result = r;
+      const fit = r.problems.filter((p) => p.kind !== "hard-coded").length;
+      const hard = r.problems.length - fit;
+      job.step = `${fit ? `${fit} place${fit === 1 ? "" : "s"} where text doesn't fit` : "Text fits everywhere"}; ${hard ? `${hard} text${hard === 1 ? "" : "s"} not from translations` : "all text from translations"}`;
+      finish(job);
+      recordRun("locale", fit === 0 && hard === 0, `${project.name}: ${job.step}`, "web", { project: project.name });
+    })().catch((err: Error) => {
+      finish(job, err);
+      recordRun("locale", false, `${project.name}: ${job.error}`, "web", { project: project.name });
+    });
+    return view(job);
+  },
+
+  "GET /api/chaos/locale/image": (req) => {
+    const project = knownProject(req.query.get("dir"));
+    let file: string;
+    try {
+      file = localeImageFile(project.dir, req.query.get("name"));
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+    if (!fs.existsSync(file)) throw new HttpError(404, "That picture isn't there any more. Run the check again.");
+    return { url: `data:image/png;base64,${fs.readFileSync(file).toString("base64")}` };
+  },
+
+  // ------------------------------------------------------------ trying an upgrade (the Dependencies page)
+
+  "GET /api/upgrade": (req) => {
+    const project = knownProject(req.query.get("dir"));
+    const latest = [...jobs.values()].filter((j) => j.kind === "upgrade" && j.dir === project.dir).map(view).at(-1);
+    return { choices: upgradeChoices(project.dir), packageManager: detectPackageManager(project.dir), job: latest };
+  },
+
+  "POST /api/upgrade": async (req) => {
+    const project = knownProject(req.body.dir);
+    const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+    const wanted = typeof req.body.version === "string" && req.body.version.trim() ? req.body.version.trim() : "latest";
+    let target;
+    try {
+      target = await resolveUpgrade(project.dir, name, wanted);
+    } catch (err) {
+      throw new HttpError(err instanceof UpgradeError ? 400 : 502, (err as Error).message);
+    }
+    const wantedPaths = Array.isArray(req.body.paths) ? req.body.paths.filter((p: unknown): p is string => typeof p === "string").slice(0, 4) : [];
+    const job = newJob("upgrade", project, `Trying ${target.name} ${target.to}`);
+    job.lines = [];
+    const say = (line: string) => {
+      job.lines!.push(line.slice(0, 400));
+      if (job.lines!.length > 40) job.lines!.splice(0, job.lines!.length - 40);
+    };
+    const started = Date.now();
+    let copyDir: string | undefined;
+    void (async () => {
+      job.phase = "setting-up";
+      const copy = await createWorkingCopy(project, `up-${target.name}-${target.to}`, { onStep: (s) => (job.step = s), onOutput: say });
+      copyDir = copy.dir;
+      if (copy.packages === "failed") throw new Error(`Installing the copy's packages failed. ${job.lines!.at(-1) ?? ""}`.trim());
+      const pm = project.packageManager ?? detectPackageManager(project.dir);
+      const report: UpgradeReport = { project: project.name, target, copy: copy.id, checks: [], pages: [], verdict: "same", summary: [], ms: 0 };
+      job.phase = "running";
+      job.total = 7;
+      const before = await runChecks(project, copy.dir, { signal: job.abort.signal, onStep: (s) => ((job.step = `As it is: ${s}`), job.done++) });
+      if (job.abort.signal.aborted) throw new Error("Stopped.");
+      // Its own packages now, with the new version: never in the project's node_modules.
+      if (copy.packages === "linked") unlinkPackages(copy);
+      const cmd = upgradeCommand(copy.dir, target, pm);
+      job.step = cmd.label;
+      say(`$ ${cmd.command} ${cmd.args.join(" ")}`);
+      const installed = await runInSnapshot(cmd, say);
+      copy.packages = installed.ok ? "installed" : "failed";
+      copy.upgrade = { name: target.name, from: target.from, to: target.to };
+      saveSnapshot(copy);
+      report.install = { ok: installed.ok, tail: installed.output.split(/\r?\n/).filter(Boolean).slice(-8) };
+      if (installed.ok) {
+        job.done++;
+        const after = await runChecks(project, copy.dir, { signal: job.abort.signal, onStep: (s) => ((job.step = `With ${target.name} ${target.to}: ${s}`), job.done++) });
+        for (const name of ["types", "build", "tests"] as const) {
+          const b = before.find((c) => c.name === name);
+          const a = after.find((c) => c.name === name);
+          if (a || b) report.checks.push({ name, before: b, after: a });
+        }
+        // The pages: the project's own dev server against the copy's.
+        if (!job.abort.signal.aborted) {
+          const mine = await serverUrl(project, job);
+          const runAs = snapshotProject(copy);
+          if (runAs) {
+            job.step = "Starting the upgraded copy";
+            clearDevServer(copy.dir);
+            startDevServer(runAs, "dashboard", { snapshot: true });
+            const theirs = await waitFor(5 * 60_000, () => readyUrl(devServer(copy.dir), job));
+            job.phase = "running";
+            const paths = (wantedPaths.length ? wantedPaths : topVisitedPaths(project.dir, { limit: 3 })).map((p: string) => new URL(onServer(mine, p)).pathname);
+            report.pages = await comparePages(mine, theirs, paths.length ? paths : ["/"], { signal: job.abort.signal, onStep: (s) => (job.step = s) });
+          }
+        }
+      }
+      Object.assign(report, summarizeUpgrade(report), { ms: Date.now() - started });
+      job.result = report;
+      job.step = report.verdict === "breaks" ? `${target.name} ${target.to} breaks something` : report.verdict === "changes" ? `${target.name} ${target.to} changes how the app looks or behaves` : `${target.name} ${target.to}: nothing changed that dx can see`;
+      finish(job);
+      recordRun("upgrade", report.verdict !== "breaks", `${project.name}: ${target.name} ${target.from ?? "?"} → ${target.to}: ${report.summary[0]}`, "web", { project: project.name });
+    })()
+      .catch((err: Error) => {
+        finish(job, err);
+        recordRun("upgrade", false, `${project.name}: ${target.name} ${target.to}: ${job.error}`, "web", { project: project.name });
+      })
+      .finally(() => {
+        // The copy stays (Run any commit lists it, to open or remove); its server doesn't keep running.
+        if (copyDir) void stopDevServer(copyDir).catch(() => undefined);
+      });
     return view(job);
   },
 

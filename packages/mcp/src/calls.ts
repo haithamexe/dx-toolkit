@@ -72,6 +72,9 @@ const SAFE_KEYS = new Set([
   "action",
   "recipe",
   "read_only",
+  "package",
+  "version",
+  "paths",
 ]);
 /** Arguments whose size is worth knowing but whose content isn't kept. */
 const COUNTED_KEYS = new Set(["steps", "files", "services", "query", "note", "text", "body", "headers", "search", "match"]);
@@ -224,6 +227,16 @@ export function describeCall(tool: string, args: Args, ok: boolean, result?: Cal
         return "Checked dx's setup";
       case "visual_diff":
         return `${args.capture ? "Captured and compared" : "Compared"} how ${p ?? "the app"} looks${typeof args.commit === "string" ? ` at ${args.commit.slice(0, 7)}` : ""}`;
+      case "project_tour":
+        return `Read the tour of ${p ?? "a project"}`;
+      case "pr_proof":
+        return `Wrote the pull request proof for ${p ?? "a project"}`;
+      case "try_upgrade":
+        return `Tried ${typeof args.package === "string" ? args.package : "a package"} ${typeof args.version === "string" ? args.version : "latest"} on ${p ?? "a project"}`;
+      case "db_queries":
+        return args.action === "on" ? `Switched on query logging for ${p ?? "a project"}` : args.action === "off" ? `Switched off query logging for ${p ?? "a project"}` : `Read ${of("database queries")}`;
+      case "translation_check":
+        return `Checked ${p ? `${p}'s` : "the app's"} pages for other languages`;
       default:
         if (tool.startsWith("git_")) return `Git: ${tool.slice(4).replace(/_/g, " ")}${p ? ` in ${p}` : ""}`;
         return `Called ${tool}${p ? ` on ${p}` : ""}`;

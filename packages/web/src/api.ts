@@ -177,6 +177,7 @@ import { labRoutes } from "./labapi.js";
 import { chaosRoutes } from "./chaosapi.js";
 import { dataRoutes } from "./dataapi.js";
 import { phoneRoutes } from "./phone.js";
+import { teamRoutes } from "./teamapi.js";
 import { closeDxBrowser, dxBrowserStatus, forgetSites, openDxBrowser } from "./dxbrowser.js";
 import {
   clearDevServer,
@@ -1138,7 +1139,7 @@ interface DepsJob {
 let depsJob: DepsJob = { running: false, done: 0, total: 0, current: "" };
 
 export async function handleApi(req: ApiRequest): Promise<unknown> {
-  const handler = routes[`${req.method} ${req.path}`] ?? labRoutes[`${req.method} ${req.path}`] ?? chaosRoutes[`${req.method} ${req.path}`] ?? dataRoutes[`${req.method} ${req.path}`] ?? phoneRoutes[`${req.method} ${req.path}`];
+  const handler = routes[`${req.method} ${req.path}`] ?? labRoutes[`${req.method} ${req.path}`] ?? chaosRoutes[`${req.method} ${req.path}`] ?? dataRoutes[`${req.method} ${req.path}`] ?? phoneRoutes[`${req.method} ${req.path}`] ?? teamRoutes[`${req.method} ${req.path}`];
   if (!handler) throw new HttpError(404, `No such API: ${req.method} ${req.path}`);
   return handler(req);
 }

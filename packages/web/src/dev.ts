@@ -151,6 +151,14 @@ interface StackRun {
   prepare?: PrepareStep[];
   /** Its preparation failed, so nothing was started. */
   failed?: boolean;
+  /**
+   * A copy of the project (a snapshot, or a copy to try an upgrade in): its app services run on
+   * ports of their own, and the project's own Docker services are used, never started or stopped
+   * from here (with a compose file that names its project, they're the very same containers).
+   */
+  snapshot?: boolean;
+  /** The Docker services a copy shares with the project. */
+  shared?: string[];
 }
 
 const MAX_LINES = 2000;
@@ -281,7 +289,7 @@ export function startDevServer(project: Project, startedBy: StartedBy = "dashboa
   const stack = detectStack(project);
   // Where you left off: what ran, on which branch (dx resume, resume_project).
   if (!options.snapshot) rememberSession(project.dir, project.name, { ran: stack ? stack.services.map((s) => s.name) : ["dev"] });
-  if (stack) return startStack(project, stack, startedBy);
+  if (stack) return startStack(project, stack, startedBy, options.snapshot === true);
   if (!project.devCommand) throw new Error(`${project.name} has no dev command. Add one in .devrc.json: { "dev": "..." }`);
   const existing = procs.get(key(project.dir));
   if (existing && (existing.status === "starting" || existing.status === "ready")) return info(existing);
@@ -343,12 +351,14 @@ function launchProject(project: Project, spec: Spec, options: { snapshot?: boole
   return spawnProc(spec);
 }
 
-function startStack(project: Project, stack: Stack, startedBy: StartedBy): DevServerInfo {
+function startStack(project: Project, stack: Stack, startedBy: StartedBy, snapshot = false): DevServerInfo {
   const k = key(project.dir);
   const existing = stacks.get(k);
   if (existing && (existing.phase === "starting" || existing.phase === "running")) return stackInfo(existing);
   for (const p of [...procs.values()]) if (p.stackKey === k && !p.child) procs.delete(p.key);
-  const run: StackRun = { key: k, dir: project.dir, name: project.name, stack, startedBy, phase: "starting", startedAt: new Date().toISOString() };
+  const shared = snapshot ? stack.services.filter((s) => s.kind === "docker").map((s) => s.name) : [];
+  const own = snapshot ? { ...stack, services: stack.services.filter((s) => s.kind !== "docker") } : stack;
+  const run: StackRun = { key: k, dir: project.dir, name: project.name, stack: own, startedBy, phase: "starting", startedAt: new Date().toISOString(), ...(snapshot ? { snapshot, shared } : {}) };
   stacks.set(k, run);
   void runStack(run).catch((err: Error) => {
     run.note = `Couldn't start the stack: ${err.message}`;
@@ -366,11 +376,14 @@ async function runStack(run: StackRun): Promise<void> {
   const unavailable = (d: string) => crashed.has(d) || skipped.some((s) => s.startsWith(`${d} `));
 
   // Getting it ready: packages (the root's and each service folder's), .env, Docker, builds; then,
-  // once its databases are up, migrations. Logged as the stack's own "prepare" output.
-  const steps = safePlan({ dir: run.dir, name: run.name } as Project, {
-    docker: docker.length > 0,
-    extraDirs: [...new Set(stack.services.filter((s) => s.kind === "process").map((s) => s.dir))],
-  });
+  // once its databases are up, migrations. Logged as the stack's own "prepare" output. A copy
+  // prepares itself (its packages) and uses the project's databases as they are.
+  const steps = run.snapshot
+    ? []
+    : safePlan({ dir: run.dir, name: run.name } as Project, {
+        docker: docker.length > 0,
+        extraDirs: [...new Set(stack.services.filter((s) => s.kind === "process").map((s) => s.dir))],
+      });
   run.prepare = steps;
   let prep: Proc | undefined;
   const log = (line: string) => {
@@ -408,7 +421,7 @@ async function runStack(run: StackRun): Promise<void> {
         skipped.push(`${svc.name} (needs ${blockedBy.join(", ")})`);
         continue;
       }
-      started.push(startService(run, svc));
+      started.push(run.snapshot ? await startServiceOnOwnPort(run, svc) : startService(run, svc));
     }
     if (wave === "runner" && stack.runner) {
       // Every app service through the project's own runner, after the databases.
@@ -431,6 +444,7 @@ async function runStack(run: StackRun): Promise<void> {
   if (run.phase !== "starting") return;
   run.phase = "running";
   const notes: string[] = [];
+  if (run.shared?.length) notes.push(`Uses ${run.name}'s own ${run.shared.join(", ")}: start the project itself if ${run.shared.length === 1 ? "it isn't" : "they aren't"} running.`);
   if (crashed.size) notes.push(`Failed to start: ${[...crashed].join(", ")}.`);
   if (skipped.length) notes.push(`Not started: ${skipped.join("; ")}.`);
   run.note = notes.length ? notes.join(" ") : undefined;
@@ -454,6 +468,16 @@ function startService(run: StackRun, svc: StackService): Proc {
     env,
     docker: svc.kind === "docker" ? { compose: svc.composeService ?? svc.name, hostPort: svc.hostPort } : undefined,
   });
+}
+
+/** A copy's app service: given PORT on a free port, so it doesn't fight the project's own for its usual one. */
+async function startServiceOnOwnPort(run: StackRun, svc: StackService): Promise<Proc> {
+  const port = await freePort().catch(() => undefined);
+  const env: Record<string, string> = { ...(svc.env ?? {}), ...urlEnv(run), ...(port ? { PORT: String(port) } : {}) };
+  delete env.DX_LABEL;
+  const p = spawnProc({ key: `${run.key}#${svc.name}`, project: run.name, dir: svc.dir, command: svc.command, startedBy: run.startedBy, stackKey: run.key, service: svc.name, role: svc.role, env, snapshot: true, portHint: port });
+  if (port) push(p, "dx", `Snapshot: given PORT=${port}; if it listens somewhere else, the address it prints is used.`);
+  return p;
 }
 
 /**

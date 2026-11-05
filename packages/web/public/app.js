@@ -61,6 +61,7 @@ const ICONS = {
   requests: "M4 8h13l-4-4M20 16H7l4 4",
   chaos: "M13 2L4 14h7l-1 8 9-12h-7z",
   phone: "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM11 18h2",
+  map: "M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2zM9 4v14M15 6v14",
   data: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
   journal: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6",
   summary: "M4 19V9M10 19V5M16 19v-7M22 19H2",
@@ -939,6 +940,7 @@ function terminalSelect({ withLabel = false } = {}) {
 
 const pages = [
   { id: "projects", label: "Projects", icon: "projects", render: projectsPage },
+  { id: "tour", label: "Tour", icon: "map", render: tourPage },
   { id: "new", label: "New project", icon: "new", render: newProjectPage },
   { id: "ports", label: "Ports", icon: "ports", render: portsPage },
   { id: "machine", label: "Machine", icon: "machine", render: machinePage },
@@ -2156,6 +2158,146 @@ function parseJsonEditsText(text) {
   return out;
 }
 
+// ------------------------------------------------------------------ Tour
+
+function tourPage(root) {
+  let dir = pref("tourDir", "");
+  let projects = [];
+  const holder = h("div", { class: "section" });
+  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("tourDir", dir), load()) });
+  append(
+    root,
+    pageHead(
+      "Tour",
+      "A map of a project for someone new to it, or you in six months: what it is, how to run it, its pages and the calls each one makes, which file answers them, its data, its settings and where the work happens.",
+      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
+    ),
+    holder,
+  );
+
+  (async () => {
+    try {
+      projects = await api("/api/projects");
+    } catch (err) {
+      fill(holder, errorView(err));
+      return;
+    }
+    if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
+    fill(projectSelect, ...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    load();
+  })();
+
+  // A file of the project, with its line when there is one, as a button that opens it in the editor.
+  const openFile = (file, line) =>
+    btn(line ? `${file}:${line}` : file, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file, line: line ?? 1 } })).message)), {
+      small: true,
+      kind: "ghost",
+      iconName: "code",
+      title: "Open in your editor",
+      name: `Open ${file} in editor`,
+    });
+  const fileLink = (from) => {
+    const m = /^(.*\.[a-z0-9]+):(\d+)$/i.exec(from);
+    return m ? openFile(m[1], Number(m[2])) : openFile(from);
+  };
+  const section = (title, ...children) => h("div", { class: "card card-pad section" }, h("strong", null, title), ...children);
+
+  async function load() {
+    if (!dir) return fill(holder, h("div", { class: "card" }, stateView("No projects", "dx looks for projects in your projects folders.")));
+    fill(holder, loadingView("Reading the project and its history…"));
+    let d;
+    try {
+      d = await api(`/api/tour?dir=${encodeURIComponent(dir)}`);
+    } catch (err) {
+      return fill(holder, errorView(err, load));
+    }
+    const t = d.tour;
+    const pagesUsed = t.pages.filter((p) => p.visits || p.calls.length || p.file);
+    fill(
+      holder,
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("strong", null, t.project), h("div", { class: "toolbar" }, copyButton(d.markdown, "Copy as Markdown"))),
+        t.about ? h("p", null, t.about) : h("p", { class: "dim" }, "No README paragraph says what the project is yet: the first paragraph after a README's title shows here."),
+        t.tech.length ? h("div", { class: "machine-badges" }, t.tech.map((x) => h("span", { class: "badge" }, x))) : null,
+        h("p", { class: "dim" }, t.history.events ? `The pages and calls below come from ${plural(t.history.events, "recorded event")} of the last ${plural(t.history.days, "day")}, and the routes in the code.` : "Nothing is recorded for it yet, so pages and calls come from the code alone. Use the app through dx and they fill in."),
+      ),
+      section(
+        "Running it",
+        t.run.steps.length ? h("div", null, h("p", { class: "dim" }, "Before the first start, dx does:"), h("ul", { class: "tour-list" }, t.run.steps.map((s) => h("li", null, s)))) : null,
+        t.run.services.length > 1
+          ? h("ul", { class: "tour-list" }, t.run.services.map((s) => h("li", null, h("strong", null, s.name), h("span", { class: "dim" }, ` ${s.role}`), s.command ? h("code", { class: "mono" }, ` ${s.command}`) : null)))
+          : t.run.command
+            ? h("p", null, "Start it with ", h("code", { class: "mono" }, t.run.command), t.run.url ? `, then open ${t.run.url}` : "")
+            : h("p", { class: "dim" }, "No dev command found."),
+        h("p", { class: "dim" }, "Or ", h("code", { class: "mono" }, `dx go ${t.project}`), ", which gets it ready and starts it."),
+        t.tests ? h("p", null, `Tests: ${t.tests.framework}, `, h("code", { class: "mono" }, t.tests.command)) : null,
+      ),
+      t.env.length ? section("Settings it needs", h("p", { class: "dim" }, `Names only, from ${[...new Set(t.env.map((e) => e.file))].join(", ")}. The values stay in the .env files.`), h("div", { class: "machine-badges" }, t.env.map((e) => h("span", { class: "badge mono" }, e.name)))) : null,
+      pagesUsed.length
+        ? section(
+            "Pages, and the calls each one makes",
+            h(
+              "div",
+              { class: "table-wrap" },
+              h(
+                "table",
+                { class: "table" },
+                h("thead", null, h("tr", null, h("th", { scope: "col" }, "Page"), h("th", { scope: "col" }, "File"), h("th", { scope: "col", class: "num" }, "Visits"), h("th", { scope: "col" }, "Calls"))),
+                h(
+                  "tbody",
+                  null,
+                  pagesUsed.slice(0, 100).map((p) =>
+                    h(
+                      "tr",
+                      null,
+                      h("td", { class: "mono" }, p.path),
+                      h("td", null, p.file ? fileLink(p.file) : h("span", { class: "dim" }, "—")),
+                      h("td", { class: "num" }, String(p.visits)),
+                      h("td", null, p.calls.length ? h("div", { class: "tour-calls" }, p.calls.slice(0, 8).map((c) => h("span", { class: "mono" }, c.key, c.count > 1 ? h("span", { class: "dim" }, ` ×${c.count}`) : null))) : h("span", { class: "dim" }, "none seen")),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          )
+        : null,
+      t.endpoints.length
+        ? section(
+            "API",
+            h(
+              "div",
+              { class: "table-wrap" },
+              h(
+                "table",
+                { class: "table" },
+                h("thead", null, h("tr", null, h("th", { scope: "col" }, "Call"), h("th", { scope: "col" }, "File"), h("th", { scope: "col", class: "num" }, "Calls"), h("th", { scope: "col" }, "Used by"))),
+                h(
+                  "tbody",
+                  null,
+                  t.endpoints.slice(0, 150).map((e) =>
+                    h(
+                      "tr",
+                      null,
+                      h("td", { class: "mono" }, e.key),
+                      h("td", null, e.file ? fileLink(e.file) : h("span", { class: "dim" }, "not found")),
+                      h("td", { class: "num" }, String(e.calls)),
+                      h("td", { class: "mono" }, e.pages.slice(0, 4).join(", ") || h("span", { class: "dim" }, "—")),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          )
+        : null,
+      t.data ? section("Data", h("p", { class: "dim" }, `From ${t.data.file}.`), h("div", { class: "machine-badges" }, t.data.tables.map((x) => h("span", { class: "badge" }, `${x.name}${x.links.length ? ` → ${x.links.join(", ")}` : ""}`)))) : null,
+      t.folders.some((f) => f.what) ? section("Where things are", h("ul", { class: "tour-list" }, t.folders.filter((f) => f.what).map((f) => h("li", null, h("code", { class: "mono" }, `${f.path}/`), ` ${f.what} `, h("span", { class: "dim" }, `(${plural(f.files, "file")})`))))) : null,
+      t.busy.length ? section("Where the work happens", h("p", { class: "dim" }, "Changed most in the last 90 days."), h("ul", { class: "tour-list" }, t.busy.map((b) => h("li", null, openFile(b.file), h("span", { class: "dim" }, ` ${plural(b.commits, "commit")}`))))) : null,
+    );
+  }
+}
+
 // ------------------------------------------------------------------ Data
 
 function dataPage(root) {
@@ -2197,7 +2339,11 @@ function dataPage(root) {
     } catch (err) {
       return fill(holder, errorView(err, load));
     }
-    if (!d.schema) return fill(holder, h("div", { class: "card" }, stateView("No database schema here", "dx reads a Prisma schema (prisma/schema.prisma), or CREATE TABLE statements in the project's SQL migration files.")));
+    if (!d.schema) {
+      fill(holder, h("div", { class: "card" }, stateView("No database schema here", "dx reads a Prisma schema (prisma/schema.prisma), or CREATE TABLE statements in the project's SQL migration files.")));
+      append(holder, queriesSection());
+      return;
+    }
     const preview = h("div", { class: "section" });
     const seed = h("input", { class: "input lab-status mono", type: "number", placeholder: "new" });
     const saveName = h("input", { class: "input", placeholder: "Scene name, e.g. Demo for Friday" });
@@ -2258,6 +2404,7 @@ function dataPage(root) {
           : stateView("No scenes yet", "Make one from a recipe above, or save the data that's in the database now."),
       ),
       preview,
+      queriesSection(),
     );
 
     async function make(b, recipe) {
@@ -2274,6 +2421,114 @@ function dataPage(root) {
         load();
       }
     }
+  }
+
+  // ---- queries per request
+
+  function queriesSection() {
+    const el = h("div", { class: "section", "aria-live": "polite" });
+    const refresh = async () => {
+      let q;
+      try {
+        q = await api(`/api/queries?dir=${encodeURIComponent(dir)}`);
+      } catch (err) {
+        return fill(el, errorView(err, refresh));
+      }
+      if (!q.databases.length) return fill(el);
+      fill(el, queriesCard(q, refresh));
+    };
+    fill(el, loadingView("Reading the database's log…"));
+    refresh();
+    return el;
+  }
+
+  function queriesCard(q, refresh) {
+    const r = q.report;
+    const on = !!r?.on;
+    const pick = h("select", { "aria-label": "Database" }, q.databases.map((db) => h("option", { value: db.service, selected: db.service === r?.service }, `${db.service} (${db.kind})`)));
+    const toggle = btn(on ? "Stop logging queries" : "Log queries", (ev) =>
+      busy(ev.currentTarget, on ? "Stopping…" : "Starting…", async () => {
+        await api("/api/queries", { method: "POST", body: { dir, on: !on, service: pick.value } });
+        toast(on ? "The database's statement logging is back to how it was" : "Logging queries: use the app through dx, then refresh");
+        refresh();
+      }),
+      { small: true, kind: on ? "ghost" : "primary" },
+    );
+    const KIND = { "n+1": ["badge-danger", "N+1"], slow: ["badge-warn", "Slow"], many: ["badge-warn", "Many queries"] };
+    const head = h(
+      "div",
+      { class: "section-head" },
+      h("strong", null, "Queries per request"),
+      h("div", { class: "toolbar" }, q.databases.length > 1 && !on ? pick : null, on ? btn("Refresh", (ev) => busy(ev.currentTarget, "Reading…", refresh), { small: true, kind: "ghost", iconName: "refresh" }) : null, toggle),
+    );
+    const about = h(
+      "p",
+      { class: "dim" },
+      on
+        ? `Since ${relativeTime(Date.parse(r.since))}, every statement ${r.service} ran is matched to the request it was answering. Values are taken out as they're read (they show as ?).${r.kind === "mysql" ? " MySQL applies the setting to new connections: restart the app's dev server if nothing shows up." : ""}`
+        : "dx switches on the database's own statement log (in the Postgres or MySQL your docker-compose runs) and matches each query to the request that caused it: a page running 40 nearly identical queries (N+1), or one slow query, shows up next to the call. Nothing changes in your code; switching it off puts the setting back.",
+    );
+    if (!on || !r) return h("div", { class: "card card-pad section" }, head, about);
+    const findings = r.findings.length
+      ? h(
+          "ul",
+          { class: "card chaos-findings" },
+          r.findings.map((x) =>
+            h(
+              "li",
+              null,
+              h("span", { class: `badge ${KIND[x.kind][0]}` }, KIND[x.kind][1]),
+              h("div", { class: "chaos-finding-text" }, h("strong", null, x.text), x.shape ? h("div", { class: "mono dim query-shape" }, x.shape) : null, h("div", { class: "dim" }, `${x.ms < 10 ? x.ms.toFixed(1) : Math.round(x.ms)} ms in the database${x.kind === "n+1" ? " for all of them" : ""}`)),
+              x.shape ? copyButton(x.shape, "Copy") : null,
+            ),
+          ),
+        )
+      : null;
+    const rows = r.requests.slice(0, 60).map((x) =>
+      h(
+        "tr",
+        null,
+        h("td", { class: "mono" }, `${x.method} ${x.path}`),
+        h("td", { class: "num" }, String(x.queries)),
+        h("td", { class: "num" }, `${x.dbMs} ms`),
+        h("td", { class: "num" }, x.ms !== undefined ? `${x.ms} ms` : "—"),
+        h("td", null, x.repeated ? h("span", { class: "badge badge-danger" }, `same query ×${x.repeated.count}`) : null, " ", h("span", { class: "dim" }, relativeTime(Date.parse(x.at)))),
+      ),
+    );
+    return h(
+      "div",
+      { class: "card card-pad section" },
+      head,
+      about,
+      h("div", { class: "stats" }, statTile(String(r.queries), "queries"), statTile(String(r.requests.length), "requests that queried"), statTile(String(r.findings.length), "worth a look")),
+      r.note ? h("p", { class: "dim" }, r.note) : null,
+      findings,
+      rows.length
+        ? h(
+            "div",
+            { class: "table-wrap" },
+            h(
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null, h("th", { scope: "col" }, "Request"), h("th", { scope: "col", class: "num" }, "Queries"), h("th", { scope: "col", class: "num" }, "In the database"), h("th", { scope: "col", class: "num" }, "Whole request"), h("th", { scope: "col" }, h("span", { class: "visually-hidden" }, "Notes")))),
+              h("tbody", null, rows),
+            ),
+          )
+        : null,
+      r.top.length
+        ? h(
+            "details",
+            null,
+            h("summary", null, "The statements taking the most time"),
+            h("ul", { class: "tour-list" }, r.top.map((t) => h("li", null, h("span", { class: "mono query-shape" }, t.shape), h("span", { class: "dim" }, ` ×${t.count}, ${Math.round(t.ms)} ms`)))),
+          )
+        : null,
+      r.outside ? h("p", { class: "dim" }, `${plural(r.outside, "query", "queries")} ran while no request was being answered (startup, background jobs, or a request dx didn't see).`) : null,
+    );
+  }
+
+  function statTile(value, label) {
+    return h("div", { class: "card stat" }, h("div", { class: "stat-value" }, value), h("div", { class: "stat-label" }, label));
   }
 
   async function loadIt(b, s, d) {
@@ -2327,6 +2582,7 @@ const CHAOS_TABS = [
   ["gremlins", "Gremlins"],
   ["clock", "Clock"],
   ["phone", "Weak phone"],
+  ["languages", "Languages"],
   ["env", "Missing values"],
   ["behaviour", "Behaviour diff"],
   ["graveyard", "Graveyard"],
@@ -2405,7 +2661,7 @@ function chaosPage(root) {
   function draw() {
     clearTimeout(timer);
     if (!state) return;
-    ({ chaos: chaosTab, gremlins: gremlinsTab, clock: clockTab, phone: phoneTab, env: envTab, behaviour: behaviourTab, graveyard: graveyardTab, security: securityTab })[tab]();
+    ({ chaos: chaosTab, gremlins: gremlinsTab, clock: clockTab, phone: phoneTab, languages: languagesTab, env: envTab, behaviour: behaviourTab, graveyard: graveyardTab, security: securityTab })[tab]();
   }
 
   async function save(patch, said) {
@@ -2568,7 +2824,8 @@ function chaosPage(root) {
     };
     const follow = async (job) => {
       show(job);
-      if (!job || job.finishedAt || stopped || tab !== kind) return;
+      // The tab a kind of run is shown on (Security runs "attack", Languages runs "locale").
+      if (!job || job.finishedAt || stopped || tab !== ({ attack: "security", locale: "languages" }[kind] ?? kind)) return;
       timer = setTimeout(async () => {
         try {
           const next = await api(`/api/chaos/job?id=${encodeURIComponent(job.id)}`);
@@ -2902,6 +3159,101 @@ function chaosPage(root) {
             ),
           )
         : h("div", { class: "card" }, stateView("Nothing found", "None of the checks found a weakness in what the history covers. Use more of the app (and sign in) so there's more to try.")),
+    );
+  }
+
+  // ---------------------------------------------------------------- Languages
+
+  function languagesTab() {
+    const l = state.config.locale ?? {};
+    const toggle = (key, label, onSaid) =>
+      h("input", {
+        type: "checkbox",
+        checked: !!l[key],
+        "aria-label": label,
+        onchange: async (e) => {
+          const box = e.currentTarget;
+          const next = { ...(state.config.locale ?? {}), [key]: box.checked };
+          const any = next.pseudo || next.rtl;
+          if (!(await save({ locale: any ? next : null }, box.checked ? onSaid : "Back to the app's own text: reload its pages"))) box.checked = !box.checked;
+          draw();
+        },
+      });
+    const paths = h("input", { class: "input mono", value: pref("localePaths", ""), placeholder: "the most visited pages, or /, /cart" });
+    const rtl = h("input", { type: "checkbox", checked: pref("localeRtl", "1") === "1" });
+    const job = jobView("locale", localeResult);
+    fill(
+      holder,
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("strong", null, "In your browser"), l.pseudo || l.rtl ? h("span", { class: "badge badge-warn" }, [l.pseudo ? "Pseudo text" : "", l.rtl ? "Right to left" : ""].filter(Boolean).join(" · ")) : h("span", { class: "badge" }, "Off")),
+        h("p", { class: "dim" }, `${project()?.name ?? "The app"}'s pages through dx (its .localhost address, or the address dx records) as other languages would make them. Nothing in the project changes. Reload the app's pages after a change.`),
+        h("label", { class: "check" }, toggle("pseudo", "Pseudo text", "Pseudo text on: reload the app's pages"), h("span", null, h("strong", null, "Pseudo text"), h("span", { class: "dim" }, " — every text longer and accented, as German or Finnish run: “Save” becomes “[Šàṽé ~~~~]”. A missing ] means something cut it off."))),
+        h("label", { class: "check" }, toggle("rtl", "Right to left", "Right to left on: reload the app's pages"), h("span", null, h("strong", null, "Right to left"), h("span", { class: "dim" }, " — the page flipped, as Arabic and Hebrew readers see it."))),
+        where() ? h("div", { class: "toolbar" }, h("a", { class: "btn btn-ghost btn-sm", href: where(), target: "_blank", rel: "noopener" }, "Open the app")) : null,
+      ),
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("strong", null, "Check the pages"),
+        h("p", { class: "dim" }, "A headless browser loads each page three ways: as it is, with pseudo text, and right to left. It reports text that's cut off or spills out of its box, and text that isn't in the project's translation files, so it would never be translated (text from the app's own API answers is data, and left out)."),
+        h("div", { class: "lab-grid" }, field("Pages", paths, "Paths on the project's dev server, separated by commas")),
+        h("label", { class: "check" }, rtl, "Right to left too"),
+        h(
+          "div",
+          { class: "toolbar" },
+          btn("Check the pages", (ev) => {
+            setPref("localePaths", paths.value);
+            setPref("localeRtl", rtl.checked ? "1" : "0");
+            const list = paths.value.split(",").map((s) => s.trim()).filter(Boolean);
+            return start("locale", "/api/chaos/locale", { paths: list, rtl: rtl.checked }, ev.currentTarget);
+          }, { kind: "primary" }),
+        ),
+      ),
+      job.el,
+    );
+  }
+
+  function localeResult(r) {
+    const fit = r.problems.filter((p) => p.kind !== "hard-coded");
+    const hard = r.problems.filter((p) => p.kind === "hard-coded");
+    const KIND = { "cut-off": ["badge-danger", "Cut off"], spills: ["badge-warn", "Spills out"], "hard-coded": ["badge-accent", "Not translated"] };
+    const row = (p) =>
+      h(
+        "li",
+        null,
+        h("span", { class: `badge ${KIND[p.kind][0]}` }, KIND[p.kind][1] + (p.rtl ? " · RTL" : "")),
+        h("div", { class: "chaos-finding-text" }, h("strong", null, `“${p.text}”`), h("div", { class: "dim" }, [p.where, `on ${p.path}`].filter(Boolean).join(" ")), p.file ? h("div", null, fromLink(p.file)) : null),
+        copyButton(p.text, "Copy"),
+      );
+    const shots = h("div", { class: "locale-shots" });
+    (async () => {
+      for (const page of r.pages)
+        for (const name of page.shots) {
+          try {
+            const img = await api(`/api/chaos/locale/image?${q()}&name=${encodeURIComponent(name)}`);
+            append(shots, h("figure", { class: "locale-shot" }, h("img", { src: img.url, alt: `${page.path} ${name.endsWith("@rtl") ? "right to left" : "with pseudo text"}`, loading: "lazy" }), h("figcaption", { class: "dim" }, `${page.path} · ${name.endsWith("@rtl") ? "right to left" : "pseudo text"}`)));
+          } catch {
+            // an older run's picture: left out
+          }
+        }
+    })();
+    const setup = r.files.length
+      ? `Compared with ${plural(r.files.length, "translation file")}${r.library ? ` (${r.library})` : ""}: ${plural(r.translated, "text")} found in them, ${plural(r.fromData, "text")} from the app's data.`
+      : r.library
+        ? `${r.library} is installed, but no translation files were found in folders like locales/ or messages/, so every text counts as not translated.`
+        : "No translation library or files: the project isn't set up for other languages yet, so every text on these pages is written into the code.";
+    const failed = r.pages.filter((p) => p.error);
+    return h(
+      "div",
+      { class: "section" },
+      h("div", { class: "stats" }, statTile(String(r.pages.length), r.pages.length === 1 ? "page" : "pages"), statTile(String(fit.length), "don't fit"), statTile(String(hard.length), "not translated")),
+      h("p", { class: "dim" }, setup),
+      failed.length ? h("p", { class: "prepare-fix" }, failed.map((p) => `${p.path}: ${p.error}`).join("; ")) : null,
+      fit.length ? h("div", { class: "section" }, h("strong", null, "Text that doesn't fit"), h("ul", { class: "card chaos-findings" }, fit.map(row))) : h("div", { class: "card" }, stateView("Text fits", "Nothing was cut off or spilled out with longer text" + (r.pages.some((p) => p.shots.some((s) => s.endsWith("@rtl"))) ? " or right to left." : "."))),
+      hard.length ? h("div", { class: "section" }, h("strong", null, r.files.length ? "Text not in the translations" : "Text written into the code"), h("ul", { class: "card chaos-findings" }, hard.slice(0, 60).map(row)), hard.length > 60 ? h("p", { class: "dim" }, `And ${hard.length - 60} more.`) : null) : null,
+      shots,
     );
   }
 
@@ -4830,6 +5182,77 @@ function gitPage(root) {
   const opBanner = h("div", { class: "git-op", "aria-live": "polite" });
   const filePanel = h("div", { class: "git-file-panel" });
   const rebasePanel = h("div", { class: "git-file-panel" });
+  // Proof for the pull request: written on request, from what dx saw while the branch was worked on.
+  const proofBody = h("div", { class: "section", "aria-live": "polite" });
+  const proofIntro = () =>
+    fill(
+      proofBody,
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("p", { class: "dim" }, "The \"how was this tested\" part of a pull request, from what dx saw on this branch: the last test run, the pages you opened and their errors, what the visual diff, speed and accessibility checks found, and any Gremlins, Chaos, security or upgrade runs."),
+        h("div", { class: "toolbar" }, btn("Write the proof", (ev) => showProof(ev.currentTarget), { kind: "primary", iconName: "check" })),
+      ),
+    );
+  proofIntro();
+
+  async function showProof(button) {
+    const p = await busy(button, "Reading…", () => api(`/api/proof?dir=${encodeURIComponent(dir)}`));
+    if (!p) return;
+    const prLine = h("span", { class: "dim" }, "Looking for this branch's pull request…");
+    const addButton = btn("Add to the pull request", (ev) => addProof(ev.currentTarget, prLine), { small: true, kind: "primary", iconName: "external" });
+    addButton.hidden = true;
+    const row = (mark, title, text) => h("li", null, h("span", { class: `badge ${mark}` }, title), h("span", null, text));
+    const items = [];
+    items.push(p.tests ? row(p.tests.ok ? "badge-ok" : "badge-danger", "Tests", `${p.tests.detail} (${relativeTime(Date.parse(p.tests.at))})`) : row("", "Tests", "not run through dx on this branch"));
+    if (p.pages.length) items.push(row("badge-accent", "Tried by hand", `${plural(p.pages.length, "page")}: ${p.pages.slice(0, 8).map((x) => x.path).join(", ")}; ${plural(p.calls, "different API call")}`));
+    const open = p.errors.filter((e) => e.open);
+    if (p.errors.length) items.push(row(open.length ? "badge-warn" : "badge-ok", "Errors", `${plural(p.errors.length, "error")} seen, ${open.length ? `${open.length} still after the last commit` : "none since the last commit"}`));
+    for (const c of p.checks) items.push(row(c.ok ? "badge-ok" : "badge-warn", c.tool, c.detail));
+    for (const v of p.visual) {
+      if (v.changed.length) items.push(row("badge-accent", "Looks different", `${v.commit}: ${v.changed.join("; ")}`));
+      if (v.slower.length) items.push(row("badge-warn", "Slower", `${v.commit}: ${v.slower.join("; ")}`));
+      if (v.a11yNew.length) items.push(row("badge-warn", "Accessibility", `${v.commit}: ${v.a11yNew.join("; ")}`));
+    }
+    fill(
+      proofBody,
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("strong", null, `${p.branch ?? "This branch"}${p.base ? ` → ${p.base}` : ""}: ${plural(p.commits.length, "commit")}${p.uncommitted ? `, ${plural(p.uncommitted, "file")} not committed` : ""}`), h("div", { class: "toolbar" }, copyButton(p.markdown, "Copy as Markdown"), addButton)),
+        h("ul", { class: "chaos-findings proof-list" }, items),
+        open.length ? h("details", null, h("summary", null, "Errors after the last commit"), h("ul", { class: "tour-list" }, open.slice(0, 10).map((e) => h("li", { class: "mono" }, `${e.text} ×${e.count}`)))) : null,
+        h("details", null, h("summary", null, "The Markdown"), h("pre", { class: "log-snippet raw-text" }, p.markdown)),
+        prLine,
+      ),
+    );
+    try {
+      const r = await api(`/api/proof/pr?dir=${encodeURIComponent(dir)}`);
+      if (r.pr) {
+        fill(prLine, `Pull request #${r.pr.number}: ${r.pr.title}${r.pr.hasProof ? " (has an earlier proof, which this replaces)" : ""}`);
+        addButton.hidden = false;
+        addButton.dataset.number = String(r.pr.number);
+      } else fill(prLine, r.why ?? "This branch has no open pull request yet: copy the text into it when you open one.");
+    } catch {
+      fill(prLine, "Copy the text into the pull request.");
+    }
+  }
+
+  async function addProof(button, prLine) {
+    const n = button.dataset.number;
+    const yes = await confirmDialog({
+      title: `Add the proof to pull request #${n}?`,
+      text: ["dx puts its section into the pull request's description on GitHub, through the GitHub CLI you're signed in to. An earlier dx section is replaced; the rest of the description stays as it is.", "Everyone who can see the pull request will see it."],
+      confirm: "Add it",
+      danger: false,
+    });
+    if (!yes) return;
+    const r = await busy(button, "Adding…", () => api("/api/proof/pr", { method: "POST", body: { dir } }));
+    if (r) {
+      toast(`Added to pull request #${r.number}`);
+      fill(prLine, h("a", { href: r.url, target: "_blank", rel: "noopener" }, `Open pull request #${r.number}`));
+    }
+  }
   const branchesBody = h("div", { class: "git-branches" });
   const history = h("div", { class: "card graph-card" }, loadingView("Reading the history…"));
   const undoBody = h("div", { class: "git-undo-body" });
@@ -4930,6 +5353,12 @@ function gitPage(root) {
     filePanel,
     h("section", { class: "section", "aria-labelledby": "git-branches-title" }, h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-branches-title" }, "Branches"), h("p", { class: "dim git-section-hint" }, "Drag a branch onto the one you're on to merge it; drag yours onto another to rebase.")), branchesBody),
     rebasePanel,
+    h(
+      "section",
+      { class: "section", "aria-labelledby": "git-proof-title" },
+      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-proof-title" }, "Proof for the pull request"), h("p", { class: "dim git-section-hint" }, "What was tested on this branch, written for reviewers.")),
+      proofBody,
+    ),
     h(
       "section",
       { class: "section", "aria-labelledby": "git-run-title" },
@@ -6684,6 +7113,7 @@ function gitPage(root) {
       filePanel.replaceChildren();
       rebase = null;
       rebasePanel.replaceChildren();
+      proofIntro();
       status = null;
       statusSig = "";
       graph = null;
@@ -8886,6 +9316,9 @@ function cleanupPage(root) {
 function depsPage(root) {
   let active = pref("depsActive", "");
   const expanded = new Set();
+  const upgradePanels = new Map();
+  const upgradeTimers = new Map();
+  let leaving = false;
   let timer;
   const runButton = btn("Run audit", () => run(), { kind: "primary", iconName: "deps" });
   const holder = h("div", { class: "section" });
@@ -9001,8 +9434,8 @@ function depsPage(root) {
               ? h(
                   "table",
                   { class: "table" },
-                  h("thead", null, h("tr", null, h("th", null, "Package"), h("th", null, "Installed"), h("th", null, "Wanted"), h("th", null, "Latest"))),
-                  h("tbody", null, r.outdated.map((p) => h("tr", null, h("td", { class: "mono" }, p.name), h("td", { class: "mono" }, p.current ?? "—"), h("td", { class: "mono" }, p.wanted ?? "—"), h("td", { class: "mono" }, p.latest, p.major ? h("span", { class: "badge badge-warn" }, " major") : null)))),
+                  h("thead", null, h("tr", null, h("th", null, "Package"), h("th", null, "Installed"), h("th", null, "Wanted"), h("th", null, "Latest"), h("th", null, h("span", { class: "visually-hidden" }, "Try")))),
+                  h("tbody", null, r.outdated.map((p) => h("tr", null, h("td", { class: "mono" }, p.name), h("td", { class: "mono" }, p.current ?? "—"), h("td", { class: "mono" }, p.wanted ?? "—"), h("td", { class: "mono" }, p.latest, p.major ? h("span", { class: "badge badge-warn" }, " major") : null), h("td", { class: "actions" }, btn("Try it", (e) => tryUpgrade(e.currentTarget, r, p.name, p.latest), { small: true, kind: "ghost", title: `Try ${p.name} ${p.latest} in a copy of ${r.project}: checks, tests and pages before and after`, name: `Try ${p.name} ${p.latest}` }))))),
                 )
               : null,
             h(
@@ -9011,6 +9444,7 @@ function depsPage(root) {
               r.outdated.some((p) => !p.major) || (r.vulnerabilities?.total ?? 0) > 0 ? btn("Update packages", (e) => fixProject(e.currentTarget, r), { small: true, kind: "primary", iconName: "refresh", title: "Update within package.json's ranges and apply non-breaking audit fixes" }) : null,
               btn("Open in editor", (e) => busy(e.currentTarget, "Opening…", async () => toast((await api("/api/projects/open", { method: "POST", body: { dir: r.dir, action: "editor" } })).message)), { small: true, iconName: "code" }),
             ),
+            upgradePanel(r.dir),
           ),
         ),
       ),
@@ -9033,6 +9467,136 @@ function depsPage(root) {
     poll();
   }
 
+  // ---- trying an upgrade in a copy
+
+  function upgradePanel(dir) {
+    let el = upgradePanels.get(dir);
+    if (!el) {
+      el = h("div", { class: "section", "aria-live": "polite" });
+      upgradePanels.set(dir, el);
+      // A run started earlier (or from another tab) shows up again.
+      api(`/api/upgrade?dir=${encodeURIComponent(dir)}`).then((d) => d.job && followUpgrade(dir, d.job)).catch(() => undefined);
+    }
+    return el;
+  }
+
+  async function tryUpgrade(button, r, name, version) {
+    const yes = await confirmDialog({
+      title: `Try ${name} ${version}?`,
+      text: [
+        `dx copies ${r.project} as it is now (uncommitted changes included) under ~/.dx/snapshots, installs ${name}@${version} there, and runs the type check, build and tests before and after. Then it compares the copy's pages with your own running app: how they look, what they call, errors, speed and accessibility.`,
+        "Your own folder and node_modules aren't touched. It takes a few minutes, and the copy stays in Run any commit until you remove it.",
+      ],
+      confirm: "Try it",
+      danger: false,
+    });
+    if (!yes) return;
+    expanded.add(r.dir);
+    const job = await busy(button, "Starting…", () => api("/api/upgrade", { method: "POST", body: { dir: r.dir, name, version } }));
+    if (job) followUpgrade(r.dir, job);
+  }
+
+  function followUpgrade(dir, job) {
+    const el = upgradePanel(dir);
+    clearTimeout(upgradeTimers.get(dir));
+    if (job.finishedAt) {
+      fill(el, job.result ? upgradeResult(job.result) : h("div", { class: "card card-pad section" }, h("strong", null, "Didn't finish"), h("p", { class: "prepare-fix" }, job.error ?? job.step), job.lines?.length ? h("pre", { class: "log-snippet" }, job.lines.slice(-12).join("\n")) : null));
+      return;
+    }
+    fill(
+      el,
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("strong", null, job.step), btn("Stop", (ev) => busy(ev.currentTarget, "Stopping…", () => api("/api/chaos/job/stop", { method: "POST", body: { id: job.id } })), { small: true, kind: "danger-ghost", iconName: "stop" })),
+        job.total ? h("progress", { class: "chaos-progress", max: Math.max(1, job.total), value: job.done }) : null,
+        job.lines?.length ? h("pre", { class: "log-snippet" }, job.lines.slice(-8).join("\n")) : null,
+      ),
+    );
+    if (leaving) return;
+    upgradeTimers.set(
+      dir,
+      setTimeout(async () => {
+        try {
+          followUpgrade(dir, await api(`/api/chaos/job?id=${encodeURIComponent(job.id)}`));
+        } catch (err) {
+          fill(el, errorView(err));
+        }
+      }, 1500),
+    );
+  }
+
+  function upgradeResult(r) {
+    const t = r.target;
+    const V = { breaks: ["badge-danger", "Breaks something"], changes: ["badge-warn", "Changes things"], same: ["badge-ok", "Nothing changed"] };
+    const NAMES = { types: "Type check", build: "Build", tests: "Tests" };
+    const cell = (c) => {
+      if (!c) return h("span", { class: "dim" }, "—");
+      if (c.name === "tests") return h("span", { class: `badge ${c.ok ? "badge-ok" : "badge-danger"}` }, `${c.passed ?? 0} passed, ${c.failed ?? 0} failed`);
+      return h("span", { class: `badge ${c.ok ? "badge-ok" : "badge-danger"}` }, c.ok ? "passes" : `fails${c.errors.length ? ` (${plural(c.errors.length, "error line")})` : ""}`);
+    };
+    const newErrors = r.checks.flatMap((c) => (c.after && !c.after.ok ? c.after.errors.filter((e) => !(c.before?.errors ?? []).includes(e)).map((e) => `${NAMES[c.name]}: ${e}`) : []));
+    const failing = r.checks.flatMap((c) => (c.name === "tests" ? (c.after?.failing ?? []).filter((n) => !(c.before?.failing ?? []).includes(n)) : []));
+    return h(
+      "div",
+      { class: "card card-pad section" },
+      h("div", null, h("span", { class: `badge ${V[r.verdict][0]}` }, V[r.verdict][1]), " ", h("strong", null, `${t.name} ${t.from ?? "?"} → ${t.to}`)),
+      h("ul", { class: "tour-list" }, r.summary.map((x) => h("li", null, x))),
+      r.install && !r.install.ok ? h("pre", { class: "log-snippet" }, r.install.tail.join("\n")) : null,
+      r.checks.length
+        ? h(
+            "div",
+            { class: "table-wrap" },
+            h(
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null, h("th", { scope: "col" }, "Check"), h("th", { scope: "col" }, "As it is"), h("th", { scope: "col" }, `With ${t.to}`))),
+              h("tbody", null, r.checks.map((c) => h("tr", null, h("td", null, NAMES[c.name]), h("td", null, cell(c.before)), h("td", null, cell(c.after))))),
+            ),
+          )
+        : null,
+      newErrors.length ? h("details", null, h("summary", null, plural(newErrors.length, "new error")), h("pre", { class: "log-snippet" }, newErrors.join("\n"))) : null,
+      failing.length ? h("details", null, h("summary", null, `${plural(failing.length, "test")} failing now`), h("ul", { class: "tour-list" }, failing.map((n) => h("li", { class: "mono" }, n)))) : null,
+      r.pages.length
+        ? h(
+            "div",
+            { class: "table-wrap" },
+            h(
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null, h("th", { scope: "col" }, "Page"), h("th", { scope: "col" }, "Looks"), h("th", { scope: "col" }, "Behaves"), h("th", { scope: "col" }, "Speed"))),
+              h(
+                "tbody",
+                null,
+                r.pages.map((p) =>
+                  h(
+                    "tr",
+                    null,
+                    h("td", { class: "mono" }, p.path),
+                    h("td", null, p.error ? h("span", { class: "dim" }, p.error) : p.changed ? h("span", { class: "badge badge-warn" }, `different${p.label ? `: ${p.label}` : ""}`) : h("span", { class: "badge badge-ok" }, "the same")),
+                    h("td", null, !p.behaviour ? "—" : p.behaviour.same ? h("span", { class: "badge badge-ok" }, "the same") : h("ul", { class: "tour-list" }, p.behaviour.changes.slice(0, 5).map((c) => h("li", null, c.tone === "worse" ? h("span", { class: "badge badge-danger" }, "worse") : null, " ", c.text)))),
+                    h("td", null, p.slower || p.heavier ? h("span", { class: "badge badge-warn" }, [p.slower, p.heavier].filter(Boolean).join("; ")) : p.perfAfter ? h("span", { class: "dim" }, "no clear change") : "—"),
+                  ),
+                ),
+              ),
+            ),
+          )
+        : null,
+      h(
+        "div",
+        { class: "toolbar" },
+        copyButton(`${t.name} ${t.from ?? "?"} → ${t.to}: ${V[r.verdict][1]}\n${r.summary.map((x) => `- ${x}`).join("\n")}`, "Copy"),
+        r.copy
+          ? btn("Remove the copy", async (ev) => {
+              const button = ev.currentTarget;
+              const yes = await confirmDialog({ title: "Remove the copy?", text: [`This deletes the copy dx made to try ${t.name} ${t.to} (${r.copy}, under ~/.dx/snapshots), and stops its dev server if it runs.`, "Your project, its folder and its node_modules aren't touched."], confirm: "Remove the copy" });
+              if (yes) await busy(button, "Removing…", async () => toast((await api("/api/snapshots/remove", { method: "POST", body: { id: r.copy } })).message));
+            }, { small: true, kind: "danger-ghost" })
+          : null,
+      ),
+    );
+  }
+
   function vulnBadges(v) {
     if (!v) return h("span", { class: "dim" }, "Couldn't check");
     const parts = [
@@ -9050,7 +9614,11 @@ function depsPage(root) {
   }
 
   poll();
-  return () => clearTimeout(timer);
+  return () => {
+    leaving = true;
+    clearTimeout(timer);
+    for (const t of upgradeTimers.values()) clearTimeout(t);
+  };
 }
 
 // ------------------------------------------------------------------ Health & settings

@@ -69,6 +69,7 @@ import {
   type Project,
 } from "@dx/core";
 import { dataTarget, listScenes, loadData, loadScene, makeScene, readDataSchema, saveScene, sceneSlug, type AttackReport, describeHealth, CHAOS_LEVELS, chaosReport, findGraveyard, loadChaos, probeEnv, setChaos, type BehaviourDiff, type GremlinRun } from "@dx/core";
+import { describeLocaleProblem, prProof, projectTour, queryLogState, queryReport, readActivity as readActivityLog, setQueryLog, tourMarkdown, type LocaleReport, type UpgradeReport } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
 import { callRecord, recordCall, type CallResult } from "./calls.js";
 
@@ -1745,6 +1746,153 @@ server.registerTool(
       if (!scene) return failure("Which scene? Give its slug from action list or make.");
       const r = await loadData(project, schema, loadScene(project.dir, sceneSlug(scene)), { source: "mcp" });
       return text(`Loaded ${r.scene} into ${r.where}: ${r.rows} rows in ${r.tables} tables.${r.backup ? ` The previous data is the scene "${r.backup}".` : ""}`);
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+// ------------------------------------------------------------------ Tour, proof, upgrades, queries, languages
+
+server.registerTool(
+  "project_tour",
+  {
+    title: "A map of a project: how to run it, its pages and the calls each makes, the files behind them, its data and settings",
+    description:
+      "For getting to know a project before changing it: what it is (README), what it's built with, how to run it (and what dx does first), " +
+      "its pages with the API calls each one makes (from the activity history) and the file that answers each call, its database tables, " +
+      "the .env settings it needs (names only), how it's tested, its folders and the files changed most lately. Markdown. Read-only.",
+    inputSchema: { project: z.string().describe("Project name, or part of it") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    return text(tourMarkdown(projectTour(project)));
+  },
+);
+
+server.registerTool(
+  "pr_proof",
+  {
+    title: "How the current branch was tested, written for its pull request description",
+    description:
+      "The 'how was this tested' section for a pull request, from what dx recorded on the branch: the last test run, pages opened and API " +
+      "calls made, errors seen (and which still came after the last commit), visual, speed and accessibility changes on its commits, and " +
+      "dx's other checks (Gremlins, security, behaviour diffs, translations, upgrades). Markdown with dx's markers. Read-only: it doesn't " +
+      "change the pull request (the user does that with dx proof --pr or the Git page).",
+    inputSchema: { project: z.string().describe("Project name, or part of it") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      return text((await prProof(project)).markdown);
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "try_upgrade",
+  {
+    title: "Try upgrading one package in a throwaway copy, and report what breaks or changes",
+    description:
+      "Copies the project as it is now (uncommitted changes included) under ~/.dx/snapshots, installs package@version there, runs the " +
+      "type check, build and tests before and after, then compares the copy's pages with the project's own dev server: looks, calls, " +
+      "errors, speed, accessibility. The project's own folder and node_modules aren't touched. Takes minutes. Use it before upgrading a " +
+      "major version.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      package: z.string().describe("A package the project depends on, e.g. react"),
+      version: z.string().optional().describe("A version (19, 19.1.0) or a tag (latest, next); default latest"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  async ({ project: name, package: pkg, version }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      const r = await chaosJob<UpgradeReport>("/api/upgrade", { dir: project.dir, name: pkg, version: version ?? "latest" }, 30 * 60_000);
+      const verdict = r.verdict === "breaks" ? "breaks something" : r.verdict === "changes" ? "changes how the app looks or behaves" : "nothing changed that dx can see";
+      const lines = [`${r.target.name} ${r.target.from ?? "?"} → ${r.target.to}: ${verdict}.`, ...r.summary.map((x) => `- ${x}`)];
+      for (const c of r.checks) {
+        const fresh = c.after?.errors.filter((e) => !(c.before?.errors ?? []).includes(e)) ?? [];
+        if (fresh.length) lines.push(`${c.name} errors:`, ...fresh.slice(0, 10).map((e) => `  ${e}`));
+        const failing = (c.after?.failing ?? []).filter((n) => !(c.before?.failing ?? []).includes(n));
+        if (failing.length) lines.push("Failing now:", ...failing.slice(0, 10).map((n) => `  ${n}`));
+      }
+      lines.push(`The copy is ${r.copy} (in ~/.dx/snapshots); the user can remove it from the Git page.`);
+      return text(lines.join("\n"));
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "db_queries",
+  {
+    title: "Database queries per request: N+1, slow queries, busy requests",
+    description:
+      "For the Postgres or MySQL in the project's docker-compose. action on switches the database's own statement logging on (nothing " +
+      "changes in the code), off puts the setting back, report (default) matches each statement since it was switched on to the request " +
+      "being answered (from the activity history) and lists N+1 (the same query 10+ times in one request), slow queries (200 ms+) and " +
+      "requests with 50+ queries. Values are replaced by ? in every statement.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      action: z.enum(["report", "on", "off"]).optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ project: name, action }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      if (action === "on" || action === "off") {
+        const state = await setQueryLog(project, action === "on");
+        return text(action === "on" ? `Logging ${state?.service}'s queries. Use the app through dx (or check_url), then call db_queries again.` : "Query logging is off; the database setting is back to how it was.");
+      }
+      const state = queryLogState(project.dir);
+      if (!state) return text(`Not logging queries for ${project.name}. Call db_queries with action on first, then use the app.`);
+      const r = await queryReport(project, readActivityLog({ dir: project.dir, since: new Date(Date.parse(state.since) - 60_000), limit: 50_000 }));
+      const lines = [`${r.queries} queries in ${r.service} since ${r.since}; ${r.requests.length} requests ran some.`];
+      if (r.note) lines.push(r.note);
+      for (const f of r.findings) lines.push(`- [${f.kind}] ${f.text}${f.shape ? `\n  ${f.shape.slice(0, 300)}` : ""}`);
+      for (const q of r.requests.slice(0, 15)) lines.push(`${q.method} ${q.path}: ${q.queries} queries, ${q.dbMs} ms in the database`);
+      return text(lines.join("\n"));
+    } catch (err) {
+      return failure((err as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "translation_check",
+  {
+    title: "Check pages for other languages: text cut off by longer translations, right to left, and text not in the translation files",
+    description:
+      "Loads the project's pages on its own dev server three ways: as they are, with every text longer and accented (pseudo text, as " +
+      "German or Finnish run), and right to left. Reports text that's cut off or spills out of its box, and text that isn't in the " +
+      "project's translation files (so it would never be translated), with the file and line where it's written. Text from the app's own " +
+      "API answers is data, and left out.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      paths: z.array(z.string()).max(6).optional().describe("Pages to check; default the most visited"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name, paths }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    try {
+      const r = await chaosJob<LocaleReport>("/api/chaos/locale", { dir: project.dir, paths }, 10 * 60_000);
+      const lines = [`${r.pages.length} page(s); ${r.files.length ? `${r.files.length} translation file(s)${r.library ? ` (${r.library})` : ""}` : "no translation files"}; ${r.translated} texts translated, ${r.fromData} from data.`];
+      for (const p of r.pages.filter((x) => x.error)) lines.push(`${p.path}: ${p.error}`);
+      lines.push(...(r.problems.length ? r.problems.map((p) => `- ${describeLocaleProblem(p)}`) : ["Nothing found."]));
+      return text(lines.join("\n"));
     } catch (err) {
       return failure((err as Error).message);
     }

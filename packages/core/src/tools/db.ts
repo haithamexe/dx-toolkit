@@ -156,6 +156,19 @@ export async function runSceneSql(project: Pick<Project, "name" | "dir">, sql: s
   return { db, stdout: out.stdout };
 }
 
+/** The database container's log since a moment, each line with docker's own timestamp (for counting queries). */
+export async function databaseLog(db: DbService, since: string): Promise<string> {
+  if (!(await running(db))) throw new Error(`The ${db.service} container isn't running.`);
+  const r = await docker(db.composeDir, ["compose", "logs", "--no-color", "--no-log-prefix", "--timestamps", "--since", since, db.service]);
+  if (!r.ok) throw new Error(firstLine(r.stderr || r.stdout));
+  return r.stdout + r.stderr;
+}
+
+/** Whether the database container is up. */
+export function databaseRunning(db: DbService): Promise<boolean> {
+  return running(db);
+}
+
 async function running(db: DbService): Promise<boolean> {
   const r = await docker(db.composeDir, ["compose", "ps", "--status", "running", "--services"]);
   return r.ok && r.stdout.split(/\r?\n/).map((s) => s.trim()).includes(db.service);

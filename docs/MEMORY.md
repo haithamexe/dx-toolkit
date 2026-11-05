@@ -7,13 +7,14 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - CI is green on Windows, macOS and Linux × Node 22 and 24.
 - **On npm** as `dx-devkit` since 1.1.0: `npm install -g dx-devkit`.
 - **Built**:
-  - the Chaos page (Chaos mode, Gremlins, fake clock, weak phone, missing .env values, behaviour diff, the graveyard, Security) and `dx chaos`, `dx attack`;
+  - the Chaos page (Chaos mode, Gremlins, fake clock, weak phone, languages, missing .env values, behaviour diff, the graveyard, Security) and `dx chaos`, `dx attack`;
+  - the Tour page and `dx tour`; proof for the pull request (`dx proof`); trying an upgrade in a copy (`dx try`); queries per request (`dx queries`);
   - the Data page (realistic data and scenes) and `dx data`; Open on my phone and `dx phone`; speed and accessibility per commit;
   - the core tools;
-  - the `dx` command: `ui, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, chaos, attack, data, phone, prepare, visual, machine, browser, sites, setup, https, config, runs, doctor`;
-  - the MCP server with 41 tools, 22 of them for running, checking and breaking apps;
+  - the `dx` command: `ui, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, chaos, attack, data, queries, phone, tour, proof, try, prepare, visual, machine, browser, sites, setup, https, config, runs, doctor`;
+  - the MCP server with 46 tools, 25 of them for running, checking and breaking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
-  - the dashboard with 15 pages (Projects, New project, Ports, Machine, Git, Activity, Requests, Chaos, Data, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - the dashboard with 16 pages (Projects, Tour, New project, Ports, Machine, Git, Activity, Requests, Chaos, Data, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
   - the activity history (requests, routes, clicks, console, errors, kept 7 days), for deployed sites too through the dx browser, and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
@@ -57,6 +58,45 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Languages (`core/src/tools/locale.ts`, the recorder, the Chaos page)
+
+- **Pseudo text is done in the page, not in the project's translations**: dx's own script (`PSEUDO_SCRIPT`, from core) walks text nodes and a few attributes (placeholder, title, aria-label, alt, button values), keeps the originals in a WeakMap, and does it again when the app changes them (a MutationObserver, its own changes ignored). It works for any app, translated or not. Skipped: scripts, styles, code and pre, editable text, `translate="no"`, numbers, emails and addresses.
+- **Longer by the usual amounts**: up to 10 characters doubled, 20 +80%, 50 +50%, longer +30%; wrapped in `[ ]`, so a missing `]` shows what got cut.
+- **In your browser it starts after load (and 400 ms)**, so a server-rendered page has hydrated and its framework doesn't see different text from what it rendered. The setting is `locale` in the project's chaos file; the recorder script gets `window.__dxLocale` (flags only) and the script in front of it.
+- **"Cut off" and "spills" are measured, not guessed**: an element with its own text whose content is wider than its box (cut off when it or an ancestor within 4 levels clips, or it ends in an ellipsis; spills otherwise), or taller than a clipping box (line clamps). Each is outlined in red in the picture, which is saved under `~/.dx/locale/<project>-<hash>` (0600) and reaches the page as a data URL, named only by `page@pseudo|rtl`.
+- **"Not translated" is the page's text compared with the translation files**: JSON, YAML (core's reader) or .po in folders named like `locales`, `i18n`, `messages`, `translations`, `lang`, never `node_modules` or builds. Placeholders (`{{x}}`, `{x}`, `%s`, `:name`, `<0>` tags) match anything; ICU plurals and selects become their options. A translation with a number or symbol next to it ("Total: 40 €") counts. Text found in the page's API answers or its JSON script tags is data (whole values for words under 8 characters, so "ok" inside "token" doesn't count); numbers, codes, emails and addresses too.
+- **Where it's written comes from one `git grep -F -o`** over tracked and new files, leaving translation files out.
+
+### Tour (`core/src/tools/tour.ts`)
+
+- **From what's there, nothing run**: the README's first paragraph (badges, headings and code left out), package.json (major versions for frameworks), Python requirements, `declaredRoutes` (the graveyard's route finder) for pages and calls with their files, `readDataSchema`, `planPrepare`, `detectStack`, `detectTestFramework`, git for folders and the files changed most in 90 days (lock files left out).
+- **A call belongs to the page in its Referer**, else the page or route the history was on in the 30 s before (as the Activity page groups them). A call no declared route covers is listed on its own; declared ones nobody called are listed with 0.
+- **Settings by name only**: from the example file when there is one (it lists everything), else the `.env` files; the regex reads up to the `=`, so values are never read into the tour.
+
+### Proof for the pull request (`core/src/tools/prproof.ts`)
+
+- **The branch is `<base>..HEAD`**, the base being `origin/HEAD`, else origin/main, origin/master, main, master; on the base itself there are no commits and it covers the last day. Its records start an hour before the first commit.
+- **Built from dx's own records**: activity events (pages, calls, problems), `runs.jsonl` (the last `test`, and the newest of each check: gremlins, behaviour, attack, locale, env-probe, upgrade, bug-replay, queries, and the agents' equivalents), and the visual index for the branch's commits. "Still open" means an error seen after the last commit.
+- **Into the PR only through `gh`, only on request**: `gh pr view` then `gh pr edit --body-file -` with the body on stdin. dx's part is between `<!-- dx:proof:start -->` and `<!-- dx:proof:end -->`, replaced on later runs; the rest of the description stays. The route rebuilds the proof on the server; text never comes from the request. The MCP tool only returns the text.
+
+### Trying an upgrade (`core/src/tools/upgrade.ts`, `createWorkingCopy` in `snapshots.ts`)
+
+- **A copy of the working copy, not a commit**: a detached worktree of HEAD under `~/.dx/snapshots` with `git diff HEAD --binary` applied (new files that aren't added don't come along), the `.env` files copied, registered like a snapshot (`upgrade` set) so Run any commit lists and removes it. Made again for the same package and version, it's replaced.
+- **Before, with the project's packages linked; after, with its own**: the type check, build and tests run first with node_modules linked (same lock file, so it's the project as it is), then the links are removed (never followed) and the package manager installs the new version into the copy (`npm install x@v [--save-dev]`, `pnpm|yarn add [-D]`, `bun add [--dev]`). The project's node_modules is never written.
+- **The version is checked before anything runs**: a package the project depends on (npm name rules), and a tag or a version number only, no range characters, since the command goes through a shell on Windows. It's resolved on the npm registry (a tag, a major's newest non-prerelease, or an exact version).
+- **Checks are the project's own scripts** (`typecheck`, `type-check`, `check-types`, `types`, `tsc`, `check`, `lint:types`, else `npx --no-install tsc --noEmit` for a TypeScript project; `build`), and `runTests` named apart from the project so the PR proof doesn't count the copy. Errors are the output's error lines with the copy's folder taken off; "new" is what the run before didn't have.
+- **Pages are compared with the project's own dev server**: behaviour (`checkPage` with requests, `compareBehaviour`), then pictures, speed and accessibility in one browser with the visual diff's freeze and settle scripts. The copy's dev server is stopped afterwards.
+- **Breaks** is a failed install, a check that failed where it passed, new errors in one that already failed, more failing tests, or a worse behaviour change; **changes** is a different look, behaviour, speed or new accessibility problems.
+
+### Queries per request (`core/src/tools/querylog.ts`)
+
+- **The database's own log, switched on and back**: Postgres `ALTER SYSTEM SET log_min_duration_statement = 0` and `pg_reload_conf()` (applies to open connections; the container's user is a superuser), `RESET` to put it back; MySQL's slow log to a table at 0 s (`SET GLOBAL`, root, new connections only). dx's fixed SQL through `runSceneSql`. What's on is kept in `~/.dx/querylog.json` (0600) with since when.
+- **Read from `docker compose logs --timestamps`** (Postgres: `statement:` and `execute` lines; parse, bind and DETAIL with the parameters left out; a statement's start is the log time minus its duration) or `mysql.slow_log` since then.
+- **Values are taken out as statements are read** (`shapeSql`: strings, numbers, `$1`, booleans and nulls become `?`, lists `(?…)`), so an email or hash in a WHERE never reaches dx's records.
+- **A statement belongs to the request being answered**: the proxy's request events carry their start and duration; with 30 ms slack for the two clocks, the latest-started request that covers it wins. Statements outside every request are counted, not attributed.
+- **Thresholds**: the same statement 10+ times in a request is N+1, 200 ms is slow, 50 statements is busy.
+- **Verified with a real Postgres 16** in Docker on Windows (the test runs on Linux CI, or with `DX_TEST_DOCKER=1`); MySQL from its documentation and parsing tests only.
 
 ### Open on my phone (`web/src/phone.ts`, `core/src/tools/qr.ts`)
 
@@ -212,7 +252,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Linked node_modules when the lock file matches** (`git rev-parse <oid>:<lock>` against `git hash-object`, then a line-ending-blind compare for core.autocrlf), a junction on Windows; also workspace packages' own node_modules a few levels down. Otherwise a frozen install (`npm ci`, `--frozen-lockfile`). Linked means shared: tools that cache inside node_modules (Vite's `node_modules/.vite`) share the cache with your own dev server.
 - **Removal unlinks every node_modules link first**, then `git worktree remove --force`, then deletes what's left, then `git worktree prune`. A test checks the project's own node_modules survives.
 - **Untracked `.env` files are copied in** (not example files, which are tracked; not over a file the commit has). They stay in the user's own `~/.dx`.
-- **Its own port**: `moveDevPort` with a free port when the tool is known, else `PORT=<free port>` (ready when that port opens, or at the address it prints). No localhost door: the usual port belongs to the project's own dev server. A stack runs as it is (its services may want the same ports).
+- **Its own port**: `moveDevPort` with a free port when the tool is known, else `PORT=<free port>` (ready when that port opens, or at the address it prints). No localhost door: the usual port belongs to the project's own dev server. In a stack, each app service gets `PORT=<free port>` too, and **the project's own Docker services are used, never started or stopped by the copy**: with a compose file that names its project they are the very same containers, and stopping a snapshot once stopped the project's database. The copy skips preparing (it has its own packages) and says which services it shares.
 - **The run answers once the commit resolves**; the checkout and install go on in the background, and the page follows `GET /api/snapshots` (step, the install's last lines). A failed install keeps the snapshot so it can be retried or removed.
 - **Time travel reads the reflog** (`log -g --date=unix`, the newest entry at or before the moment), falling back to the last commit before then on HEAD. The slider spans the events shown; events within max(30 s, span/60) count as around it.
 - **Not yet**: snapshots stay until removed (no automatic clean-up); Python and other non-Node projects aren't set up beyond the checkout.

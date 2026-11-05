@@ -40,6 +40,8 @@ export interface Snapshot {
   links: string[];
   /** .env files copied from the project. */
   envFiles: string[];
+  /** A copy of the working copy (HEAD and its uncommitted changes) made to try upgrading a package. */
+  upgrade?: { name: string; from?: string; to: string };
 }
 
 export interface CommitMatch extends GitCommit {
@@ -336,6 +338,67 @@ export async function createSnapshot(project: Pick<Project, "name" | "dir">, has
   latest[id] = snap;
   save(latest);
   return snap;
+}
+
+/**
+ * A throwaway copy of the project as it is now: HEAD checked out under ~/.dx/snapshots with the
+ * uncommitted changes to tracked files applied, its .env files copied in, and node_modules linked
+ * (same lock file) or installed. Used to try an upgrade without touching the project. A copy made
+ * earlier for the same tag is replaced.
+ */
+export async function createWorkingCopy(project: Pick<Project, "name" | "dir">, tag: string, options: SnapshotOptions = {}): Promise<Snapshot> {
+  const head = await gitRun(project.dir, ["rev-parse", "--verify", "HEAD^{commit}"]);
+  if (head.code !== 0) throw new GitError(`${project.name} has no commits yet, so there's nothing to copy from.`);
+  const c = await resolveCommit(project.dir, head.stdout.trim());
+  const clean = tag.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "copy";
+  const id = `${snapshotId(project.name, c.hash)}-${clean}`;
+  const wt = path.join(snapshotsRoot(), id);
+  const rel = path.relative(realPath(c.root), realPath(project.dir));
+  if (rel.startsWith("..") || path.isAbsolute(rel)) throw new GitError("The project isn't inside its repository.");
+  const store = load();
+  if (fs.existsSync(wt) || store[id]) {
+    await removeFolder(store[id] ?? { path: wt, dir: rel ? path.join(wt, rel) : wt, repo: c.root, links: [] });
+    delete store[id];
+    save(store);
+  }
+  fs.mkdirSync(snapshotsRoot(), { recursive: true });
+  options.onStep?.(`Copying ${project.name} as it is now`);
+  const add = await gitRun(c.root, ["worktree", "add", "--detach", wt, c.hash], { timeoutMs: 300_000 });
+  if (add.code !== 0) throw gitFailure(add, "Couldn't make the copy");
+  const dir = rel ? path.join(wt, rel) : wt;
+  const snap: Snapshot = { id, name: `${project.name}@${c.short}+${clean}`, project: project.name, projectDir: path.resolve(project.dir), repo: c.root, hash: c.hash, short: c.short, subject: c.subject, at: c.at, path: wt, dir, createdAt: new Date().toISOString(), packages: "none", links: [], envFiles: [] };
+  store[id] = snap;
+  save(store);
+  // Uncommitted changes to tracked files come along; new files that aren't added yet don't.
+  const diff = await gitRun(c.root, ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff"], { max: 64 * 1024 * 1024 });
+  if (diff.code === 0 && diff.stdout.trim()) {
+    const applied = await gitRun(wt, ["apply", "--whitespace=nowarn", "-"], { input: diff.stdout });
+    if (applied.code !== 0) options.onOutput?.(`Your uncommitted changes didn't apply to the copy, so it's HEAD as committed: ${applied.stderr.split("\n")[0]}`);
+  }
+  snap.envFiles = copyEnvFiles(project.dir, dir);
+  await preparePackages(snap, path.resolve(project.dir), options);
+  saveSnapshot(snap);
+  return snap;
+}
+
+/** Saves a snapshot's entry as it is now (after its packages changed). */
+export function saveSnapshot(snap: Snapshot): void {
+  const store = load();
+  store[snap.id] = snap;
+  save(store);
+}
+
+/** Removes a snapshot's node_modules links (never what they point at), so it can get packages of its own. */
+export function unlinkPackages(snap: Snapshot): void {
+  for (const link of [...snap.links, ...nodeModulesIn(snap.dir)]) unlinkIfLink(link);
+  snap.links = [];
+  snap.packages = "none";
+  saveSnapshot(snap);
+}
+
+/** Runs an install-like command in a snapshot's folder, line by line (fixed words and checked names only). */
+export function runInSnapshot(cmd: InstallCommand, onOutput?: (line: string) => void): Promise<{ ok: boolean; output: string }> {
+  return runStreaming(cmd, onOutput);
 }
 
 /** Removes a snapshot: its node_modules links first (never what they point at), then the worktree, then the entry. */

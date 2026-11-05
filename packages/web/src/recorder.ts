@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type http from "node:http";
 import { fileURLToPath } from "node:url";
-import { maskText, type ActivityEvent } from "@dx/core";
+import { maskText, PSEUDO_SCRIPT, type ActivityEvent } from "@dx/core";
 import { activitySettings, recordActivity, type NewActivity } from "./activity.js";
 import { chaosConfig } from "./chaos.js";
 import type { LocalRoute } from "./dev.js";
@@ -29,15 +29,19 @@ function recorderScript(): Buffer {
 }
 
 /**
- * The project's page settings go in front of the script: the fake clock from Chaos mode. Only
- * checked values (a date, a flag, a time zone name) from the user's own ~/.dx, as JSON.
+ * The project's page settings go in front of the script: the fake clock from Chaos mode, and
+ * pseudo text or right to left (with dx's own script for them). Only checked values (a date, a
+ * flag, a time zone name) from the user's own ~/.dx, as JSON.
  */
 function withPageSettings(script: Buffer, route: LocalRoute): Buffer {
-  const clock = chaosConfig(route.dir)?.clock;
-  if (!clock) return script;
+  const config = chaosConfig(route.dir);
+  const clock = config?.clock;
+  const locale = config?.locale;
+  if (!clock && !locale) return script;
   // Served as a script, not HTML, and every value is checked (a date, a flag, a zone name).
-  const settings = JSON.stringify({ clock });
-  return Buffer.concat([Buffer.from(`window.__dxSettings = ${settings};\n`), script]);
+  const parts = [Buffer.from(`window.__dxSettings = ${JSON.stringify(clock ? { clock } : {})};\n`)];
+  if (locale) parts.push(Buffer.from(`window.__dxLocale = ${JSON.stringify({ pseudo: locale.pseudo === true, rtl: locale.rtl === true })};\n${PSEUDO_SCRIPT}\n`));
+  return Buffer.concat([...parts, script]);
 }
 
 /** Handles the proxy's own paths. True when it answered the request. */

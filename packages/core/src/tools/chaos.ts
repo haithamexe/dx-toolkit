@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { dxPath } from "../config.js";
 import type { ActivityEvent } from "./activity.js";
+import type { LocaleSettings } from "./locale.js";
 import { foldPath } from "./mocks.js";
 
 /**
@@ -70,6 +71,8 @@ export interface ChaosConfig {
   clock?: FakeClock;
   /** The dx browser and page checks as a cheap phone on a weak connection. */
   phone?: boolean;
+  /** Longer, accented text and right to left in the page, through the recorder script. */
+  locale?: LocaleSettings;
   updatedAt: string;
 }
 
@@ -140,6 +143,16 @@ export function cleanChaos(input: Partial<Record<keyof ChaosConfig, unknown>>): 
     out.paths = input.paths.trim() || undefined;
   }
   if (input.phone !== undefined) out.phone = input.phone === true;
+  if (input.locale !== undefined) {
+    if (input.locale === null || input.locale === false) out.locale = undefined;
+    else if (typeof input.locale === "object") {
+      const l = input.locale as Record<string, unknown>;
+      const locale: LocaleSettings = {};
+      if (l.pseudo === true) locale.pseudo = true;
+      if (l.rtl === true) locale.rtl = true;
+      out.locale = locale.pseudo || locale.rtl ? locale : undefined;
+    } else throw new ChaosError("locale is { pseudo, rtl }.");
+  }
   if (input.clock !== undefined) {
     if (input.clock === null || input.clock === false) out.clock = undefined;
     else if (typeof input.clock === "object") {
@@ -203,6 +216,7 @@ export function setChaos(dir: string, project: string, patch: Partial<Record<key
   const wasOn = c.on;
   Object.assign(c, p);
   if ("clock" in p) c.clock = p.clock;
+  if ("locale" in p) c.locale = p.locale;
   if (c.on && (!wasOn || p.seed !== undefined || p.level !== undefined || p.faults !== undefined || patch.restart === true)) c.startedAt = new Date().toISOString();
   if (!c.on && wasOn) c.startedAt ??= new Date().toISOString();
   return saveChaos(c);

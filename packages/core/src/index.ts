@@ -65,3 +65,8 @@ export * from "./tools/attack.js";
 export * from "./tools/seeddata.js";
 export * from "./tools/seedload.js";
 export * from "./tools/qr.js";
+export * from "./tools/locale.js";
+export * from "./tools/tour.js";
+export * from "./tools/prproof.js";
+export * from "./tools/upgrade.js";
+export * from "./tools/querylog.js";

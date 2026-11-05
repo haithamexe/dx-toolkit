@@ -1847,7 +1847,7 @@ summary.activity-row {
   cursor: pointer;
 }
 .site-form[hidden],
-.page-head .btn[hidden] {
+.btn[hidden] {
   display: none;
 }
 .site-form {
@@ -4420,4 +4420,47 @@ details.visit.tt-near > summary {
   .visual-side {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* ------------------------------------------------------------------ Languages (Chaos page) */
+
+.locale-shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--s4);
+}
+.locale-shot {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+.locale-shot img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+  background: var(--surface-2);
+}
+
+/* ------------------------------------------------------------------ Tour */
+
+.tour-list {
+  margin: 0;
+  padding-left: var(--s5);
+  display: grid;
+  gap: var(--s1);
+}
+.tour-calls {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--t-sm);
+}
+
+/* ------------------------------------------------------------------ Queries per request (Data page) */
+
+.query-shape {
+  font-size: var(--t-sm);
+  overflow-wrap: anywhere;
 }

@@ -617,3 +617,6 @@ export async function captureVisual(o: VisualCaptureOptions): Promise<VisualComm
   pruneVisualFolders(o.dir, next);
   return entry;
 }
+
+// For tools that load pages the same way (trying an upgrade).
+export { FREEZE as VISUAL_FREEZE, SETTLE as VISUAL_SETTLE, LABEL_AT as VISUAL_LABEL_AT };

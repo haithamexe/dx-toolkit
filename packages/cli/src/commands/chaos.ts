@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import {
   CHAOS_LEVELS,
   chaosReport,
+  describeLocaleProblem,
   findGraveyard,
   findProjects,
   loadChaos,
@@ -15,6 +16,7 @@ import {
   type BehaviourDiff,
   type ChaosLevel,
   type GremlinRun,
+  type LocaleReport,
   type Project,
 } from "@dx/core";
 import { ensureDashboard, findDashboard } from "@dx/web/link";
@@ -33,6 +35,8 @@ export const chaosCommand: Command = {
     "dx chaos clock <project> 2026-12-31T23:59:50 [--zone Pacific/Auckland] [--frozen]",
     "dx chaos clock <project> off",
     "dx chaos phone <project> on|off             the dx browser and gremlins as a cheap phone on 3G",
+    "dx chaos languages <project> pseudo|rtl|both|off   longer, accented text and right to left in the page",
+    "dx chaos languages <project> [--path /,/cart]      check the pages: text cut off, and text not translated",
     "dx chaos gremlins <project> [--actions 40] [--seed 7] [--path /] [--phone] [--bold]",
     "dx chaos env <project> [--path /]           which .env values matter when they're missing",
     "dx chaos diff <project> [--commit abc1234] [--path /cart]   behaviour against an earlier commit",
@@ -62,7 +66,7 @@ export const chaosCommand: Command = {
         json: { type: "boolean" },
       },
     });
-    const verbs = ["on", "off", "clock", "phone", "gremlins", "env", "diff", "graveyard", "report"];
+    const verbs = ["on", "off", "clock", "phone", "languages", "gremlins", "env", "diff", "graveyard", "report"];
     const verb = verbs.includes(positionals[0] ?? "") ? positionals[0] : "report";
     const rest = verb === "report" && positionals[0] !== "report" ? positionals : positionals.slice(1);
 
@@ -79,6 +83,35 @@ export const chaosCommand: Command = {
       const cfg = setChaos(project.dir, project.name, { clock });
       recordRun("chaos", true, `${project.name}: ${cfg.clock ? `clock ${cfg.clock.at ?? "now"}${cfg.clock.timeZone ? ` in ${cfg.clock.timeZone}` : ""}` : "real clock"}`, "cli", { project: project.name });
       return ok(cfg.clock ? `${project.name}'s pages see ${cfg.clock.at ? new Date(cfg.clock.at).toLocaleString("en-GB", { timeZone: cfg.clock.timeZone, dateStyle: "full", timeStyle: "long" }) : "the real time"}${cfg.clock.timeZone ? ` in ${cfg.clock.timeZone}` : ""}${cfg.clock.frozen ? ", frozen" : ""}. Reload them.` : `${project.name}'s pages see the real time again.`);
+    }
+
+    if (verb === "languages") {
+      const modes = ["pseudo", "rtl", "both", "off"];
+      const mode = modes.includes(rest.at(-1) ?? "") ? rest.at(-1)! : undefined;
+      const project = resolve((mode ? rest.slice(0, -1) : rest).join(" "));
+      if (mode) {
+        const locale = mode === "off" ? null : { pseudo: mode === "pseudo" || mode === "both", rtl: mode === "rtl" || mode === "both" };
+        setChaos(project.dir, project.name, { locale });
+        recordRun("chaos", true, `${project.name}: languages ${mode}`, "cli", { project: project.name });
+        return ok(mode === "off" ? `${project.name}'s pages show their own text again. Reload them.` : `${project.name}'s pages through dx show ${mode === "both" ? "longer, accented text, right to left" : mode === "rtl" ? "right to left" : "longer, accented text"}. Reload them.`);
+      }
+      const client = await ensureDashboard();
+      let job = await client.post<{ id: string; step: string; finishedAt?: string; error?: string; result?: LocaleReport }>("/api/chaos/locale", { dir: project.dir, paths: values.path ? values.path.split(",").map((s) => s.trim()) : undefined });
+      let said = "";
+      while (!job.finishedAt) {
+        if (job.step !== said) process.stderr.write(c.dim(`  ${job.step}\n`));
+        said = job.step;
+        await new Promise((r) => setTimeout(r, 1000));
+        job = await client.get(`/api/chaos/job?id=${job.id}`);
+      }
+      if (job.error || !job.result) throw new Error(job.error ?? "The check didn't finish.");
+      const r = job.result;
+      if (values.json) return console.log(JSON.stringify(r, null, 2));
+      console.log(c.dim(`${r.pages.length} page(s); ${r.files.length ? `${r.files.length} translation file(s)${r.library ? ` (${r.library})` : ""}` : "no translation files"}; ${r.translated} texts translated, ${r.fromData} from the app's data.`));
+      for (const p of r.pages.filter((x) => x.error)) console.log(c.red(`  ${p.path}: ${p.error}`));
+      if (!r.problems.length) return ok("Text fits everywhere, and all of it comes from the translations.");
+      for (const p of r.problems) console.log(`${p.kind === "hard-coded" ? c.yellow("●") : c.red("●")} ${describeLocaleProblem(p)}`);
+      return info("The pictures (outlined) are on the dashboard's Chaos page, Languages.");
     }
 
     const project = resolve(rest.join(" "));

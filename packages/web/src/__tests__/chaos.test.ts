@@ -139,7 +139,18 @@ test("the page's clock goes in front of the recorder script; what the page notic
   assert.equal((await call("/api/chaos", { dir: app, clock: { timeZone: "</script><script>alert(1)" } })).status, 400, "only real zone names");
   await api("/api/chaos", { dir: app, clock: null });
 
-  const route = { dir: app, project: "shop-website", port: 1, host: "shop-website.localhost" } as any;
+  // Pseudo text and right to left: the flags, then dx's own script, in front of the recorder.
+  await api("/api/chaos", { dir: app, locale: { pseudo: true, rtl: true } });
+  const withLocale = await viaProxy("/__dx/node_modules/dx-recorder.js");
+  assert.ok(withLocale.body.startsWith('window.__dxSettings = {};\nwindow.__dxLocale = {"pseudo":true,"rtl":true};'), withLocale.body.slice(0, 120));
+  assert.ok(withLocale.body.includes("window.__dxPseudo = {"));
+  assert.equal((await call("/api/chaos", { dir: app, locale: "</script>" })).status, 400);
+  await api("/api/chaos", { dir: app, locale: null });
+  assert.ok(!(await viaProxy("/__dx/node_modules/dx-recorder.js")).body.includes("__dxLocale"));
+  assert.equal((await call(`/api/chaos/locale/image?dir=${encodeURIComponent(app)}&name=${encodeURIComponent("../../x@rtl")}`)).status, 400);
+  assert.equal((await call(`/api/chaos/locale/image?dir=${encodeURIComponent(app)}&name=home@rtl`)).status, 404);
+
+  const route ={ dir: app, project: "shop-website", port: 1, host: "shop-website.localhost" } as any;
   const got = acceptBrowserEvents(JSON.stringify({ visit: "v1", events: [{ type: "error", problem: "blank", text: "The page went blank" }, { type: "error", problem: "rm -rf", text: "x" }] }), route);
   assert.equal(got[0].problem, "blank");
   assert.equal(got[1].problem, undefined, "only known kinds");
