@@ -110,7 +110,8 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       }
       const origin = req.headers.origin;
       if (origin && !allowedHosts.some((h) => origin === `http://${h}`)) return send(res, 403, { error: "Wrong origin." });
-      lastActivity = Date.now();
+      // Floppy asks every few seconds what's going on; that alone doesn't keep a background dashboard running.
+      if (req.headers["x-dx-quiet"] !== "1") lastActivity = Date.now();
       if (url.pathname === "/api/shutdown" && req.method === "POST") {
         send(res, 200, { ok: true });
         setTimeout(() => void close(), 50);

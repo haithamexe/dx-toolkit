@@ -11,7 +11,8 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - the Tour page and `dx tour`; proof for the pull request (`dx proof`); trying an upgrade in a copy (`dx try`); queries per request (`dx queries`);
   - the Data page (realistic data and scenes) and `dx data`; Open on my phone and `dx phone`; speed and accessibility per commit;
   - the core tools;
-  - the `dx` command: `ui, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, chaos, attack, data, queries, phone, tour, proof, try, prepare, visual, machine, browser, sites, setup, https, config, runs, doctor`;
+  - Floppy, the desktop assistant on the Windows taskbar (`dx floppy`), and the dashboard as an app window (`dx ui --app`);
+  - the `dx` command: `ui, floppy, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, chaos, attack, data, queries, phone, tour, proof, try, prepare, visual, machine, browser, sites, setup, https, config, runs, doctor`;
   - the MCP server with 46 tools, 25 of them for running, checking and breaking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
   - the dashboard with 16 pages (Projects, Tour, New project, Ports, Machine, Git, Activity, Requests, Chaos, Data, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
@@ -31,6 +32,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Terminals beyond Windows**: Command Prompt, Windows PowerShell and Git Bash were opened for real on Windows; the macOS (iTerm2, Warp, Ghostty, kitty) and Linux launch commands are written from each one's documentation and haven't been run on those systems.
 - **The localhost door for stacks**: single-project dev servers are recorded at `localhost:<port>`; a stack's front end isn't moved yet. Next.js, Astro, Nuxt, Angular, webpack and Gatsby are moved by the documented flag but only Vite was tried for real.
 - **MongoDB in `dx db`**: only Postgres, MySQL/MariaDB and Redis today.
+- **Floppy beyond Windows**: the window is WPF, so macOS and Linux need their own (`dx floppy` says so there). Its click, drag and menu still need trying by hand on the maintainer's machine.
 - **Machine, next parts**:
   - caches (npm, pnpm store, yarn, bun, pip, Go, Gradle, Xcode DerivedData) on the Cleanup page, through each tool's own clean command;
   - developer setup checks in `dx doctor` (git name and email, line endings and long paths on Windows, SSH key, `gh` signed in, PATH with missing folders or two Nodes, the Linux file-watch limit, WSL);
@@ -58,6 +60,21 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### Floppy (`core/src/tools/floppy.ts`, `floppyWindow.ts`, `png.ts`; `web/src/floppy.ts`, `floppyapp.ts`, `floppysnap.ts`)
+
+- **The character was chosen over five rounds** of artifacts (a sticker character, Y2K brutalist, neubrutalist sparkles and pixels, scorpions and bats, Office-assistant era, then six directions for a floppy disk). The maintainer picked the 24-pixel save icon: pixel art on purpose, so it's sharp at any whole multiple. The 16-pixel version (tray, shortcut icon) is drawn on its own, not shrunk.
+- **The art lives in code**: palette keys in grids (`composeFloppy`), seven moods frame by frame (`FLOPPY_MOODS`), written as PNGs by a small encoder in core (`png.ts`: RGBA, no filter, node:zlib, its own CRC) under `~/.dx/floppy/sprites`, again only when the version or colours change. A one-pixel white edge on every frame, because the black outline vanishes on a dark taskbar.
+- **The window is Windows PowerShell 5.1 and WPF**, on every Windows 10 and 11: no Electron (100 MB) or Tauri (a Rust build per release), and core stays dependency-free. Transparent, borderless, topmost, no taskbar button; WPF lets clicks through its transparent pixels. Whole device pixels only: ×2 at 100%, ×3 at 150%.
+- **Run with `Invoke-Expression` of dx's own file**, not `-File`, so PowerShell's execution policy (Restricted by default on Windows clients) isn't touched. The script avoids backticks and dollar-brace so it lives in a template string as written; a test parses it with PowerShell's own parser on Windows.
+- **Started hidden, Windows hides the first window shown** (STARTUPINFO's SW_HIDE from `windowsHide`), so the script hides and shows it again once rendered. Checked for real: visible, then hidden over a full-screen app.
+- **Out of the way while something is full screen**: `SHQueryUserNotificationState` (2 busy, 3 a Direct3D game, 4 presenting), checked about once a second.
+- **Two processes**: a hidden node controller (`floppyapp.js`) and the window. They talk in JSON lines: moods, tips and menu state in; `click`, `moved`, `menu` with an action name out. Stdin closing closes the window, so killing the controller (`dx floppy --stop`) takes it all down.
+- **The mood is a pure function** (`floppyView`) of `GET /api/floppy` and a little memory: an error you haven't looked at, then a server starting, one that just came up (played once), an AI agent, quiet or 30 minutes unchanged (asleep), then idle. Errors wake it from quiet. Clicking while it shows an error counts as looking at it.
+- **It never keeps a background dashboard running**: its polls carry `X-DX-Quiet: 1`, which the server doesn't count as activity; a click runs `ensureDashboard` and opens it.
+- **The app window is Edge's `--app=`** (always on Windows; else the first Chromium found, else the default browser), only for loopback addresses, and the URL never carries the token: the page gets it as it always does.
+- **Startup is a shortcut in the user's own Startup folder**, made through `WScript.Shell` with the values passed as environment variables. It runs node's real path (version managers hand out per-shell links) with Floppy's entry and `--detach`, minimised; that starts the hidden controller and exits. The first `dx floppy` turns it on and says how to turn it off, since the maintainer asked for Floppy to start with Windows; later runs refresh the shortcut's paths.
+- **Not yet**: macOS and Linux (the window would need another toolkit), and a project list in the right-click menu. Clicking, dragging and the menu weren't tried by hand during the build: something else was full screen, so the mouse wasn't moved.
 
 ### Languages (`core/src/tools/locale.ts`, the recorder, the Chaos page)
 

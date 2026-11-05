@@ -17,6 +17,11 @@
       "types": "./dist/link.d.ts",
       "import": "./dist/link.js",
       "default": "./dist/link.js"
+    },
+    "./floppy": {
+      "types": "./dist/floppy.d.ts",
+      "import": "./dist/floppy.js",
+      "default": "./dist/floppy.js"
     }
   },
   "files": [

@@ -70,3 +70,6 @@ export * from "./tools/tour.js";
 export * from "./tools/prproof.js";
 export * from "./tools/upgrade.js";
 export * from "./tools/querylog.js";
+export * from "./tools/png.js";
+export * from "./tools/floppy.js";
+export * from "./tools/floppyWindow.js";

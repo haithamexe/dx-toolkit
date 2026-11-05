@@ -100,7 +100,22 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 - **It's started for you when needed.** When an AI tool asks dx to run a dev server, dx starts the dashboard in the background; `dx ui` then just opens it. A background dashboard stops itself after 30 minutes with no dev servers running and nobody using it. `dx ui --stop` stops it now.
 - **Dev servers you start from the dashboard stop when the dashboard stops**, like a dev server stops when you close its terminal. For one that keeps running, use **More → Run in a terminal window**.
 - Light and dark follow your system, or pick one at the bottom of the sidebar. It works on a phone-sized window too.
-- `dx ui --port 5000` uses another port; `dx ui --no-open` doesn't open the browser. From the project folder, `npm run ui` does the same as `dx ui`.
+- `dx ui --port 5000` uses another port; `dx ui --no-open` doesn't open the browser; `dx ui --app` opens it as an app, in its own window with no tabs or address bar. From the project folder, `npm run ui` does the same as `dx ui`.
+
+---
+
+## Floppy, on your taskbar
+
+`dx floppy` puts Floppy on your Windows taskbar: the save icon come alive, 48 pixels tall. It shows what dx is doing, and clicking it opens the dashboard as an app (its own window and taskbar icon, no tabs or address bar).
+
+- **Its moods follow dx.** Idle, it blinks and looks around. A project starting: it watches a progress bar fill on its label, with the preparing step in its balloon. A server comes up: it hops once. An error: red eyes, a shake and a balloon naming the file and line, until you click it. An AI agent at work: it watches a sparkle. Thirty minutes with nothing happening, or **Quiet for an hour**: it sleeps (errors still wake it).
+- **Hover** for what it's watching; **drag** it along the taskbar (it remembers where); **right-click** for Open dx, Quiet for an hour, Start with Windows, and Quit.
+- **It starts with Windows.** The first `dx floppy` adds a shortcut to your own Startup folder (no admin rights), and says so; `dx floppy --no-startup` or the menu removes it.
+- **It gets out of the way** while a game, a video or a presentation is full screen.
+- **It doesn't keep dx running.** It reads the dashboard's state every two seconds without counting as someone using it, so a background dashboard still stops when idle; a click starts it again.
+- `dx floppy --stop` takes it off, `--colour charcoal` or `maroon` changes its colours, `--status` says whether it's running.
+
+Nothing to install: the window is Windows PowerShell and WPF, which every Windows 10 and 11 has. On macOS and Linux, `dx floppy` says it's Windows-only for now.
 
 ---
 
@@ -388,6 +403,8 @@ dx up shop
 |---|---|
 | `dx ui` | The dashboard: everything below, with buttons, in your browser |
 | `dx ui --background` / `dx ui --stop` | Start it without a terminal / stop it and the dev servers it runs |
+| `dx ui --app` | Open the dashboard as an app: its own window, no tabs or address bar |
+| `dx floppy` | Put Floppy on your Windows taskbar: it shows what dx is doing, and a click opens the dashboard. `--stop`, `--no-startup`, `--colour` |
 | `dx up shop` / `dx down shop` | Start a project's whole stack in the background, and print its addresses / stop it |
 | `dx logs todo-app -f` | Follow the output of a dev server running in the dashboard, one your AI agent started included |
 | `dx errors` | Errors in every running dev server, with file and line (`dx errors todo-app` for one) |
@@ -601,6 +618,7 @@ Created on first run, with the code folders and editor dx found:
 - **`sites`**: the sites the dx browser records, as `{ "host": "staging.shop-website.dev", "project": "/path/to/shop-website", "env": "staging", "label": "Shop staging" }`. Easier with `dx sites add` or **Record a site**.
 - **`localhostRecording`**: `false` stops dx answering at an app's usual `localhost:<port>`; the dev server then runs there itself, and only its `.localhost` address is recorded.
 - **`localDomains`** / **`localDomainsPort`**: `false` turns `*.localhost` addresses off; a number picks their port instead of 80 (or 1355).
+- **`floppy`**: `{ "startup": true, "x": 1640, "colourway": "navy" }`, whether Floppy starts with Windows, where along the taskbar you left it, and its colours. Set by `dx floppy` and Floppy's menu.
 - **`aiToolsSeen`**: the AI tools dx has connected itself to once. A tool you disconnect stays disconnected. Set `"autoConnectAi": false` to stop dx connecting itself to new ones (`dx setup --undo` does both).
 
 A folder counts as a project when it has a `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, a `.sln`/`.csproj`, a `.git` folder or a `.devrc.json`.

@@ -10,7 +10,7 @@ Guidance for Claude Code when working in this repository. What the project is fo
 
 | Package | What it is | Built by `npm run build` |
 |---|---|---|
-| `packages/core` | The tools: projects, ports, launch, journal, summary, github, git, cleanup, deps, scaffold, doctor, machine. Plain Node, no runtime dependencies | yes |
+| `packages/core` | The tools: projects, ports, launch, journal, summary, github, git, cleanup, deps, scaffold, doctor, machine, floppy. Plain Node, no runtime dependencies | yes |
 | `packages/web` | The dashboard (`dx ui`): a `node:http` server plus a vanilla-JS page in `public/` | yes |
 | `packages/cli` | The `dx` command | yes |
 | `packages/mcp` | The MCP server (stdio) for Claude and other AI tools | yes |
@@ -81,7 +81,8 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - **Trying an upgrade** (`upgrade.ts`, `createWorkingCopy`, `/api/upgrade`): the package must be one the project depends on and the version a tag or version number (no range or shell characters); it's installed only into the copy under `~/.dx/snapshots`, after the copy's node_modules links are removed (never followed). Checks run the project's own scripts; pages load only the two dev servers on loopback.
 - **Queries per request** (`querylog.ts`, `/api/queries`): only the compose Postgres or MySQL, with dx's fixed SQL (`runSceneSql`); statements are kept only as shapes, values replaced by `?`; the state file is 0600.
 - **Attack my app** (`attack.ts`, `POST /api/chaos/attack`): requests go only to the project's own dev server on loopback, built from the recorded history; a session given for the run stays in memory and never reaches the report, a log or `runs.jsonl`. `maskSetCookie` keeps a set cookie's name and flags, never its value.
-- `server.test.ts`, `stack.test.ts`, `chaos.test.ts`, `phone.test.ts`, `team.test.ts`, `activity.test.ts`, `mocks.test.ts`, `apilab.test.ts`, `frontdoor.test.ts` and core's `dxbrowser.test.ts`, `bugbundle.test.ts`, `mocks.test.ts`, `apilab.test.ts`, `locale.test.ts`, `tour.test.ts`, `upgrade.test.ts` and `querylog.test.ts` cover all of this. Run them after touching these files.
+- **Floppy** (`floppy.ts`, `floppyWindow.ts`, `web/src/floppy.ts`, `floppyapp.ts`, `GET /api/floppy`): the window is dx's own PowerShell script, written to `~/.dx/floppy` and run with fixed arguments through `Invoke-Expression` (the execution policy is never changed). It reads only JSON lines from its controller and answers with clicks, moves and menu choices by name; nothing it sends is run. The controller keeps the token from `dashboard.json` in memory; `GET /api/floppy` is read-only, and its `X-DX-Quiet` polls don't keep a background dashboard alive. The app window opens only a loopback address (`isLoopbackUrl`), never with the token in it. The Startup shortcut, in the user's own Startup folder, runs only node with Floppy's own entry; its values reach PowerShell as environment variables, never as script text.
+- `server.test.ts`, `stack.test.ts`, `chaos.test.ts`, `phone.test.ts`, `team.test.ts`, `activity.test.ts`, `mocks.test.ts`, `apilab.test.ts`, `frontdoor.test.ts`, `floppy.test.ts` and core's `dxbrowser.test.ts`, `bugbundle.test.ts`, `mocks.test.ts`, `apilab.test.ts`, `locale.test.ts`, `tour.test.ts`, `upgrade.test.ts`, `querylog.test.ts` and `floppy.test.ts` cover all of this. Run them after touching these files.
 
 ## No setup
 

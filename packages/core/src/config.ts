@@ -66,6 +66,11 @@ export interface DxConfig {
    * (or host:port, or *.domain), the project it belongs to, and its environment.
    */
   sites?: { host: string; project?: string; env?: string; label?: string }[];
+  /**
+   * Floppy, the desktop assistant (`dx floppy`): whether it starts with Windows (asked once, the
+   * first time it runs), where along the taskbar you left it, and its colours.
+   */
+  floppy?: { startup?: boolean; x?: number; colourway?: "navy" | "charcoal" | "maroon" };
 }
 
 /** Folders people usually keep their code in, checked on first run. */

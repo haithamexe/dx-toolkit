@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { autoConnectAiTools, openUrl, recordRun } from "@dx/core";
+import { autoConnectAiTools, openAppWindow, openUrl, recordRun } from "@dx/core";
 import { startDashboard } from "@dx/web";
 import { ensureDashboard, findDashboard } from "@dx/web/link";
 import type { Command } from "../command.js";
@@ -15,6 +15,7 @@ export const uiCommand: Command = {
     "dx ui --stop          stop the running dashboard and the dev servers it runs",
     "dx ui --port 5000     use another port (default 4646)",
     "dx ui --no-open       don't open the browser",
+    "dx ui --app           open it as an app: its own window, no tabs or address bar",
     "",
     "It runs on this computer only (127.0.0.1). AI tools connected to dx start it in the background",
     "when they need a dev server, and `dx ui` then just opens that one.",
@@ -26,6 +27,7 @@ export const uiCommand: Command = {
       options: {
         port: { type: "string", short: "p" },
         open: { type: "boolean", default: true },
+        app: { type: "boolean" },
         background: { type: "boolean" },
         stop: { type: "boolean" },
       },
@@ -33,6 +35,7 @@ export const uiCommand: Command = {
     const port = values.port === undefined ? undefined : Number(values.port);
     if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) throw new UsageError("--port must be a port number.");
 
+    const openBrowser = (url: string) => (values.app ? openApp(url) : openDefault(url));
     const running = await findDashboard();
     if (values.stop) {
       if (!running) {
@@ -87,10 +90,18 @@ export const uiCommand: Command = {
   },
 };
 
-async function openBrowser(url: string): Promise<void> {
+async function openDefault(url: string): Promise<void> {
   try {
     await openUrl(url);
   } catch (err) {
     warn(`Couldn't open the browser: ${(err as Error).message}. Open ${url} yourself.`);
+  }
+}
+
+async function openApp(url: string): Promise<void> {
+  try {
+    if ((await openAppWindow(url)) === "browser") info(c.dim("No Edge or Chrome here, so it opened in your browser."));
+  } catch (err) {
+    warn(`Couldn't open the app window: ${(err as Error).message}. Open ${url} yourself.`);
   }
 }

@@ -192,6 +192,7 @@ import {
   type StartedBy,
 } from "./dev.js";
 import { aiLane, interruptAi } from "./ai.js";
+import { floppySnapshot } from "./floppysnap.js";
 import { noticeHead, requestCapture, sawHead, visualState } from "./visual.js";
 
 /** A request the page made, already parsed. */
@@ -850,6 +851,8 @@ const routes: Record<string, Handler> = {
     const lane = aiLane({ limit: 500 });
     return { ...lane, calls: lane.calls.filter((c) => c.dir && norm(c.dir) === norm(project.dir)).slice(0, limit), servers: lane.servers.filter((s) => norm(s.dir) === norm(project.dir)) };
   },
+  // What Floppy shows: read-only, polled with X-DX-Quiet so it doesn't keep a background dashboard alive.
+  "GET /api/floppy": () => floppySnapshot(),
   // Interrupt: stops only dev servers dx runs that the AI agent started (of those named, when dirs is sent).
   "POST /api/ai/interrupt": (req) => {
     const raw = req.body.dirs;

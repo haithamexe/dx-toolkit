@@ -34,11 +34,13 @@ import { mockCommand } from "./commands/mock.js";
 import { visualCommand } from "./commands/visual.js";
 import { configCommand, doctorCommand, runsCommand } from "./commands/system.js";
 import { uiCommand } from "./commands/ui.js";
+import { floppyCommand } from "./commands/floppy.js";
 import { c, UsageError } from "./ui.js";
 
 // To add a tool: write packages/cli/src/commands/<tool>.ts and add it to this list.
 const commands: Command[] = [
   uiCommand,
+  floppyCommand,
   goCommand,
   runCommand,
   resumeCommand,
