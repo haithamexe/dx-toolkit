@@ -131,9 +131,13 @@ test("a real Postgres: logging on, statements matched to requests, and back off"
   const start = Date.now();
   for (let i = 0; i < 11; i++) psql(`SELECT name FROM items WHERE order_id = ${i}`);
   const ms = Date.now() - start + 200;
-  await new Promise((r) => setTimeout(r, 500));
   const events = [{ ...req(start - 100, "/api/orders", ms), dir }];
-  const r = await queryReport(project, events);
+  // Docker's log can take a moment to have the lines: read until the statements are there.
+  let r = await queryReport(project, events);
+  for (let i = 0; i < 30 && (r.requests[0]?.queries ?? 0) < 11; i++) {
+    await new Promise((res) => setTimeout(res, 500));
+    r = await queryReport(project, events);
+  }
   assert.equal(r.on, true);
   const orders = r.requests.find((x) => x.path === "/api/orders");
   assert.ok(orders && orders.queries >= 11, JSON.stringify(r.requests));
