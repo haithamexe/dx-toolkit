@@ -26,6 +26,7 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ### Changed
 
+- **A new look for the dashboard**: the app now sits like a window on a teal desktop with a faint pixel grid, with Floppy as the logo and favicon. One teal colour scale for light and dark, Geist and Geist Mono for text and code, Silkscreen pixel labels on table headings, larger light numbers, and a yellow pip on the current page. The fonts ship with dx, so the dashboard still loads nothing from the internet.
 - The history keeps a set cookie's name and flags (HttpOnly, Secure, SameSite), never its value; before, the whole header was masked.
 
 - **The Chaos page: break the app on purpose, before your users do.**

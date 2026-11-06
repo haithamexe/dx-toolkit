@@ -100,6 +100,7 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 - **It's started for you when needed.** When an AI tool asks dx to run a dev server, dx starts the dashboard in the background; `dx ui` then just opens it. A background dashboard stops itself after 30 minutes with no dev servers running and nobody using it. `dx ui --stop` stops it now.
 - **Dev servers you start from the dashboard stop when the dashboard stops**, like a dev server stops when you close its terminal. For one that keeps running, use **More → Run in a terminal window**.
 - Light and dark follow your system, or pick one at the bottom of the sidebar. It works on a phone-sized window too.
+- **The look**: the app sits like a window on a teal desktop with a faint pixel grid, with Floppy as the logo. Its fonts (Geist, Geist Mono and Silkscreen, all under the SIL Open Font License) ship with dx in `packages/web/public/fonts`, so nothing loads from the internet.
 - `dx ui --port 5000` uses another port; `dx ui --no-open` doesn't open the browser; `dx ui --app` opens it as an app, in its own window with no tabs or address bar. From the project folder, `npm run ui` does the same as `dx ui`.
 
 ---

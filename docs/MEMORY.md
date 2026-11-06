@@ -32,6 +32,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Terminals beyond Windows**: Command Prompt, Windows PowerShell and Git Bash were opened for real on Windows; the macOS (iTerm2, Warp, Ghostty, kitty) and Linux launch commands are written from each one's documentation and haven't been run on those systems.
 - **The localhost door for stacks**: single-project dev servers are recorded at `localhost:<port>`; a stack's front end isn't moved yet. Next.js, Astro, Nuxt, Angular, webpack and Gatsby are moved by the documented flag but only Vite was tried for real.
 - **MongoDB in `dx db`**: only Postgres, MySQL/MariaDB and Redis today.
+- **README screenshots for the new look**: `docs/images/` still shows the old slate-and-cyan dashboard.
 - **Floppy beyond Windows**: the window is WPF, so macOS and Linux need their own (`dx floppy` says so there). Its click, drag and menu still need trying by hand on the maintainer's machine.
 - **Machine, next parts**:
   - caches (npm, pnpm store, yarn, bun, pip, Go, Gradle, Xcode DerivedData) on the Cleanup page, through each tool's own clean command;
@@ -60,6 +61,16 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
 
 ## Decisions
+
+### The dashboard's look: Teal Grid, window on the desk (`web/public/styles.css`, `index.html`, `fonts/`)
+
+- **Chosen from a design canvas** of four directions (Desktop, Teal Grid, Night Shift, Graph Paper) and then four Teal Grid variations (Window on the desk, Cut corner, On the grid, Tonal teal). The maintainer picked "Window on the desk": the app is one sheet on the desktop teal (#008080) the maintainer liked behind Floppy, and the teal's grid shows only around it, never under text.
+- **Tokens kept their names, new values**: `--bg` is now the sheet, `--desk` and its two grid lines are the background, so every page took the look without page-by-page changes. One teal ramp (#EEFAF9 to #002828) for both themes; Floppy's navy is only in the logo and Floppy; the sparkle yellow (`--marker`) only on the current page's pip. Status colours were evened out so none shouts.
+- **Fonts ship in `public/fonts`**: the CSP is `default-src 'self'`, so a font host would be blocked. Geist and Geist Mono (variable, Latin) and Silkscreen 400, taken from the `@fontsource` packages with their OFL licences beside them; about 60 KB in all. The server serves `.woff2` as `font/woff2`.
+- **Silkscreen only for the logo and small labels** (table headings), never sentences: pixel type is a brand cue, not a reading face.
+- **The sheet uses `overflow: clip`**, not `hidden`, so the sidebar's `position: sticky` still works.
+- **Floppy's SVGs** (`floppy.svg` logo and favicon, `floppy-idle.svg` in the sidebar) are drawn by `scripts/floppy-assets.mjs` from the same pixel art as the desktop Floppy: a rect per run of one colour, `crispEdges`.
+- **Not yet**: the README screenshots still show the old look; retake them from made-up demo projects, as the note on README screenshots says.
 
 ### Floppy (`core/src/tools/floppy.ts`, `floppyWindow.ts`, `png.ts`; `web/src/floppy.ts`, `floppyapp.ts`, `floppysnap.ts`)
 
