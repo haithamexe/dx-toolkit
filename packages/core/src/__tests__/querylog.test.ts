@@ -9,7 +9,7 @@ import { after, test } from "node:test";
 // out, each matched to the request it ran in, and what's worth fixing. Plus a real Postgres in Docker.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "dx-queries-home-"));
 process.env.DX_HOME = home;
-const { shapeSql, parsePostgresLog, parseMysqlSlowLog, attributeQueries, queryFindings, setQueryLog, queryLogState, queryReport, readQueries, QUERY_LIMITS } = await import("../tools/querylog.js");
+const { shapeSql, parsePostgresLog, parseMysqlSlowLog, attributeQueries, eventsSince, queryFindings, setQueryLog, queryLogState, queryReport, readQueries, QUERY_LIMITS } = await import("../tools/querylog.js");
 const { databaseLog, findDatabases } = await import("../tools/db.js");
 type Ev = import("../tools/activity.js").ActivityEvent;
 
@@ -47,6 +47,20 @@ test("MySQL's slow log rows read the same way", () => {
 
 let id = 0;
 const req = (at: number, url: string, ms: number, method = "GET"): Ev => ({ id: ++id, at: new Date(at).toISOString(), dir: "/x", project: "shop-website", type: "request", text: "", url, method, status: 200, ms, from: "proxy" });
+
+test("a request still being answered when logging came on counts; one that had ended doesn't", () => {
+  const since = "2026-11-06T15:11:23.520Z";
+  const t = Date.parse(since);
+  // CI once saw this: the request started 4 ms before logging was on and ran all its statements after.
+  const inFlight = req(t - 4, "/api/orders", 1477);
+  const ended = req(t - 500, "/api/old", 20);
+  const later = req(t + 50, "/api/new", 10);
+  assert.deepEqual(eventsSince([inFlight, ended, later], since).map((e) => e.url), ["/api/orders", "/api/new"]);
+  const loop = Array.from({ length: 11 }, (_, i) => ({ at: t + 181 + i * 96, ms: 1, shape: "SELECT name FROM items WHERE order_id = ?", conn: String(107 + i * 7) }));
+  const { requests, outside } = attributeQueries(eventsSince([inFlight], since), loop);
+  assert.equal(outside, 0);
+  assert.equal(requests[0]?.queries, 11);
+});
 
 test("calls a page sends together: the slow one doesn't take the quick one's queries", () => {
   const t = Date.parse("2026-11-05T11:00:00Z");

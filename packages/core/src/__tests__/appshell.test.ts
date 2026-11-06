@@ -221,7 +221,8 @@ test("on Windows the Startup shortcut opens the app minimised, and removing the 
   assert.ok(startup.endsWith(path.join("Programs", "Startup", "dx.lnk")));
   assert.ok(shell.appStartMenuShortcut(env)!.endsWith(path.join("Start Menu", "Programs", "dx.lnk")));
   assert.equal(shell.setAppStartup(true, undefined, env, "win32").ok, false, "nothing to start before Electron is installed");
-  assert.equal(shell.setAppStartup(true, { command: process.execPath, args: [path.join(home, "web shell")] }, env, "win32").ok, true);
+  const written = shell.setAppStartup(true, { command: process.execPath, args: [path.join(home, "web shell")] }, env, "win32");
+  assert.equal(written.ok, true, written.message);
   assert.equal(shell.appStartsAtSignIn(env, "win32"), true);
   fs.writeFileSync(shell.appStartMenuShortcut(env)!, "");
 

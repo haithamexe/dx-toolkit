@@ -52,7 +52,8 @@ export function writeShortcut(file: string, launch: ShortcutLaunch, description:
   const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
     windowsHide: true,
     encoding: "utf8",
-    timeout: 20_000,
+    // A cold PowerShell on a busy computer (CI's Windows runners, mid test run) took over 20 s.
+    timeout: 60_000,
     env: {
       ...process.env,
       DX_LNK: file,

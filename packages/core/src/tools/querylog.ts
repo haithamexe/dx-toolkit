@@ -353,6 +353,15 @@ export function queryFindings(requests: RequestQueries[]): QueryFinding[] {
   return [...out.values()].sort((a, b) => order[a.kind] - order[b.kind] || b.count - a.count || b.ms - a.ms);
 }
 
+/**
+ * The events still going on once logging was on: a request that started a moment before it was
+ * switched on can have run every statement after (it ends, start plus its time, at or after `since`).
+ */
+export function eventsSince(events: ActivityEvent[], since: string): ActivityEvent[] {
+  const from = Date.parse(since);
+  return events.filter((e) => Date.parse(e.at) + (typeof e.ms === "number" ? e.ms : 0) >= from);
+}
+
 /** The report for the history since logging was switched on (or `since`). */
 export async function queryReport(project: Pick<Project, "name" | "dir">, events: ActivityEvent[], options: { since?: string; service?: string } = {}): Promise<QueryReport> {
   const state = queryLogState(project.dir);
@@ -360,7 +369,7 @@ export async function queryReport(project: Pick<Project, "name" | "dir">, events
   const since = options.since ?? state?.since;
   if (!since) return { ...base, note: "Queries aren't being logged. Switch it on, use the app, then look again." };
   const { db, queries } = await readQueries(project, since, options.service ?? state?.service);
-  const { requests, outside } = attributeQueries(events.filter((e) => e.at >= since), queries);
+  const { requests, outside } = attributeQueries(eventsSince(events, since), queries);
   const all = new Map<string, QueryGroup>();
   for (const q of queries) {
     const g = all.get(q.shape) ?? { shape: q.shape, count: 0, ms: 0 };
