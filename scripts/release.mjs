@@ -37,7 +37,8 @@ for (const name of ["core", "web", "mcp"]) {
   fs.mkdirSync(dest, { recursive: true });
   fs.writeFileSync(path.join(dest, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
   copy(path.join(src, "dist"), path.join(dest, "dist"), (f) => !f.includes(`${path.sep}__tests__`) && !f.endsWith(".tsbuildinfo"));
-  if (fs.existsSync(path.join(src, "public"))) copy(path.join(src, "public"), path.join(dest, "public"));
+  // The dashboard's page, and the dx app's window (run by the Electron dx installs on first use).
+  for (const folder of ["public", "shell"]) if (fs.existsSync(path.join(src, folder))) copy(path.join(src, folder), path.join(dest, folder));
 }
 
 // A small entry for running the MCP server by hand: `dx-mcp`.

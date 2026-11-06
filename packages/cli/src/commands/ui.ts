@@ -1,24 +1,30 @@
 import { parseArgs } from "node:util";
-import { autoConnectAiTools, openAppWindow, openUrl, recordRun } from "@dx/core";
+import { appStartsAtSignIn, autoConnectAiTools, ELECTRON_VERSION, findElectron, installElectron, loadConfig, openUrl, recordRun, removeApp, saveConfig, setAppStartup } from "@dx/core";
 import { startDashboard } from "@dx/web";
+import { appLauncher, canWriteShortcuts, openDxApp, settleAppStartup, settleElectron } from "@dx/web/app";
 import { ensureDashboard, findDashboard } from "@dx/web/link";
 import type { Command } from "../command.js";
 import { c, info, ok, UsageError, warn } from "../ui.js";
 
 export const uiCommand: Command = {
   name: "ui",
-  aliases: ["dashboard"],
-  summary: "Open the dx dashboard in your browser: every dx tool, with buttons",
+  aliases: ["dashboard", "app"],
+  summary: "Open dx: the dashboard, every dx tool with buttons, in a window of its own",
   usage: [
-    "dx ui                 open the dashboard (starting it here if it isn't running)",
-    "dx ui --background    start it without a terminal; it stops itself when idle for 30 minutes",
-    "dx ui --stop          stop the running dashboard and the dev servers it runs",
-    "dx ui --port 5000     use another port (default 4646)",
-    "dx ui --no-open       don't open the browser",
-    "dx ui --app           open it as an app: its own window, no tabs or address bar",
+    "dx ui                 open dx in its own window (the first time, dx gets the app ready)",
+    "dx ui --browser       open it in your browser instead, this once",
+    "dx ui --startup       open dx on your taskbar (or Dock) when you sign in",
+    "dx ui --no-startup    stop opening it when you sign in",
+    "dx ui --stop          stop the dashboard and the dev servers it runs",
+    "dx ui --background    start the dashboard without a window; it stops itself when idle for 30 minutes",
+    "dx ui --no-open       run the dashboard in this terminal, without a window (Ctrl+C stops it)",
+    "dx ui --port 5000     run it in this terminal on another port (default 4646)",
+    "dx ui --remove-app    remove the app; dx ui then opens the dashboard in your browser",
+    "dx ui --app           the app again, after --remove-app",
     "",
-    "It runs on this computer only (127.0.0.1). AI tools connected to dx start it in the background",
-    "when they need a dev server, and `dx ui` then just opens that one.",
+    `The app is Electron ${ELECTRON_VERSION.split(".")[0]}, a 100 MB download, installed once into ~/.dx/app, so dx itself stays small.`,
+    "It shows the dashboard from this computer only (127.0.0.1); links to anything else open in your browser.",
+    "AI tools connected to dx start the dashboard in the background when they need a dev server.",
   ].join("\n"),
   async run(argv) {
     const { values } = parseArgs({
@@ -28,14 +34,17 @@ export const uiCommand: Command = {
         port: { type: "string", short: "p" },
         open: { type: "boolean", default: true },
         app: { type: "boolean" },
+        browser: { type: "boolean" },
         background: { type: "boolean" },
         stop: { type: "boolean" },
+        startup: { type: "boolean" },
+        "remove-app": { type: "boolean" },
       },
     });
     const port = values.port === undefined ? undefined : Number(values.port);
     if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) throw new UsageError("--port must be a port number.");
+    if (values.app && values.browser) throw new UsageError("--app or --browser, not both.");
 
-    const openBrowser = (url: string) => (values.app ? openApp(url) : openDefault(url));
     const running = await findDashboard();
     if (values.stop) {
       if (!running) {
@@ -47,17 +56,41 @@ export const uiCommand: Command = {
       return;
     }
 
-    if (running) {
-      ok(`The dx dashboard is already running at ${c.cyan(running.url)}${running.info.background ? c.dim(" (in the background)") : ""}`);
-      if (values.open) await openBrowser(running.url);
+    if (values["remove-app"]) {
+      const r = removeApp();
+      if (!r.ok) {
+        warn(r.message);
+        return 1;
+      }
+      saveConfig({ ...loadConfig(), dashboard: { ...(loadConfig().dashboard ?? {}), open: "browser", startup: false } });
+      recordRun("app", true, "removed");
+      ok(r.message);
+      info(c.dim("dx ui --app brings it back."));
       return;
     }
 
-    if (values.background) {
+    if (values.app && loadConfig().dashboard?.open === "browser") saveConfig({ ...loadConfig(), dashboard: { ...(loadConfig().dashboard ?? {}), open: "app" } });
+    const wantApp = !values.browser && loadConfig().dashboard?.open !== "browser";
+
+    if (values.startup !== undefined) return setStartup(values.startup);
+
+    const open = async (url: string) => {
+      if (!wantApp) return openDefault(url);
+      await openApp(url);
+    };
+
+    if (running) {
+      ok(`The dx dashboard is running at ${c.cyan(running.url)}${running.info.background ? c.dim(" (in the background)") : ""}`);
+      if (values.open) await open(running.url);
+      return;
+    }
+
+    // The app is the window; the dashboard behind it runs in the background, so the terminal is free.
+    if (values.background || (wantApp && values.open && port === undefined)) {
       const client = await ensureDashboard();
       ok(`dx dashboard running in the background at ${c.cyan(client.url)}`);
-      info(c.dim("It stops itself after 30 minutes with no dev servers and nobody using it. dx ui --stop stops it now."));
-      if (values.open) await openBrowser(client.url);
+      info(c.dim("It stops itself after 30 minutes with no dev servers and no window open. dx ui --stop stops it now."));
+      if (values.open) await open(client.url);
       return;
     }
 
@@ -71,7 +104,7 @@ export const uiCommand: Command = {
         if (done.length) info(c.dim(`Connected dx to ${done.map((r) => r.name).join(", ")}.`));
       })
       .catch(() => undefined);
-    if (values.open) await openBrowser(dashboard.url);
+    if (values.open) await open(dashboard.url);
 
     await new Promise<void>((resolve) => {
       let stopping = false;
@@ -99,9 +132,48 @@ async function openDefault(url: string): Promise<void> {
 }
 
 async function openApp(url: string): Promise<void> {
+  const onLine = (line: string) => console.log(c.dim(`  ${line}`));
   try {
-    if ((await openAppWindow(url)) === "browser") info(c.dim("No Edge or Chrome here, so it opened in your browser."));
+    const have = findElectron();
+    if (!have) info(`Getting the dx app ready: Electron ${ELECTRON_VERSION}, a 100 MB download, once. ${c.dim("It goes in ~/.dx/app.")}`);
+    else if (!have.current) info(`Updating the dx app's Electron ${have.version} to ${ELECTRON_VERSION}, next to the one there. ${c.dim("An open dx window carries on; the next one is on the new Electron.")}`);
+    const r = await openDxApp(url, { install: "wait", onLine });
+    if (r.opened === "app") {
+      ok("dx is open in its own window.");
+      if (r.message) warn(`${r.message} ${c.dim("dx ui tries again next time.")}`);
+      recordRun("app", true, "opened");
+      const first = settleAppStartup();
+      if (first) info(`${first} ${c.dim("dx ui --no-startup turns that off.")}`);
+    } else {
+      if (r.message) warn(`${r.message} ${c.dim("dx ui tries again next time.")}`);
+      info(r.opened === "window" ? "Opened it as an Edge app window for now." : "No Edge or Chrome here, so it opened in your browser.");
+    }
   } catch (err) {
-    warn(`Couldn't open the app window: ${(err as Error).message}. Open ${url} yourself.`);
+    warn(`Couldn't open the dx app: ${(err as Error).message}. Open ${url} yourself.`);
   }
+}
+
+async function setStartup(on: boolean): Promise<number | void> {
+  if (!canWriteShortcuts()) {
+    warn("DX_HOME is set, and a sign-in entry can't carry it, so dx won't add one. Unset DX_HOME to use your everyday ~/.dx.");
+    return 1;
+  }
+  let launcher = appLauncher();
+  if (on && !launcher) {
+    info(`Getting the dx app ready first: Electron ${ELECTRON_VERSION}, a 100 MB download, once.`);
+    const r = await installElectron({ onLine: (line) => console.log(c.dim(`  ${line}`)) });
+    if (!r.ok) {
+      warn(r.message);
+      return 1;
+    }
+    await settleElectron();
+    launcher = appLauncher();
+  }
+  const r = setAppStartup(on, launcher);
+  if (!r.ok) {
+    warn(r.message);
+    return 1;
+  }
+  saveConfig({ ...loadConfig(), dashboard: { ...(loadConfig().dashboard ?? {}), startup: on && appStartsAtSignIn() } });
+  ok(r.message);
 }

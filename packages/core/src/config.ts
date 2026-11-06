@@ -70,7 +70,19 @@ export interface DxConfig {
    * Floppy, the desktop assistant (`dx floppy`): whether it starts with Windows (asked once, the
    * first time it runs), where along the taskbar you left it, and its colours.
    */
-  floppy?: { startup?: boolean; x?: number; colourway?: "navy" | "charcoal" | "maroon" };
+  floppy?: {
+    startup?: boolean;
+    x?: number;
+    colourway?: "navy" | "charcoal" | "maroon";
+    /** You sent Floppy away (Quit, or `dx floppy --stop`), so the dx app doesn't bring it back; `dx floppy` clears it. */
+    off?: boolean;
+  };
+  /**
+   * How `dx ui` opens the dashboard: as the dx app, its own window (the default), or in your
+   * browser (after `dx ui --remove-app`); and whether the app opens when you sign in to Windows
+   * (set the first time the app opens, like Floppy's).
+   */
+  dashboard?: { open?: "app" | "browser"; startup?: boolean };
 }
 
 /** Folders people usually keep their code in, checked on first run. */

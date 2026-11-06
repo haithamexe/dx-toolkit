@@ -1,12 +1,11 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { ensureDxHome } from "../config.js";
 import { isLoopbackUrl, findBrowser } from "./browser.js";
 import { detached } from "./detached.js";
 import { openUrl } from "./launch.js";
-import { encodePng, parseColor, pngToIco } from "./png.js";
+import { encodePng, iconFile, icnsFile, ICNS_TYPES, parseColor } from "./png.js";
+import { startupFolder, writeShortcut, type ShortcutLaunch } from "./shortcuts.js";
 
 /**
  * Floppy: the save icon come alive, sitting on the taskbar. This file holds what doesn't need a
@@ -236,8 +235,11 @@ export interface FloppyManifest {
   icon: string;
 }
 
+/** 16, 32, 48, 64, 128 and 256 pixels: the sizes an icon file usually carries. */
+const FLOPPY_ICON_SCALES = [1, 2, 3, 4, 8, 16];
+
 // Bump when the art changes, so frames written by an older dx are drawn again.
-const SPRITE_VERSION = 1;
+const SPRITE_VERSION = 3;
 
 /** Writes every frame as a PNG (with the white edge), the icon, and manifest.json; skips it when already there. */
 export function writeFloppySprites(dir: string, colourway: FloppyColourway = "navy"): FloppyManifest {
@@ -259,8 +261,26 @@ export function writeFloppySprites(dir: string, colourway: FloppyColourway = "na
     });
     manifest.moods.push({ key: m.key, once: !!m.once, frames: list });
   }
-  const icon = gridToRgba(floppyIcon16("idle", false), colourway, 2);
-  fs.writeFileSync(path.join(dir, manifest.icon), pngToIco(encodePng(icon.width, icon.height, icon.data), icon.width, icon.height));
+  // The 16-pixel art at whole multiples, one image per size Windows asks for (title bar, taskbar,
+  // Start menu, Alt+Tab), so it stays sharp everywhere; and a large PNG for other systems' windows.
+  // Without its white edge the art is 16 × 16 inside the 18 × 18 grid: crop the empty margin.
+  const art = floppyIcon16("idle", false).slice(1, 17).map((row) => row.slice(1, 17));
+  const sizes = FLOPPY_ICON_SCALES.map((scale) => {
+    const icon = gridToRgba(art, colourway, scale);
+    return { png: encodePng(icon.width, icon.height, icon.data), width: icon.width, height: icon.height };
+  });
+  fs.writeFileSync(path.join(dir, manifest.icon), iconFile(sizes));
+  fs.writeFileSync(path.join(dir, "floppy-256.png"), sizes[sizes.length - 1].png);
+  // The macOS app's icon: the same art from 16 up to 1024 pixels, all whole multiples.
+  const pngAt = new Map<number, Buffer>();
+  const icns = ICNS_TYPES.map(([type, px]) => {
+    if (!pngAt.has(px)) {
+      const icon = gridToRgba(art, colourway, px / 16);
+      pngAt.set(px, encodePng(icon.width, icon.height, icon.data));
+    }
+    return { type, png: pngAt.get(px)! };
+  });
+  fs.writeFileSync(path.join(dir, "floppy.icns"), icnsFile(icns));
   fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + "\n");
   return manifest;
 }
@@ -398,12 +418,6 @@ function firstLine(s: string): string {
 
 // ------------------------------------------------------------ Startup and the app window
 
-/** Where Windows looks for programs to start when you sign in. */
-export function startupFolder(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const appData = env.APPDATA || (env.USERPROFILE ? path.join(env.USERPROFILE, "AppData", "Roaming") : undefined);
-  return appData ? path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup") : undefined;
-}
-
 export function floppyShortcutPath(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const dir = startupFolder(env);
   return dir ? path.join(dir, "dx Floppy.lnk") : undefined;
@@ -414,13 +428,7 @@ export function floppyStartsWithWindows(env: NodeJS.ProcessEnv = process.env): b
   return !!file && fs.existsSync(file);
 }
 
-export interface FloppyLaunch {
-  command: string;
-  args: string[];
-  icon?: string;
-}
-
-const quoteArg = (a: string) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a);
+export type FloppyLaunch = ShortcutLaunch;
 
 /**
  * Adds or removes the Startup shortcut. It runs dx's own Floppy entry with node, minimised, and
@@ -435,25 +443,8 @@ export function setFloppyStartup(on: boolean, launch?: FloppyLaunch, env: NodeJS
     return { ok: true, message: "Floppy won't start with Windows.", path: file };
   }
   if (!launch) return { ok: false, message: "Nothing to start." };
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  // The values go in through the environment, so nothing in them is read as PowerShell.
-  const script = [
-    "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:DX_LNK)",
-    "$s.TargetPath = $env:DX_LNK_TARGET",
-    "$s.Arguments = $env:DX_LNK_ARGS",
-    "$s.WorkingDirectory = $env:DX_LNK_DIR",
-    "$s.WindowStyle = 7",
-    "$s.Description = 'dx Floppy'",
-    "if ($env:DX_LNK_ICON) { $s.IconLocation = $env:DX_LNK_ICON }",
-    "$s.Save()",
-  ].join("; ");
-  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    windowsHide: true,
-    encoding: "utf8",
-    timeout: 20_000,
-    env: { ...process.env, DX_LNK: file, DX_LNK_TARGET: launch.command, DX_LNK_ARGS: launch.args.map(quoteArg).join(" "), DX_LNK_DIR: os.homedir(), DX_LNK_ICON: launch.icon ?? "" },
-  });
-  if (r.status !== 0 || !fs.existsSync(file)) return { ok: false, message: `Couldn't add the Startup shortcut: ${(r.stderr || r.error?.message || "PowerShell failed").trim().split("\n")[0]}` };
+  const r = writeShortcut(file, launch, "dx Floppy", { minimised: true });
+  if (!r.ok) return { ok: false, message: r.message.replace("the shortcut", "the Startup shortcut") };
   return { ok: true, message: "Floppy starts when you sign in to Windows.", path: file };
 }
 

@@ -22,11 +22,17 @@
       "types": "./dist/floppy.d.ts",
       "import": "./dist/floppy.js",
       "default": "./dist/floppy.js"
+    },
+    "./app": {
+      "types": "./dist/app.d.ts",
+      "import": "./dist/app.js",
+      "default": "./dist/app.js"
     }
   },
   "files": [
     "dist",
-    "public"
+    "public",
+    "shell"
   ],
   "dependencies": {
     "@dx/core": "*"

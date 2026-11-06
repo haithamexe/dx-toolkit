@@ -1,6 +1,6 @@
 // Floppy, running: a hidden node process that owns Floppy's window (Windows PowerShell and WPF,
 // see core's floppyWindow.ts), asks the dashboard every two seconds what's going on, and opens the
-// dashboard as an app window when Floppy is clicked. Started by `dx floppy` or, with --detach, by
+// dx app (web/src/app.ts) when Floppy is clicked. Started by `dx floppy` or, with --detach, by
 // the Startup shortcut. It never keeps a background dashboard running by itself: its questions
 // carry X-DX-Quiet, and a click starts the dashboard only when it isn't there.
 import { spawn } from "node:child_process";
@@ -14,7 +14,6 @@ import {
   floppyView,
   loadConfig,
   newFloppyMemory,
-  openAppWindow,
   recordRun,
   saveConfig,
   setFloppyStartup,
@@ -22,6 +21,7 @@ import {
   type FloppySnapshot,
   type FloppyView,
 } from "@dx/core";
+import { openDxApp } from "./app.js";
 import { clearFloppyInfo, floppyDir, floppyLauncher, floppySpritesDir, readFloppyInfo, startFloppy, writeFloppyInfo } from "./floppy.js";
 import { ensureDashboard, readDashboardInfo } from "./link.js";
 
@@ -138,7 +138,8 @@ async function openDx(): Promise<void> {
   if (key && !memory.seen.includes(key)) memory.seen = [...memory.seen.slice(-50), key];
   try {
     const client = await ensureDashboard();
-    await openAppWindow(client.url);
+    // The dx app; until it's installed (that starts here, in the background), an app window.
+    await openDxApp(client.url, { install: loadConfig().dashboard?.open === "browser" ? "no" : "background" });
   } catch (err) {
     send({ type: "mood", mood: "error", tip: { title: "Couldn't open dx", text: (err as Error).message, icon: "error" }, announce: true });
   }
@@ -183,6 +184,8 @@ readline.createInterface({ input: win.stdout }).on("line", (line) => {
       else send({ type: "mood", mood: current.view?.mood ?? "idle", tip: { title: "Start with Windows", text: r.message, icon: "error" }, announce: true });
       menuState();
     } else if (ev.action === "quit") {
+      // Sent away: the dx app doesn't bring it back until `dx floppy`.
+      remember((f) => (f.off = true));
       recordRun("floppy", true, "quit", "web");
       send({ type: "quit" });
       setTimeout(() => quit(0), 500);

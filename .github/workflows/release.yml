@@ -49,6 +49,10 @@ jobs:
           node scripts/release-notes.mjs "$version" > "$RUNNER_TEMP/notes.md"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
+      # The dx app's Electron gets its security fixes through dx's releases.
+      - name: The app's Electron is the newest of its line
+        run: node scripts/check-electron.mjs
+
       - run: npm test
 
       - name: Build and test-install the package

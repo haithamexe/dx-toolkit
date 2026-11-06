@@ -56,20 +56,59 @@ export function encodePng(width: number, height: number, rgba: Uint8Array): Buff
 
 /** An .ico holding one PNG, which Windows reads since Vista (for a shortcut's icon). */
 export function pngToIco(png: Buffer, width: number, height: number): Buffer {
+  return iconFile([{ png, width, height }]);
+}
+
+/** An .ico holding several PNG images, one per size; Windows picks the one it needs. */
+export function iconFile(images: { png: Buffer; width: number; height: number }[]): Buffer {
   const header = Buffer.alloc(6);
   header.writeUInt16LE(0, 0);
   header.writeUInt16LE(1, 2); // icon
-  header.writeUInt16LE(1, 4); // one image
-  const entry = Buffer.alloc(16);
-  entry[0] = width >= 256 ? 0 : width;
-  entry[1] = height >= 256 ? 0 : height;
-  entry[2] = 0; // no palette
-  entry[3] = 0;
-  entry.writeUInt16LE(1, 4); // colour planes
-  entry.writeUInt16LE(32, 6); // bits per pixel
-  entry.writeUInt32LE(png.length, 8);
-  entry.writeUInt32LE(6 + 16, 12);
-  return Buffer.concat([header, entry, png]);
+  header.writeUInt16LE(images.length, 4);
+  let offset = 6 + 16 * images.length;
+  const entries = images.map(({ png, width, height }) => {
+    const entry = Buffer.alloc(16);
+    entry[0] = width >= 256 ? 0 : width;
+    entry[1] = height >= 256 ? 0 : height;
+    entry[2] = 0; // no palette
+    entry[3] = 0;
+    entry.writeUInt16LE(1, 4); // colour planes
+    entry.writeUInt16LE(32, 6); // bits per pixel
+    entry.writeUInt32LE(png.length, 8);
+    entry.writeUInt32LE(offset, 12);
+    offset += png.length;
+    return entry;
+  });
+  return Buffer.concat([header, ...entries, ...images.map((i) => i.png)]);
+}
+
+/** The ICNS image types that hold a PNG, by pixel size (the @2x types repeat a size for Retina). */
+export const ICNS_TYPES: [string, number][] = [
+  ["icp4", 16],
+  ["icp5", 32],
+  ["ic11", 32],
+  ["icp6", 64],
+  ["ic12", 64],
+  ["ic07", 128],
+  ["ic08", 256],
+  ["ic13", 256],
+  ["ic09", 512],
+  ["ic14", 512],
+  ["ic10", 1024],
+];
+
+/** A macOS .icns: "icns", its length, then each image as its type, its length and the PNG (all big-endian). */
+export function icnsFile(images: { type: string; png: Buffer }[]): Buffer {
+  const parts = images.map(({ type, png }) => {
+    const head = Buffer.alloc(8);
+    head.write(type, 0, 4, "ascii");
+    head.writeUInt32BE(8 + png.length, 4);
+    return Buffer.concat([head, png]);
+  });
+  const head = Buffer.alloc(8);
+  head.write("icns", 0, 4, "ascii");
+  head.writeUInt32BE(8 + parts.reduce((n, p) => n + p.length, 0), 4);
+  return Buffer.concat([head, ...parts]);
 }
 
 /** "#00b000" or "rgba(0,0,0,0.28)" as four bytes. */

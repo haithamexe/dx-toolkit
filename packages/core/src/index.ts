@@ -73,3 +73,5 @@ export * from "./tools/querylog.js";
 export * from "./tools/png.js";
 export * from "./tools/floppy.js";
 export * from "./tools/floppyWindow.js";
+export * from "./tools/shortcuts.js";
+export * from "./tools/appshell.js";

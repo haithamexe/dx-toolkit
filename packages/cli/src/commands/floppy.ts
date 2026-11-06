@@ -47,9 +47,16 @@ export const floppyCommand: Command = {
     }
 
     if (values.stop) {
-      if (await stopFloppy()) ok("Floppy is off your taskbar.");
+      // Sent away: the dx app doesn't bring it back until `dx floppy`.
+      floppy.off = true;
+      save();
+      if (await stopFloppy()) ok(`Floppy is off your taskbar. ${c.dim("dx floppy brings it back.")}`);
       else info("Floppy isn't running.");
       return 0;
+    }
+    if (floppy.off) {
+      delete floppy.off;
+      save();
     }
 
     const colour = values.colour ?? values.color;

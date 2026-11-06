@@ -985,6 +985,8 @@ function route() {
   const cleanup = page.render(container);
   if (typeof cleanup === "function") leaveCurrent = cleanup;
   main.focus({ preventScroll: true });
+  // Wide windows scroll the page inside .main; narrow ones scroll the window.
+  main.scrollTop = 0;
   window.scrollTo(0, 0);
   void updateRunningCount();
 }

@@ -13,7 +13,7 @@ Each tool is written once in `packages/core` and can be used four ways:
 
 ```
 packages/core   the tools (projects, ports, journal, …), plain Node, no dependencies
-   ├── packages/web      → the dashboard in your browser: `dx ui`
+   ├── packages/web      → the dashboard, in its own window: `dx ui`
    ├── packages/cli      → `dx` in any terminal, VS Code included
    ├── packages/raycast  → Raycast commands with hotkeys
    └── packages/mcp      → Claude (Desktop / Code) and Raycast AI can call the tools
@@ -30,6 +30,7 @@ Everything dx stores is in one folder: `~/.dx` (`C:\Users\<you>\.dx`).
 | `templates/` | Your project templates for `dx new`, one folder each |
 | `activity/` | The activity history: one folder per project, one file per day, kept 7 days |
 | `dashboard.json` | While the dashboard runs: its address and access token, readable by you only, so the `dx` command and AI tools can reach it |
+| `app/` | The dx app: the Electron it runs in (`runtime/<version>`, installed the first time you open dx, and `current`, a link to the one in use), its window's place and its browser data. `dx ui --remove-app` deletes it |
 
 ---
 
@@ -70,7 +71,7 @@ Projects somewhere else? `dx config add-root <folder>`, or add the folder on the
 dx ui
 ```
 
-It opens the dx dashboard in your browser, where everything `dx` does is a button:
+It opens dx in a window of its own, where everything `dx` does is a button:
 
 | Page | What you can do there |
 |---|---|
@@ -101,20 +102,33 @@ It opens the dx dashboard in your browser, where everything `dx` does is a butto
 - **Dev servers you start from the dashboard stop when the dashboard stops**, like a dev server stops when you close its terminal. For one that keeps running, use **More → Run in a terminal window**.
 - Light and dark follow your system, or pick one at the bottom of the sidebar. It works on a phone-sized window too.
 - **The look**: the app sits like a window on a teal desktop with a faint pixel grid, with Floppy as the logo. Its fonts (Geist, Geist Mono and Silkscreen, all under the SIL Open Font License) ship with dx in `packages/web/public/fonts`, so nothing loads from the internet.
-- `dx ui --port 5000` uses another port; `dx ui --no-open` doesn't open the browser; `dx ui --app` opens it as an app, in its own window with no tabs or address bar. From the project folder, `npm run ui` does the same as `dx ui`.
+- `dx ui --port 5000` runs the dashboard in this terminal on another port; `dx ui --no-open` runs it in this terminal without a window; `dx ui --browser` opens it in your browser this once. From the project folder, `npm run ui` does the same as `dx ui`.
+
+### The dx app
+
+dx is an app: its own window, Floppy as its icon on the taskbar (or Dock), an entry in the Start menu you can pin, and it opens when you sign in. Floppy comes with it on Windows.
+
+- **The first `dx ui` gets it ready.** The window is [Electron](https://www.electronjs.org/), a 100 MB download (about 370 MB installed) that dx installs once into `~/.dx/app`, one pinned version, so `npm install -g dx-devkit` stays small. Until it's there, or if it can't download (set `ELECTRON_MIRROR` behind a firewall), dx opens as an Edge app window, then in your browser. It's named dx everywhere the system looks: on Windows the program is `dx.exe`, a copy of Electron's with dx's name and Floppy's icon written in (by [rcedit](https://github.com/electron/rcedit), installed with it), so Task Manager, the Startup apps list and the taskbar say dx; on macOS it's `dx.app`, with its name, id and icon set and signed again for this computer; on Linux its launcher entry (`~/.local/share/applications/dx.desktop`) names it in menus and the dock.
+- **Electron updates come with dx.** Each dx release pins the newest Electron with its security fixes; the next time dx opens, it installs that one next to the one running (in the background when the app opens by itself, in front of you with `dx ui`), and the app is on it the time after. The old one is removed once nothing runs from it. The open window never has to close for it.
+- **The dashboard runs behind it, in the background**, so the terminal is free. Close the window any time: dev servers keep running, and the dashboard stops by itself 30 minutes after the last one stops. `dx ui --stop` stops it and its dev servers now; the window then says dx isn't running, with **Start dx**.
+- **It opens when you sign in**, on the taskbar or Dock rather than in your face: the first `dx ui` adds a shortcut to your own Startup folder on Windows, a LaunchAgent on macOS (`~/Library/LaunchAgents/dx.dashboard.plist`), or an autostart entry on Linux (`~/.config/autostart/dx.desktop`), none of which needs admin rights, and says so. `dx ui --no-startup` removes it, `dx ui --startup` puts it back; Windows' own Startup apps settings show it too. On Windows the app adds itself to the Start menu, so you can open dx by typing its name and pin it to the taskbar.
+- **It shows the dashboard and nothing else.** Only the dashboard's own address on this computer loads in the window, with the same token and checks as in a browser. Links to your apps, GitHub and anything else open in your browser. The page has no access to Node or your files, and no permission except the clipboard, for the Copy buttons.
+- **It's laid out like an app**: the page scrolls inside the window and the sidebar stays put, scrolling on its own if the window is short.
+- **It remembers its size and place**, and opens on a screen you still have. Ctrl+R reloads, Ctrl+Shift+I opens the developer tools, Ctrl+plus and Ctrl+minus zoom.
+- `dx ui --remove-app` removes the app (its folder and shortcuts); `dx ui` then opens the dashboard in your browser, until `dx ui --app`.
 
 ---
 
 ## Floppy, on your taskbar
 
-`dx floppy` puts Floppy on your Windows taskbar: the save icon come alive, 48 pixels tall. It shows what dx is doing, and clicking it opens the dashboard as an app (its own window and taskbar icon, no tabs or address bar).
+Floppy sits on your Windows taskbar: the save icon come alive, 48 pixels tall. It comes with [the dx app](#the-dx-app) (or `dx floppy` on its own), shows what dx is doing, and clicking it opens the app.
 
 - **Its moods follow dx.** Idle, it blinks and looks around. A project starting: it watches a progress bar fill on its label, with the preparing step in its balloon. A server comes up: it hops once. An error: red eyes, a shake and a balloon naming the file and line, until you click it. An AI agent at work: it watches a sparkle. Thirty minutes with nothing happening, or **Quiet for an hour**: it sleeps (errors still wake it).
 - **Hover** for what it's watching; **drag** it along the taskbar (it remembers where); **right-click** for Open dx, Quiet for an hour, Start with Windows, and Quit.
 - **It starts with Windows.** The first `dx floppy` adds a shortcut to your own Startup folder (no admin rights), and says so; `dx floppy --no-startup` or the menu removes it.
 - **It gets out of the way** while a game, a video or a presentation is full screen.
 - **It doesn't keep dx running.** It reads the dashboard's state every two seconds without counting as someone using it, so a background dashboard still stops when idle; a click starts it again.
-- `dx floppy --stop` takes it off, `--colour charcoal` or `maroon` changes its colours, `--status` says whether it's running.
+- `dx floppy --stop` (or **Quit** in its menu) takes it off, and the app doesn't bring it back until `dx floppy`; `--colour charcoal` or `maroon` changes its colours, `--status` says whether it's running.
 
 Nothing to install: the window is Windows PowerShell and WPF, which every Windows 10 and 11 has. On macOS and Linux, `dx floppy` says it's Windows-only for now.
 
@@ -402,9 +416,10 @@ dx up shop
 
 | Command | What it does |
 |---|---|
-| `dx ui` | The dashboard: everything below, with buttons, in your browser |
+| `dx ui` | dx: the dashboard, everything below with buttons, in its own window ([the dx app](#the-dx-app)) |
 | `dx ui --background` / `dx ui --stop` | Start it without a terminal / stop it and the dev servers it runs |
-| `dx ui --app` | Open the dashboard as an app: its own window, no tabs or address bar |
+| `dx ui --startup` / `--no-startup` | Open dx on the taskbar (or Dock) when you sign in, or stop |
+| `dx ui --browser` | Open the dashboard in your browser instead, this once. `--remove-app` removes the app, `--app` brings it back |
 | `dx floppy` | Put Floppy on your Windows taskbar: it shows what dx is doing, and a click opens the dashboard. `--stop`, `--no-startup`, `--colour` |
 | `dx up shop` / `dx down shop` | Start a project's whole stack in the background, and print its addresses / stop it |
 | `dx logs todo-app -f` | Follow the output of a dev server running in the dashboard, one your AI agent started included |
@@ -619,7 +634,8 @@ Created on first run, with the code folders and editor dx found:
 - **`sites`**: the sites the dx browser records, as `{ "host": "staging.shop-website.dev", "project": "/path/to/shop-website", "env": "staging", "label": "Shop staging" }`. Easier with `dx sites add` or **Record a site**.
 - **`localhostRecording`**: `false` stops dx answering at an app's usual `localhost:<port>`; the dev server then runs there itself, and only its `.localhost` address is recorded.
 - **`localDomains`** / **`localDomainsPort`**: `false` turns `*.localhost` addresses off; a number picks their port instead of 80 (or 1355).
-- **`floppy`**: `{ "startup": true, "x": 1640, "colourway": "navy" }`, whether Floppy starts with Windows, where along the taskbar you left it, and its colours. Set by `dx floppy` and Floppy's menu.
+- **`floppy`**: `{ "startup": true, "x": 1640, "colourway": "navy" }`, whether Floppy starts with Windows, where along the taskbar you left it, and its colours; `"off": true` after you send it away, so the app doesn't bring it back. Set by `dx floppy` and Floppy's menu.
+- **`dashboard`**: `{ "open": "app", "startup": true }`, whether `dx ui` opens the dx app or your browser (`"browser"` after `dx ui --remove-app`), and whether the app opens when you sign in. Set by `dx ui`.
 - **`aiToolsSeen`**: the AI tools dx has connected itself to once. A tool you disconnect stays disconnected. Set `"autoConnectAi": false` to stop dx connecting itself to new ones (`dx setup --undo` does both).
 
 A folder counts as a project when it has a `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, a `.sln`/`.csproj`, a `.git` folder or a `.devrc.json`.

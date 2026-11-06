@@ -283,34 +283,49 @@ select {
 }
 
 /* ------------------------------------------------------------ layout */
-/* The app is one sheet on the desk: the teal shows only around it. overflow: clip (not hidden)
-   keeps the sidebar's position: sticky working. */
+/* The app is one sheet on the desk: the teal shows only around it. On wide screens the sheet is
+   exactly the window's height and its two columns scroll on their own, as in an app: the desk
+   margin never scrolls away, and a short window scrolls the sidebar rather than squeezing it.
+   Narrow screens scroll the page (below). overflow: clip keeps the narrow sidebar's sticky working. */
 .app {
   display: grid;
   grid-template-columns: var(--sidebar) minmax(0, 1fr);
-  min-height: calc(100vh - 2 * var(--sheet-gap));
+  height: calc(100vh - 2 * var(--sheet-gap));
   margin: var(--sheet-gap);
   background: var(--bg);
   border-radius: var(--r3);
   box-shadow: 0 0 0 1px var(--sheet-edge), var(--sheet-shadow);
   overflow: clip;
 }
+.sidebar,
+.main {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+/* Sized so the sixteen pages, Floppy and the theme picker fit a window 820 pixels tall. */
 .sidebar {
-  position: sticky;
-  top: var(--sheet-gap);
-  height: calc(100vh - 2 * var(--sheet-gap));
   display: flex;
   flex-direction: column;
-  gap: var(--s4);
-  padding: var(--s5) var(--s3) var(--s4);
+  gap: var(--s3);
+  padding: var(--s4) var(--s3);
   background: var(--surface-2);
   border-right: 1px solid var(--border);
+}
+.sidebar > * {
+  flex: none;
+}
+/* Its scrollbar shows only under the pointer: a short window scrolls the last few links. */
+.sidebar:not(:hover) {
+  scrollbar-color: transparent transparent;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: var(--s3);
-  padding: 0 var(--s2) var(--s2);
+  padding: 0 var(--s2) var(--s1);
 }
 .brand-mark {
   width: 28px;
@@ -323,7 +338,7 @@ select {
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 .nav a {
   position: relative;
@@ -1809,7 +1824,7 @@ summary.activity-row {
   display: flex;
   flex-direction: column;
   gap: var(--s2);
-  max-height: calc(100vh - var(--s6));
+  max-height: calc(100vh - 2 * var(--sheet-gap) - 2 * var(--s4));
   padding: var(--s2);
   overflow-y: auto;
 }
@@ -2369,10 +2384,17 @@ summary.error-row {
   }
   .app {
     grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: calc(100vh - 2 * var(--sheet-gap));
     border-radius: var(--r2);
+  }
+  .sidebar,
+  .main {
+    overflow-y: visible;
   }
   .sidebar {
     position: sticky;
+    top: var(--sheet-gap);
     z-index: 30;
     height: auto;
     flex-direction: row;

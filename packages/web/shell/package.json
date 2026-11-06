@@ -1,0 +1,8 @@
+{
+  "name": "dx",
+  "productName": "dx",
+  "private": true,
+  "description": "The dx app: the dashboard in a window of its own. dx runs it with the Electron it installs in ~/.dx/app.",
+  "type": "module",
+  "main": "main.js"
+}

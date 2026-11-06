@@ -11,8 +11,9 @@
  */
 export const FLOPPY_WINDOW_PS = String.raw`
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Drawing
-# Windows' own answer to "is something full screen?" (a game, a video, a presentation).
-Add-Type -Namespace DxFloppy -Name Shell -MemberDefinition '[DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state);'
+# Windows' own answer to "is something full screen?" (a game, a video, a presentation), and the
+# window in front, to tell an overlay from something you're watching.
+Add-Type -Namespace DxFloppy -Name Shell -MemberDefinition '[DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);'
 $dir = $env:DX_FLOPPY_DIR
 $manifest = [IO.File]::ReadAllText((Join-Path $dir 'manifest.json')) | ConvertFrom-Json
 
@@ -272,6 +273,15 @@ $poll.Add_Tick({
   if ($away.n % 8 -eq 0) {
     $q = 0
     try { [void][DxFloppy.Shell]::SHQueryUserNotificationState([ref]$q) } catch { }
+    # "Busy" also comes from overlays that cover the screen without being something you watch
+    # (screen recorders' borders, game overlays, an assistant controlling the screen). Those are
+    # layered windows (WS_EX_LAYERED); a full-screen video or game window isn't.
+    if ($q -eq 2) {
+      try {
+        $ex = [int64][DxFloppy.Shell]::GetWindowLongPtr([DxFloppy.Shell]::GetForegroundWindow(), -20)
+        if (($ex -band 0x80000) -ne 0) { $q = 5 }
+      } catch { }
+    }
     $busy = ($q -eq 2 -or $q -eq 3 -or $q -eq 4)
     if ($busy -and -not $away.hidden) {
       $away.hidden = $true

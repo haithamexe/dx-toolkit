@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { configPath, dxHome, dxPath, ensureDxHome, loadConfig } from "../config.js";
 import { listAiTools } from "./aiSetup.js";
+import { appHome, ELECTRON_VERSION, findElectron } from "./appshell.js";
 import { browserInstallFix, findBrowser } from "./browser.js";
 import { githubToken } from "./github.js";
 import { certFiles, mkcertInstallFix } from "./https.js";
@@ -218,6 +219,11 @@ export async function runDoctor(): Promise<Check[]> {
       checks.push({ name: "dx install", status: "ok", detail: dx.local ? `linked from ${dx.local}` : dx.npm ? "dx-devkit from npm" : "not installed globally (run from a folder)" });
     }
   }
+  const electron = findElectron();
+  if (electron?.current) checks.push({ name: "dx app", status: "ok", detail: `Electron ${electron.version}, in ${appHome()}` });
+  else if (electron) checks.push({ name: "dx app", status: "warn", detail: `Electron ${electron.version}; this dx uses ${ELECTRON_VERSION}, and installs it next to the one there when dx next opens`, fix: "dx ui" });
+  else if (loadConfig().dashboard?.open === "browser") checks.push({ name: "dx app", status: "ok", detail: "removed: dx ui opens the dashboard in your browser (dx ui --app brings it back)" });
+  else checks.push({ name: "dx app", status: "ok", detail: `not installed yet: dx ui gets it the first time (Electron ${ELECTRON_VERSION}, a 100 MB download)` });
   return checks;
 }
 
