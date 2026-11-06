@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.5.0 (2026-11-06)
+
+dx is an app now: `dx ui` opens it in a window of its own that starts with you, with Floppy on the taskbar and a new teal look. Also new since 1.4.0: the Git page, the Machine page, Chaos, Run any commit, the dx browser for deployed sites, Ask Claude to fix, the AI lane and Your year. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **Floppy** (`dx floppy`): a pixel-art floppy disk that sits on your Windows taskbar and shows what dx is doing: a project starting (a progress bar on its label), a server coming up (a hop), an error (red eyes and a balloon with the file and line, until you look), an AI agent at work, asleep after 30 quiet minutes. Click it to open the dx app; drag it along the taskbar; right-click for Quiet for an hour, Start with Windows and Quit. It starts with Windows from the first run (a shortcut in your Startup folder, removed with `--no-startup`), hides while something is full screen, and doesn't keep a background dashboard running. Nothing to install: Windows PowerShell and WPF.
@@ -23,6 +27,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 - **Running a commit of a stack** (Run any commit, and the copy an upgrade is tried in) uses the project's own Docker services and runs its app services on ports of their own. Before, the copy started on the project's port, and stopping it could stop the project's database when the compose file names its project.
 - The Security tab on the Chaos page now follows a run to its end, as the other tabs do.
 - Buttons that are meant to be hidden stay hidden (Write message on the Git page when Claude Code isn't installed).
+- **Queries per request missed a request already under way when logging was switched on**, and counted all its statements as outside every request. Every request still being answered then counts now.
+- **On Linux with Node 24 the Machine page listed no Node processes**: Node 24 names its main thread "MainThread", so the name now also comes from the command line.
+- **Run any commit failed on Windows when a folder had a short name** (`C:\Users\RUNNER~1`): paths are compared as real paths.
+- **A past year's review counted later work.** `dx summary --year 2025` (and the Summary page, and `work_summary`) included commits and journal entries made after that year; now a summary that ends on a day of its own stops there.
 
 ### Changed
 
@@ -86,12 +94,6 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
   - **Running in the background**: dev servers, watchers, AI tools and editor helpers, each with the child processes it started, its memory, CPU now, ports and project. Ones whose terminal is gone are marked **left behind**; ports other computers on your network can reach are marked **open to your network**. **Stop** asks first; dx's own servers are stopped from the Projects page.
   - **Docker**: containers, and the space images, stopped containers and the build cache take, with **Clean up** for each. Volumes, which hold data, are never removed.
   - **Services**: Postgres, MySQL, Redis, MongoDB and other services that start with the computer, with the commands to stop them or start them only when needed.
-
-### Fixed
-
-- **On Linux with Node 24 the Machine page listed no Node processes**: Node 24 names its main thread "MainThread", so the name now also comes from the command line.
-- **Run any commit failed on Windows when a folder had a short name** (`C:\Users\RUNNER~1`): paths are compared as real paths.
-- **A past year's review counted later work.** `dx summary --year 2025` (and the Summary page, and `work_summary`) included commits and journal entries made after that year; now a summary that ends on a day of its own stops there.
 
 ## 1.4.0 (2026-11-04)
 
