@@ -6,7 +6,7 @@ Your projects, dev servers, ports, work journal and weekly summary in one place:
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/projects-light.png">
-  <img alt="The dx dashboard's Projects page: a running stack called shop, with its api and web services at api.shop.localhost and web.shop.localhost; a todo-app dev server marked Started by AI with 1 error; and the project list below." src="docs/images/projects.png">
+  <img alt="The dx dashboard's Projects page, a white sheet on a teal grid with Floppy the floppy disk as its logo: a running stack called shop, with its api and web services at api.shop.localhost and web.shop.localhost; a todo-app dev server marked Started by AI with 1 error and a Take over button; the project list below; and the AI agent's tab at the right edge." src="docs/images/projects.png">
 </picture>
 
 Each tool is written once in `packages/core` and can be used four ways:
@@ -130,7 +130,7 @@ Every app you open at its `.localhost` address (the address `dx up`, `dx go` and
 - **Console output** (`console.log`, `warn`, `error`) with the file and line that wrote it, and **uncaught errors** with their stack;
 - the **dev server** starting, getting ready, stopping and crashing, and each **error it printed**.
 
-![The Activity page: a visit to a shop app with its 2 clicks and 3 problems: the click on Add to cart, the route to /cart, the POST /api/cart answered 409, the console error and the uncaught TypeError that followed, with a Replay button; above it, a note that todo-app is running but hasn't been opened at its .localhost address.](docs/images/activity.png)
+![The Activity page: projects and a recorded staging site on the left, with shop selected; on the right, its visit to / with 2 clicks and 3 problems: the click on Add to cart, the route to /cart, the POST /api/cart answered 409, the console error and the uncaught TypeError that followed, then the click on Checkout, with Replay, Download bug bundle and Make mocks buttons.](docs/images/activity.png)
 
 See it on the **Activity** page, with `dx activity`, or ask your AI agent (`activity_log`). On the Activity page:
 

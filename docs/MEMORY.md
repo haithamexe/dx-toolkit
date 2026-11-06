@@ -32,7 +32,6 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Terminals beyond Windows**: Command Prompt, Windows PowerShell and Git Bash were opened for real on Windows; the macOS (iTerm2, Warp, Ghostty, kitty) and Linux launch commands are written from each one's documentation and haven't been run on those systems.
 - **The localhost door for stacks**: single-project dev servers are recorded at `localhost:<port>`; a stack's front end isn't moved yet. Next.js, Astro, Nuxt, Angular, webpack and Gatsby are moved by the documented flag but only Vite was tried for real.
 - **MongoDB in `dx db`**: only Postgres, MySQL/MariaDB and Redis today.
-- **README screenshots for the new look**: `docs/images/` still shows the old slate-and-cyan dashboard.
 - **Floppy beyond Windows**: the window is WPF, so macOS and Linux need their own (`dx floppy` says so there). Its click, drag and menu still need trying by hand on the maintainer's machine.
 - **Machine, next parts**:
   - caches (npm, pnpm store, yarn, bun, pip, Go, Gradle, Xcode DerivedData) on the Cleanup page, through each tool's own clean command;
@@ -58,7 +57,13 @@ What was decided while building dx, and why, so the next session doesn't relearn
     6. the agent watches that run and confirms the version on the registry (`https://registry.npmjs.org/dx-devkit`) and the GitHub release.
 
     **npm trusted publishing** (OIDC) means no npm token anywhere: npmjs.com's package settings name this repository and `release.yml`, set up once by the maintainer. The workflow upgrades npm (trusted publishing needs npm 11.5.1+). By hand, as a fallback, uses the maintainer's own logins on their machine; the agent never logs in or handles a token itself. npm answers a publish without a login with **404 Not Found**, not 401; so does a publish from CI before trusted publishing is set up.
-- **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author, taken with headless Edge/Chrome (`--screenshot`, `--blink-settings=preferredColorScheme=0|1`). Retake them the same way when a page changes; never from real projects.
+- **README screenshots** (`docs/images/`) come from made-up demo projects under a neutral author (`octocat`, `octocat@example.com`), never from real projects. Retake them the same way when a page changes:
+  - **A demo dashboard** with `DX_HOME` in a temp folder, `autoConnectAi: false`, `GITHUB_TOKEN`/`GH_TOKEN` unset and no GitHub remotes (so the Summary fetches nobody's pull requests). Servers started through `POST /api/dev/start` (`by: "ai"` for the AI one); the history, journal and `mcp.*` runs written as files (`appendActivity`, `callRecord`).
+  - **Paths read `~\dx-demo\…`** because the page shortens `C:\Users\<name>`: the projects are reached through a junction at `~/dx-demo`, removed afterwards with `rmdir` (the link only).
+  - **Each demo repo has a local bare remote** it's pushed to, or the Projects page warns about unpushed work.
+  - **Dates by mtime**: every working file first, then `git update-index --really-refresh`, then `.git/index`, `HEAD` and the folder. Dating tracked files after the index makes the dashboard's `git status` rewrite it, and every project reads "Active just now".
+  - **Captured through core's `withBrowser`**, not `--screenshot`: `Emulation.setDeviceMetricsOverride` (1280 × 900 for Projects, 1280 × 820 for the rest, scale 1), `setEmulatedMedia` for `prefers-color-scheme`, `dx.aiLane = closed` in localStorage so the agent's lane is its edge tab, fonts ready, then `Page.captureScreenshot`. Dark for all, plus `projects-light.png` for the README's `<picture>`.
+  - With port 80 taken (another dashboard), the `.localhost` addresses show `:1355`.
 
 ## Decisions
 
@@ -70,7 +75,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Silkscreen only for the logo and small labels** (table headings), never sentences: pixel type is a brand cue, not a reading face.
 - **The sheet uses `overflow: clip`**, not `hidden`, so the sidebar's `position: sticky` still works.
 - **Floppy's SVGs** (`floppy.svg` logo and favicon, `floppy-idle.svg` in the sidebar) are drawn by `scripts/floppy-assets.mjs` from the same pixel art as the desktop Floppy: a rect per run of one colour, `crispEdges`.
-- **Not yet**: the README screenshots still show the old look; retake them from made-up demo projects, as the note on README screenshots says.
+- **The README screenshots were retaken in the new look** (Projects light and dark, Summary, Cleanup, Activity), as the note on README screenshots says.
 
 ### Floppy (`core/src/tools/floppy.ts`, `floppyWindow.ts`, `png.ts`; `web/src/floppy.ts`, `floppyapp.ts`, `floppysnap.ts`)
 
