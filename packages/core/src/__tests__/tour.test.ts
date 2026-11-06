@@ -83,6 +83,22 @@ test("the tour maps pages to calls to files, with names of settings but never th
   assert.ok(md.includes("`dx go shop-website`"));
 });
 
+test("the tour has the project's API spec, found by itself, next to what was called", () => {
+  assert.equal(projectTour({ name: "shop-website", dir }, { events: history }).spec, undefined, "no spec yet");
+  write("docs/openapi.json", JSON.stringify({ openapi: "3.0.3", info: { title: "Shop API", version: "2.0" }, paths: { "/api/orders": { get: { summary: "The orders" } }, "/api/orders/{id}": { get: { summary: "One order" } }, "/api/orders/{id}/refund": { post: { summary: "Refund it" } } } }));
+  try {
+    const t = projectTour({ name: "shop-website", dir }, { events: history });
+    assert.deepEqual([t.spec?.title, t.spec?.version, t.spec?.source, t.spec?.undocumented], ["Shop API", "2.0", "file:docs/openapi.json", 1]);
+    assert.deepEqual(
+      t.spec?.endpoints.map((e) => [e.method, e.path, e.calls]),
+      [["GET", "/api/orders", 1], ["GET", "/api/orders/{id}", 2], ["POST", "/api/orders/{id}/refund", 0]],
+    );
+    assert.match(tourMarkdown(t), /## API spec\n\nShop API 2\.0 \(openapi 3\.0\.3, from docs\/openapi\.json\):/);
+  } finally {
+    fs.rmSync(path.join(dir, "docs"), { recursive: true, force: true });
+  }
+});
+
 test("README intros skip badges and headings, and Python projects are recognised", () => {
   assert.equal(readmeIntro(path.join(dir, "missing")), undefined);
   const py = fs.mkdtempSync(path.join(os.tmpdir(), "dx-tour-py-"));

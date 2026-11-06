@@ -34,10 +34,8 @@ import {
   cloneProject,
   fixDependencies,
   checkProjectNeeds,
-  findSpecFiles,
-  loadSpec,
   mapApi,
-  readProjectSpec,
+  projectSpec,
   readSpec,
   checkTools,
   dockerInfo,
@@ -278,14 +276,10 @@ server.registerTool(
       const found = findProjects(project, scanProjects(loadConfig()));
       const p = found.match ?? (found.candidates.length === 1 ? found.candidates[0] : undefined);
       if (!p) return failure(found.candidates.length ? `Several projects match "${project}": ${found.candidates.map((x) => x.name).join(", ")}` : `No project matches "${project}".`);
-      let doc = loadSpec(p.dir)?.doc;
-      let source = loadSpec(p.dir)?.source;
-      if (!doc) {
-        const file = findSpecFiles(p.dir)[0];
-        if (!file) return text(`${p.name} has no API spec dx knows of: no openapi or swagger file in it. The user can add one on dx's Requests page (from a file, the running app, or pasted).`);
-        doc = readProjectSpec(p.dir, file);
-        source = `file:${file}`;
-      }
+      // The project's spec: the one it was given, else a spec file in it, found by itself.
+      const stored = projectSpec(p.dir);
+      if (!stored) return text(`${p.name} has no API spec dx knows of: no openapi or swagger file in it, and none was given. The user can add one on dx's API page (from a file, the running app, or pasted).`);
+      const { doc, source } = stored;
       const spec = readSpec(doc);
       const map = mapApi(spec, readActivity({ dir: p.dir, since: new Date(Date.now() - 7 * 86_400_000), limit: 5000 }));
       return text({ title: spec.title, version: spec.version, kind: spec.kind, source, basePath: spec.basePath, endpoints: map.endpoints, undocumented: map.undocumented });
@@ -301,7 +295,7 @@ server.registerTool(
     title: "Start or stop a project's mock server",
     description:
       "A project's mock server answers its API from dx's mocks (made from its OpenAPI spec, cached real answers, or recordings) at an address of its own, from the first call and without its back end running, like a Postman mock server. " +
-      "Use it when front-end work shouldn't wait for the back end. Pick an answer per request with the header x-mock-response-code: 404. Make mocks first on the Requests page or with dx mock spec.",
+      "Use it when front-end work shouldn't wait for the back end. Pick an answer per request with the header x-mock-response-code: 404. Make mocks first on the API page or with dx mock spec.",
     inputSchema: { project: z.string().describe("Project name"), on: z.boolean().optional().describe("false stops it (default: start)") },
     annotations: { readOnlyHint: false, openWorldHint: false },
   },

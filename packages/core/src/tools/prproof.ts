@@ -1,7 +1,6 @@
-import { execFile } from "node:child_process";
 import { readRuns, type RunRecord } from "../runs.js";
 import { isProblem, readActivity, type ActivityEvent } from "./activity.js";
-import { gitRun } from "./git.js";
+import { gitRun, runGh } from "./git.js";
 import { foldPath } from "./mocks.js";
 import { listVisual, type VisualCommit } from "./visual.js";
 
@@ -250,15 +249,8 @@ export interface PrInfo {
   body: string;
 }
 
-function gh(dir: string, args: string[], input?: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    // Fixed arguments; the body goes in on stdin, never on the command line.
-    const child = execFile("gh", args, { cwd: dir, windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" } }, (err, stdout, stderr) =>
-      resolve({ code: err ? (typeof (err as NodeJS.ErrnoException).code === "number" ? Number((err as NodeJS.ErrnoException).code) : 1) : 0, stdout: String(stdout), stderr: String(stderr || (err && (err as NodeJS.ErrnoException).code === "ENOENT" ? "gh isn't installed" : "")) }),
-    );
-    if (input !== undefined) child.stdin?.end(input);
-  });
-}
+// Fixed arguments; the body goes in on stdin, never on the command line.
+const gh = (dir: string, args: string[], input?: string) => runGh(dir, args, input, 30_000);
 
 /** The open pull request for the current branch, through the GitHub CLI; undefined when there's none. */
 export async function currentPr(dir: string): Promise<PrInfo | undefined> {

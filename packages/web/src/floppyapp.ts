@@ -119,7 +119,7 @@ async function tick(): Promise<void> {
     const { view, memory: next } = floppyView(snap, memory);
     memory = next;
     current = { snap, view };
-    const msg = { type: "mood", mood: view.mood, play: view.play, tip: view.tip, announce: !!view.announce, sticky: !!view.sticky };
+    const msg = { type: "mood", mood: view.mood, play: view.play, tip: view.tip, status: view.status, announce: !!view.announce, sticky: !!view.sticky };
     const key = JSON.stringify({ ...msg, announce: false, play: undefined });
     if (view.announce || view.play || key !== lastKey) send(msg);
     lastKey = key;

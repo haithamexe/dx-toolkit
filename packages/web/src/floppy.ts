@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { dxPath, ensureDxHome, type FloppyLaunch } from "@dx/core";
+import { dxPath, ensureDxHome, loadConfig, saveConfig, setFloppyStartup, writeFloppySprites, type FloppyLaunch } from "@dx/core";
 
 /**
  * Starting and stopping Floppy, for `dx floppy` and the Startup shortcut. Floppy itself is
@@ -94,6 +94,43 @@ export async function startFloppy(): Promise<{ started: boolean; pid?: number; m
     if (child.exitCode !== null) break;
   }
   return { started: false, message: `Floppy didn't start. Its log is ${path.join(floppyDir(), "window.log")}.` };
+}
+
+/**
+ * What `dx floppy` and the dashboard's Run Floppy button do before starting it: its frames drawn
+ * (the shortcut shows its icon), and its Startup shortcut turned on the first time (you asked for
+ * Floppy to start with Windows) or kept pointing at this dx. Says so the first time. No shortcut
+ * while DX_HOME is set: a shortcut can't carry it, so it would start another dx's Floppy.
+ */
+export function settleFloppyStartup(): { message?: string; warning?: string } {
+  const floppy = loadConfig().floppy ?? {};
+  writeFloppySprites(floppySpritesDir(), floppy.colourway ?? "navy");
+  if (process.env.DX_HOME) return {};
+  if (floppy.startup === undefined) {
+    const r = setFloppyStartup(true, floppyLauncher());
+    const config = loadConfig();
+    saveConfig({ ...config, floppy: { ...(config.floppy ?? {}), startup: r.ok } });
+    return r.ok ? { message: "Floppy will start when you sign in to Windows." } : { warning: r.message };
+  }
+  if (floppy.startup) setFloppyStartup(true, floppyLauncher());
+  return {};
+}
+
+/**
+ * The dashboard's Run Floppy button: brings Floppy back if you'd sent it away (`floppy.off`, which
+ * keeps the app from starting it) and starts it, as `dx floppy` does. `start` is for tests.
+ */
+export async function runFloppy(start: typeof startFloppy = startFloppy): Promise<{ started: boolean; running: boolean; message: string }> {
+  if (process.platform !== "win32") return { started: false, running: false, message: "Floppy lives on the Windows taskbar for now. macOS and Linux come later." };
+  const config = loadConfig();
+  if (config.floppy?.off) {
+    const floppy = { ...config.floppy };
+    delete floppy.off;
+    saveConfig({ ...config, floppy });
+  }
+  const settled = settleFloppyStartup();
+  const r = await start();
+  return { started: r.started, running: r.started || r.pid !== undefined, message: [r.message, r.started ? settled.message : undefined].filter(Boolean).join(" ") };
 }
 
 /** Takes Floppy off the desktop. Its window closes by itself once its controller is gone. */

@@ -116,6 +116,8 @@ export interface StoredSpec {
   source: string;
   savedAt: string;
   doc: Record<string, unknown>;
+  /** dx found it by itself (a spec file in the project, or the running app's usual address). */
+  found?: boolean;
 }
 
 export function specFile(dir: string): string {
@@ -126,8 +128,8 @@ export function specFile(dir: string): string {
 }
 
 /** Keeps the spec dx uses for a project (readable by this user only). */
-export function saveSpec(dir: string, source: string, doc: Record<string, unknown>): StoredSpec {
-  const stored: StoredSpec = { format: "dx-spec", dir: path.resolve(dir), source, savedAt: new Date().toISOString(), doc };
+export function saveSpec(dir: string, source: string, doc: Record<string, unknown>, options: { found?: boolean } = {}): StoredSpec {
+  const stored: StoredSpec = { format: "dx-spec", dir: path.resolve(dir), source, savedAt: new Date().toISOString(), doc, ...(options.found ? { found: true } : {}) };
   const file = specFile(dir);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -159,8 +161,48 @@ export function loadSpec(dir: string): StoredSpec | undefined {
   return stored;
 }
 
+/**
+ * Removes the project's spec. Removing it on purpose is remembered (a marker in its place), so dx
+ * doesn't pick the same spec file up again by itself; giving it one again replaces the marker.
+ */
 export function forgetSpec(dir: string): void {
-  fs.rmSync(specFile(dir), { force: true });
+  const file = specFile(dir);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify({ format: "dx-spec-off", dir: path.resolve(dir) }), { mode: 0o600 });
+}
+
+/** Where a spec came from, in words: "from docs/openapi.yaml", "from the running app at /openapi.json", "pasted in". */
+export function specSource(source: string): string {
+  if (source.startsWith("file:")) return `from ${source.slice(5)}`;
+  if (source.startsWith("url:")) return `from the running app at ${source.slice(4)}`;
+  return "pasted in";
+}
+
+/** Whether the project's spec was removed on purpose. */
+export function specTurnedOff(dir: string): boolean {
+  try {
+    return (JSON.parse(fs.readFileSync(specFile(dir), "utf8")) as { format?: string }).format === "dx-spec-off";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The project's API spec, with nothing to set up: the one it was given, else the most likely spec
+ * file in the project (openapi/swagger, three levels down), kept from then on and read fresh each
+ * time. Not after you removed it. The running app's usual addresses are tried by the dashboard.
+ */
+export function projectSpec(dir: string): StoredSpec | undefined {
+  const kept = loadSpec(dir);
+  if (kept || specTurnedOff(dir)) return kept;
+  for (const rel of findSpecFiles(dir)) {
+    try {
+      return saveSpec(dir, `file:${rel}`, readProjectSpec(dir, rel), { found: true });
+    } catch {
+      // not a spec dx can read: the next one
+    }
+  }
+  return undefined;
 }
 
 /** Reads a spec file inside the project (and only there). */

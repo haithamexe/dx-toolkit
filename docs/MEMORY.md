@@ -15,13 +15,13 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - the `dx` command: `ui, floppy, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, chaos, attack, data, queries, phone, tour, proof, try, prepare, visual, machine, browser, sites, setup, https, config, runs, doctor`;
   - the MCP server with 46 tools, 25 of them for running, checking and breaking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
-  - the dashboard with 16 pages (Projects, Tour, New project, Ports, Machine, Git, Activity, Requests, Chaos, Data, Env & secrets, Journal, Summary, Cleanup, Dependencies, Health & settings);
+  - the dashboard, arranged by intent: a project switcher, then that project's Overview (with its tour), Code, API, Activity, Data, Break it and Env & secrets; under Everything, All projects (and New project), This computer (Machine, Ports, Cleanup, Dependencies) and Look back (Summary, Journal); Settings;
   - the activity history (requests, routes, clicks, console, errors, kept 7 days), for deployed sites too through the dx browser, and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.5.0. Nothing under *Unreleased* yet.
+- **Latest release**: 1.5.0. *Unreleased*: the line beside Floppy, Run Floppy, the dashboard by intent (project first), Code's tabs and GitHub releases, and an API spec on every project.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -92,6 +92,17 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **The page scrolls inside the sheet on wide screens**: in a window, the whole page scrolling (the desk margin with it) and the sidebar squeezing Floppy behind the theme picker on a short window looked broken. `.app` is the window's height, `.main` and `.sidebar` scroll on their own (thin scrollbars in the theme's colours, the sidebar's only under the pointer), sidebar children don't shrink. Under 860 px the page scrolls as before. A route change resets `.main`'s scroll as well as the window's.
 - **`dx ui --remove-app`** removes the shortcuts and `~/.dx/app` (refused while the app is open: Windows locks its files) and sets `dashboard.open` to `browser`; `--app` sets it back.
 
+### The dashboard by intent: project first (`web/public/app.js` router and `pages`, `index.html`, `styles.css`)
+
+- **The maintainer found 16 flat pages confusing and asked for structure by intent.** Two directions were put to them on a proposal page: A, the same pages grouped under intents, and B, project first. They picked B.
+- **One project, chosen at the top of the sidebar** (`pref("project")`, seeded from the old per-page keys), for every project page: Overview, Code, API, Activity, Data, Break it, Env & secrets. Before, Tour, Data, Chaos, Requests, Git and Activity each had a picker and a memory of their own, so two pages could silently be on different projects. A page that falls back to another project calls `useProject()` so the switcher follows; a link with `?dir=` (the AI lane, Send to the Repeater) switches the project in `route()`. Activity still offers its other projects and recorded sites on its left, and picking a project there switches it everywhere.
+- **Route ids stayed** (`#/git`, `#/requests`, `#/chaos`…), only labels changed (Code, API, Break it, Settings), so links and bookmarks work; `#/tour` moves to `#/overview` (`MOVED`).
+- **Overview is the Projects page for one project** (`projectsPage(root, { only })`: its row, its dev server card, its unsaved work) plus the API spec card and the tour (`tourSection`), so running, logs, errors, checks and notes weren't written twice. All projects is the same page for every project; a name there opens that project's Overview.
+- **Pages that are tabs of another** (`under`) light up their parent's nav item and get a tab strip of links (`pageTabs`, the `.segmented` look as links): This computer is Machine, Ports, Cleanup and Dependencies; Look back is Summary and Journal. Each page kept its own code.
+- **Env & secrets shows the chosen project only** (`/api/env/project`, with the key scan); the all-projects list (`/api/env/all`) is still there for the CLI.
+- **The theme moved to Settings** (a select applied at once, per computer, in localStorage as before), at the maintainer's request; the sidebar's foot is Floppy and Run Floppy.
+- **Not yet**: the README screenshots (`docs/images/`) show the old sidebar and page names and need retaking the usual way.
+
 ### The dashboard's look: Teal Grid, window on the desk (`web/public/styles.css`, `index.html`, `fonts/`)
 
 - **Chosen from a design canvas** of four directions (Desktop, Teal Grid, Night Shift, Graph Paper) and then four Teal Grid variations (Window on the desk, Cut corner, On the grid, Tonal teal). The maintainer picked "Window on the desk": the app is one sheet on the desktop teal (#008080) the maintainer liked behind Floppy, and the teal's grid shows only around it, never under text.
@@ -115,6 +126,8 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **It never keeps a background dashboard running**: its polls carry `X-DX-Quiet: 1`, which the server doesn't count as activity; a click runs `ensureDashboard` and opens it.
 - **The app window is Edge's `--app=`** (always on Windows; else the first Chromium found, else the default browser), only for loopback addresses, and the URL never carries the token: the page gets it as it always does.
 - **Startup is a shortcut in the user's own Startup folder**, written by dx itself (see the dx app's shortcut note). It runs node's real path (version managers hand out per-shell links) with Floppy's entry and `--detach`, minimised; that starts the hidden controller and exits. The first `dx floppy` turns it on and says how to turn it off, since the maintainer asked for Floppy to start with Windows; later runs refresh the shortcut's paths.
+- **A line beside it, always** (`FloppyView.status`): the maintainer asked to know what's happening and on which project without reading Floppy's face or hovering. It's a third layer window (the balloon's yellow, a coloured dot, one line trimmed at 280 px), on the left of Floppy when there's room (it usually sits near the clock), else the right, just above the taskbar; it follows a drag, hides with Floppy when something is full screen, and hovering or clicking it does what Floppy does. The balloon keeps the detail. Errors already looked at stay counted there (`· 1 error`), since the mood no longer shows them. The AI's project is the newest call's, else its running server's.
+- **Run Floppy in the dashboard** (`POST /api/floppy/start`, the sidebar's button): the maintainer wanted to start Floppy from the app. It does what `dx floppy` does (`runFloppy`: clears `floppy.off`, `settleFloppyStartup`, `startFloppy`), shared with the CLI, and shows only on Windows while Floppy isn't running (`GET /api/floppy/status`, polled with the page's other 5 s checks). No Startup shortcut while `DX_HOME` is set, from either.
 - **Not yet**: macOS and Linux (the window would need another toolkit), and a project list in the right-click menu.
 
 ### Languages (`core/src/tools/locale.ts`, the recorder, the Chaos page)
@@ -210,6 +223,14 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Migrations are guarded twice**: only against a database on this computer (the `DATABASE_URL`, `DB_HOST`… in `.env` files: localhost, a Docker service name, SQLite), and never a project script that also resets, drops, truncates, seeds or pushes the schema. Both show as "skipped" with the command to run by hand.
 - **The project's own migrate script first** (`db:migrate`, `migrate`, `migration:run`…), since it knows its setup; then the tool found from its files.
 - **Snapshots aren't prepared here**: they link or install their packages themselves.
+
+### An API spec on every project (`projectSpec`, `forgetSpec`, `specTurnedOff` in `openapi.ts`; `lookForServedSpec` in `labapi.ts`)
+
+- **The maintainer wanted to add a Swagger spec to a project and have the rest of dx use it.** It was already stored per project, but only from the Requests page, and only that page used it.
+- **Found by itself, so there's nothing to add in the usual case**: `projectSpec` returns the kept spec, else the most likely spec file in the project (`findSpecFiles`), saved with `found: true` and read fresh each time. While dx runs the dev server and there's still none, `GET /api/lab/spec` starts `lookForServedSpec`: the usual `SPEC_URL_PATHS` through dx's own route on this computer, in the background (the page polls), once per 10 minutes per project.
+- **Removing it is remembered**: `forgetSpec` writes a `dx-spec-off` marker in place of the spec, so the same file isn't picked up again; giving one again replaces it.
+- **Who uses it**: Overview's card (source, endpoints called this week, calls it doesn't have, endpoints answering differently), Activity's APIs view (the summary beside each call, "not in the spec" for non-GET or `/api/` calls it lacks, "doesn't match the spec" from `mapApi`'s issues, and the spec's uncalled endpoints), the tour (`ProjectTour.spec`, also in its Markdown), the API page and mocks, the graveyard, and the MCP `api_map` tool, which now uses `projectSpec` too.
+- **The API page leads with it**: the Requests page became API, its "Spec & mocks" tab first and the default.
 
 ### The Requests page (`core/src/tools/rules.ts`, `openapi.ts`, `yaml.ts`, `aicli.ts`; `web/src/apilab.ts`, `intercept.ts`, `labapi.ts`, `mocks.ts`)
 
@@ -344,6 +365,15 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Stopping finds the process again in a fresh list** and refuses dx itself, servers dx runs and system processes; the tree goes with it (`taskkill /T`, or children first elsewhere).
 - **Docker Clean up uses what `docker system df` counts as reclaimable**: `container prune`, `image prune -a` (images no container uses; a stopped container keeps its image), `builder prune -a`. The button frees what the page says. Volumes are never removed: they hold databases' data.
 - **Services are only shown, with commands to copy**: stopping one or changing when it starts needs admin rights, so dx doesn't do it.
+
+### Code: tabs and releases (`gitPage` in `web/public/app.js`, `gitReleaseState` and `gitCreateRelease` in `gitops.ts`, `runGh` in `git.ts`)
+
+- **Four tabs by intent, one main action each**: Save (Commit), Share (Push lives in the branch bar above, always visible), Release (New release), History (none). The branch bar and the operation banner stay above the tabs. The tab is remembered (`gitTab`); counts show on Save (changed files) and Share (commits to push). A merge or rebase that stops on conflicts switches to Save, where the files are. The commit's fly-into-history animation is skipped when History is hidden.
+- **Drag and drop stays, but nothing depends on it**: every commit action was already a button in the commit's detail; the hints now say so. Tags moved from the Share card to Release, with New tag, Push all and per-tag push and delete.
+- **Releases go through the GitHub CLI already on the computer** (`runGh`, shared with the PR proof: fixed arguments, `GH_PROMPT_DISABLED`, input on stdin), never a token of dx's own. The tag is created (checked as any new tag, refused if it starts with `-`) and pushed first, then `gh release create <tag> --verify-tag --title=<title> --notes-file -`, the title as one `--title=` argument so it can't read as a flag, the notes on stdin. Only on the button, after a confirm naming what will happen; it can't be undone from dx (journaled as such).
+- **The suggested version** (`nextVersion`): the last tag reachable from HEAD (`describe --tags`), a minor bump when a commit since starts with Add, New or `feat`, else a patch, keeping a leading v; `v0.1.0` with no tags; nothing when the last tag isn't a version. Notes start as the subjects since that tag (up to 200, no merges), editable.
+- **Why there's no release**, said on the tab: gh missing (with the install command), signed out (`gh auth login`), a remote that isn't GitHub, or no remote; tags still work in every case.
+- **Tests**: a stand-in `gh` shell script first on PATH checks the exact arguments and stdin (skipped on Windows, where `execFile` can't run a script as `gh`); the real gh is never run.
 
 ### Git page (`core/src/tools/git.ts` and `gitops.ts`, the Git page in `web/public/app.js`)
 

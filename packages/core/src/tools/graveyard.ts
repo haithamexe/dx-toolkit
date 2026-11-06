@@ -4,7 +4,7 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { readActivity, type ActivityEvent } from "./activity.js";
 import { loadMocks } from "./mocks.js";
-import { loadSpec, readSpec } from "./openapi.js";
+import { projectSpec, readSpec } from "./openapi.js";
 
 /**
  * The endpoint graveyard: what a project declares and nobody used while dx was watching. API
@@ -209,8 +209,8 @@ export function findGraveyard(dir: string, project = path.basename(dir), options
   const visits = events.filter((e) => e.type !== "request").map((e) => ({ path: pathOfEvent(e) ?? "", at: e.at }));
   const { endpoints, pages } = declaredRoutes(dir);
 
-  // The saved API spec's operations count as declared too.
-  const spec = loadSpec(dir);
+  // The project's API spec (given, or found by itself) counts as declared too.
+  const spec = projectSpec(dir);
   if (spec) {
     try {
       for (const ep of readSpec(spec.doc).endpoints) if (!endpoints.some((d) => d.method === ep.method && d.path === normalRoute(ep.path))) endpoints.push({ method: ep.method, path: normalRoute(ep.path), from: "the API spec" });

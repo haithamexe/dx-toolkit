@@ -303,7 +303,7 @@ export interface FloppySnapshot {
   dashboard: boolean;
   servers: FloppyServer[];
   error?: { project: string; dir: string; id: string; message: string; file?: string; line?: number };
-  ai?: { active: boolean; text?: string };
+  ai?: { active: boolean; text?: string; project?: string };
 }
 
 export interface FloppyTip {
@@ -312,11 +312,18 @@ export interface FloppyTip {
   icon: "info" | "error" | "ok" | "ai";
 }
 
+/** The line always shown beside Floppy: what's happening, and in which project. */
+export interface FloppyStatus {
+  text: string;
+  icon: "info" | "error" | "ok" | "ai" | "quiet";
+}
+
 export interface FloppyView {
   mood: FloppyMood;
   /** Play this once first (a server just came up), then show `mood`. */
   play?: FloppyMood;
   tip: FloppyTip;
+  status: FloppyStatus;
   /** Say it without being hovered: something just changed. */
   announce?: boolean;
   /** Keep saying it until it's clicked: an error. */
@@ -382,33 +389,53 @@ export function floppyView(snapshot: FloppySnapshot, memory: FloppyMemory, now =
     mem.lastError = errKey;
     const e = snapshot.error;
     const failed = snapshot.servers.find((s) => s.status === "failed");
+    const where = e?.file ? `${path.basename(e.file)}${e.line ? `:${e.line}` : ""}` : "";
     const tip: FloppyTip = e
-      ? { title: `${e.project} has an error`, text: `${firstLine(e.message)}${e.file ? ` · ${path.basename(e.file)}${e.line ? `:${e.line}` : ""}` : ""}. Click me to see it.`, icon: "error" }
+      ? { title: `${e.project} has an error`, text: `${firstLine(e.message)}${where ? ` · ${where}` : ""}. Click me to see it.`, icon: "error" }
       : { title: `${failed?.project} stopped`, text: "It didn't start. Click me to see why.", icon: "error" };
-    return done({ mood: "error", tip, announce: fresh, sticky: true });
+    const status: FloppyStatus = { text: e ? `${e.project}: error${where ? ` in ${where}` : ""}` : `${failed?.project} didn't start`, icon: "error" };
+    return done({ mood: "error", tip, status, announce: fresh, sticky: true });
   }
   if (!errKey) delete mem.lastError;
 
   if (starting.length) {
     const s = starting[0];
-    return done({ mood: "starting", tip: { title: `Starting ${s.project}`, text: s.step ? `${s.step}…` : "Getting it ready…", icon: "info" }, announce: changed("starting") });
+    const more = starting.length > 1 ? ` (+${starting.length - 1})` : "";
+    const status: FloppyStatus = { text: s.step ? `${s.project}: ${s.step}…${more}` : `Starting ${s.project}…${more}`, icon: "info" };
+    return done({ mood: "starting", tip: { title: `Starting ${s.project}`, text: s.step ? `${s.step}…` : "Getting it ready…", icon: "info" }, status, announce: changed("starting") });
   }
 
   const ai = !!snapshot.ai?.active;
   const base: FloppyMood = ai ? "ai" : mem.quietUntil ? "sleep" : now - mem.lastChange > FLOPPY_SLEEP_MS ? "sleep" : "idle";
+  const running = runningStatus(live);
   if (justReady.length) {
     const s = justReady[0];
-    return done({ mood: base, play: "good", tip: { title: `${s.project} is up`, text: s.url ? `It's at ${s.url.replace(/^https?:\/\//, "")}.` : "It's running.", icon: "ok" }, announce: true });
+    const at = s.url?.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    return done({ mood: base, play: "good", tip: { title: `${s.project} is up`, text: at ? `It's at ${at}.` : "It's running.", icon: "ok" }, status: { text: at ? `${s.project} is up at ${at}` : `${s.project} is up`, icon: "ok" }, announce: true });
   }
-  if (base === "ai") return done({ mood: "ai", tip: { title: "An AI agent is using dx", text: snapshot.ai?.text ? firstLine(snapshot.ai.text) : "Starting and checking your apps.", icon: "ai" }, announce: changed("ai") });
+  if (base === "ai") {
+    const text = snapshot.ai?.text ? firstLine(snapshot.ai.text) : undefined;
+    const status: FloppyStatus = { text: text ? `AI: ${text}` : `AI agent${snapshot.ai?.project ? ` on ${snapshot.ai.project}` : " at work"}`, icon: "ai" };
+    return done({ mood: "ai", tip: { title: "An AI agent is using dx", text: text ?? "Starting and checking your apps.", icon: "ai" }, status, announce: changed("ai") });
+  }
   if (base === "sleep") {
     const text = mem.quietUntil ? `Quiet until ${hhmm(mem.quietUntil)}. Errors still wake me.` : "Nothing for 30 minutes. Click me to open dx.";
-    return done({ mood: "sleep", tip: { title: "Zzz", text, icon: "info" } });
+    const status: FloppyStatus = { text: mem.quietUntil ? `Quiet until ${hhmm(mem.quietUntil)}${running ? ` · ${running.text}` : ""}` : (running?.text ?? "Asleep: nothing for 30 minutes"), icon: "quiet" };
+    return done({ mood: "sleep", tip: { title: "Zzz", text, icon: "info" }, status });
   }
-  if (!snapshot.dashboard) return done({ mood: "idle", tip: { title: "Floppy", text: "dx isn't running. Click me to start it.", icon: "info" } });
-  const running = live.filter((s) => s.status === "ready");
-  const text = running.length ? `${plural(running.length, "server")} running: ${running.slice(0, 3).map((s) => s.project).join(", ")}${running.length > 3 ? "…" : ""}.` : "Nothing running. Click me to open dx.";
-  return done({ mood: "idle", tip: { title: "Floppy", text, icon: "info" } });
+  if (!snapshot.dashboard) return done({ mood: "idle", tip: { title: "Floppy", text: "dx isn't running. Click me to start it.", icon: "info" }, status: { text: "dx isn't running", icon: "quiet" } });
+  const ready = live.filter((s) => s.status === "ready");
+  const text = ready.length ? `${plural(ready.length, "server")} running: ${ready.slice(0, 3).map((s) => s.project).join(", ")}${ready.length > 3 ? "…" : ""}.` : "Nothing running. Click me to open dx.";
+  return done({ mood: "idle", tip: { title: "Floppy", text, icon: "info" }, status: running ?? { text: "Nothing running", icon: "quiet" } });
+}
+
+/** "todo-app running", "todo-app, shop-website running", "3 servers running", with open errors counted. */
+function runningStatus(live: FloppyServer[]): FloppyStatus | undefined {
+  const ready = live.filter((s) => s.status === "ready");
+  if (!ready.length) return undefined;
+  const who = ready.length <= 2 ? ready.map((s) => s.project).join(", ") : plural(ready.length, "server");
+  const errors = ready.reduce((n, s) => n + s.errorCount, 0);
+  return { text: `${who} running${errors ? ` · ${plural(errors, "error")}` : ""}`, icon: errors ? "error" : "ok" };
 }
 
 function firstLine(s: string): string {

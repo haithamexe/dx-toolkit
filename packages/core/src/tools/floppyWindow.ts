@@ -127,7 +127,7 @@ $tail.HorizontalAlignment = 'Center'
 $tip.Content = $stack
 $tip.Cursor = [System.Windows.Input.Cursors]::Hand
 
-$colors = @{ info = '#2563EB'; error = '#D61F1F'; ok = '#16A34A'; ai = '#7C3AED' }
+$colors = @{ info = '#2563EB'; error = '#D61F1F'; ok = '#16A34A'; ai = '#7C3AED'; quiet = '#6B7280' }
 $tipState = @{ data = $null; sticky = $false; until = [DateTime]::MinValue; hover = $false }
 $away = @{ hidden = $false; n = 0 }
 function PlaceTip() {
@@ -147,6 +147,61 @@ function ShowTip($data) {
 }
 function HideTip() { if ($tip.IsVisible) { $tip.Hide() } }
 $tip.Add_SizeChanged({ PlaceTip })
+
+# ---------------------------------------------------------------- the line beside it
+# Always there: what's happening and in which project, so nobody has to read Floppy's face.
+$label = NewLayer
+$label.SizeToContent = 'WidthAndHeight'
+$label.Cursor = [System.Windows.Input.Cursors]::Hand
+$lBorder = New-Object System.Windows.Controls.Border
+$lBorder.Background = $yellow
+$lBorder.BorderBrush = [System.Windows.Media.Brushes]::Black
+$lBorder.BorderThickness = 1
+$lBorder.CornerRadius = 4
+$lBorder.Padding = '6,2,8,3'
+# Its own size, at the foot of its window: Windows can make a small window taller (or wider) than
+# what's in it, and a stretched box left the text at the top and the dot below it.
+$lBorder.VerticalAlignment = 'Bottom'
+$lBorder.HorizontalAlignment = 'Right'
+$lRow = New-Object System.Windows.Controls.StackPanel
+$lRow.Orientation = 'Horizontal'
+$lDot = New-Object System.Windows.Shapes.Ellipse
+$lDot.Width = 8
+$lDot.Height = 8
+# Level with the middle of the lowercase letters, which sit below the middle of the line.
+$lDot.Margin = '0,2,5,0'
+$lDot.VerticalAlignment = 'Center'
+$lText = New-Object System.Windows.Controls.TextBlock
+$lText.FontFamily = 'Segoe UI'
+$lText.FontSize = 12
+$lText.MaxWidth = 280
+$lText.TextTrimming = 'CharacterEllipsis'
+[void]$lRow.Children.Add($lDot)
+[void]$lRow.Children.Add($lText)
+$lBorder.Child = $lRow
+$label.Content = $lBorder
+$labelState = @{ data = $null }
+# Beside Floppy, on the side with room (left first: it usually sits near the clock), just above the taskbar.
+function PlaceLabel() {
+  if (-not $label.IsVisible) { return }
+  $x = $win.Left - $label.ActualWidth - 2
+  $lBorder.HorizontalAlignment = 'Right'
+  if ($x -lt $wa.Left + 4) { $x = $win.Left + $wDip + 2; $lBorder.HorizontalAlignment = 'Left' }
+  $label.Left = [Math]::Min([Math]::Max($wa.Left + 4, $x), $wa.Right - $label.ActualWidth - 4)
+  $label.Top = $wa.Bottom - $label.ActualHeight - 6
+}
+function ShowLabel() {
+  $d = $labelState.data
+  if ($null -eq $d -or $away.hidden) { return }
+  $lText.Text = [string]$d.text
+  $c = $colors[[string]$d.icon]
+  if (-not $c) { $c = $colors.info }
+  $lDot.Fill = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString($c))
+  if (-not $label.IsVisible) { $label.Show() }
+  $label.UpdateLayout()
+  PlaceLabel
+}
+$label.Add_SizeChanged({ PlaceLabel })
 
 # ---------------------------------------------------------------- frames
 $state = @{ mood = 'idle'; base = 'idle'; i = 0 }
@@ -197,6 +252,7 @@ $img.Add_MouseMove({
   if ($drag.moved) {
     $win.Left = Clamp ($drag.sl + $dx)
     if ($tip.IsVisible) { PlaceTip }
+    PlaceLabel
   }
 })
 $img.Add_MouseLeftButtonUp({
@@ -214,6 +270,10 @@ $img.Add_MouseLeftButtonUp({
   }
 })
 $tip.Add_MouseLeftButtonUp({ $tipState.sticky = $false; HideTip; Send @{ event = 'click' } })
+# The line beside it answers like Floppy: hover for the balloon, click to open dx.
+$label.Add_MouseEnter({ $tipState.hover = $true; ShowTip $tipState.data })
+$label.Add_MouseLeave({ $tipState.hover = $false; if (-not $tipState.sticky -and [DateTime]::Now -gt $tipState.until) { HideTip } })
+$label.Add_MouseLeftButtonUp({ $tipState.sticky = $false; HideTip; Send @{ event = 'click' } })
 
 # ---------------------------------------------------------------- right-click menu
 $menu = New-Object System.Windows.Controls.ContextMenu
@@ -249,6 +309,7 @@ function Handle($msg) {
         if (-not $drag.moved -and -not ($once[$state.mood] -and $state.mood -ne $then)) { SetMood $then }
       }
       if ($msg.tip) { $tipState.data = $msg.tip }
+      if ($msg.status) { $labelState.data = $msg.status; ShowLabel }
       $tipState.sticky = [bool]$msg.sticky
       if ($msg.announce -or $msg.sticky) {
         $tipState.until = [DateTime]::Now.AddSeconds(5)
@@ -286,11 +347,13 @@ $poll.Add_Tick({
     if ($busy -and -not $away.hidden) {
       $away.hidden = $true
       HideTip
+      if ($label.IsVisible) { $label.Hide() }
       $win.Hide()
     } elseif (-not $busy -and $away.hidden) {
       $away.hidden = $false
       $win.Show()
       $win.Topmost = $true
+      ShowLabel
     }
   }
   while ($pending.task.IsCompleted) {
@@ -302,7 +365,7 @@ $poll.Add_Tick({
   }
 })
 
-$win.Add_Closed({ $timer.Stop(); $poll.Stop(); try { $tip.Close() } catch { }; $app.Shutdown() })
+$win.Add_Closed({ $timer.Stop(); $poll.Stop(); try { $tip.Close() } catch { }; try { $label.Close() } catch { }; $app.Shutdown() })
 $shown = @{ done = $false }
 $win.Add_ContentRendered({
   if ($shown.done) { return }

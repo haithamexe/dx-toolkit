@@ -86,7 +86,9 @@ import {
   gitRenameBranch,
   gitDeleteBranch,
   gitCreateTag,
+  gitCreateRelease,
   gitDeleteTag,
+  gitReleaseState,
   gitMerge,
   gitRebase,
   gitContinue,
@@ -193,6 +195,7 @@ import {
 } from "./dev.js";
 import { aiLane, interruptAi } from "./ai.js";
 import { floppySnapshot } from "./floppysnap.js";
+import { readFloppyInfo, runFloppy } from "./floppy.js";
 import { noticeHead, requestCapture, sawHead, visualState } from "./visual.js";
 
 /** A request the page made, already parsed. */
@@ -730,6 +733,8 @@ const routes: Record<string, Handler> = {
   "POST /api/fix/dismiss": (req) => ({ ok: forgetFix(req.body.id) }),
   // Branches, tags, the shelf, and what can be undone.
   "GET /api/git/refs": (req) => gitCall(() => gitRefs(gitProject(req.query.get("dir")).dir)),
+  // The Release tab: GitHub's releases through gh (read only), the last tag, and notes for the next one.
+  "GET /api/git/releases": (req) => gitCall(() => gitReleaseState(gitProject(req.query.get("dir")).dir)),
   "GET /api/git/undo": (req) => gitCall(() => gitUndoList(gitProject(req.query.get("dir")).dir)),
   "GET /api/git/preview": (req) => gitCall(() => gitMergePreview(gitProject(req.query.get("dir")).dir, String(req.query.get("branch") ?? ""))),
   "GET /api/git/conflict": (req) => gitCall(() => gitConflict(gitProject(req.query.get("dir")).dir, String(req.query.get("path") ?? ""))),
@@ -853,6 +858,13 @@ const routes: Record<string, Handler> = {
   },
   // What Floppy shows: read-only, polled with X-DX-Quiet so it doesn't keep a background dashboard alive.
   "GET /api/floppy": () => floppySnapshot(),
+  // The sidebar's Run Floppy button: whether there's a Floppy to start here, and starting it as `dx floppy` does. Takes nothing.
+  "GET /api/floppy/status": () => ({ available: process.platform === "win32", running: !!readFloppyInfo() }),
+  "POST /api/floppy/start": async () => {
+    const r = await runFloppy();
+    recordRun("floppy", r.running, r.message, "web");
+    return r;
+  },
   // Interrupt: stops only dev servers dx runs that the AI agent started (of those named, when dirs is sent).
   "POST /api/ai/interrupt": (req) => {
     const raw = req.body.dirs;
@@ -1198,6 +1210,8 @@ const GIT_ACTIONS: Record<string, GitActionFn> = {
   "branch-delete": (d, b, s) => gitDeleteBranch(d, s(b.name)),
   "tag-create": (d, b, s) => gitCreateTag(d, s(b.name), { at: s(b.at) || undefined, message: s(b.message) }),
   "tag-delete": (d, b, s) => gitDeleteTag(d, s(b.name)),
+  // A GitHub release on the button: the tag is checked like any new tag, the notes go to gh on stdin.
+  "release-create": (d, b, s) => gitCreateRelease(d, { tag: s(b.tag), title: s(b.title), notes: s(b.notes), draft: b.draft === true, prerelease: b.prerelease === true }),
   merge: (d, b, s) => gitMerge(d, s(b.branch), MERGE_MODES.includes(s(b.mode) as MergeMode) ? (s(b.mode) as MergeMode) : "merge"),
   rebase: (d, b, s) => gitRebase(d, s(b.onto)),
   continue: (d) => gitContinue(d),

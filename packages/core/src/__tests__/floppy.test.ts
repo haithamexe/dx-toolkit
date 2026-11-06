@@ -94,29 +94,47 @@ test("the mood follows dx: starting, up (once), errors until you look, the AI, q
     return r.view;
   };
 
-  assert.match(step({ dashboard: false, servers: [] }).tip.text, /dx isn't running/);
-  let v = step({ dashboard: true, servers: [server("starting", { step: "Install packages" })] });
-  assert.deepEqual([v.mood, v.announce, v.tip.text], ["starting", true, "Install packages…"]);
-  assert.equal(step({ dashboard: true, servers: [server("starting")] }).announce, false, "said once");
+  // `status` is the line always beside Floppy: what's happening, and in which project.
+  let v = step({ dashboard: false, servers: [] });
+  assert.match(v.tip.text, /dx isn't running/);
+  assert.deepEqual(v.status, { text: "dx isn't running", icon: "quiet" });
+  v = step({ dashboard: true, servers: [server("starting", { step: "Install packages" })] });
+  assert.deepEqual([v.mood, v.announce, v.tip.text, v.status.text], ["starting", true, "Install packages…", "todo-app: Install packages…"]);
+  v = step({ dashboard: true, servers: [server("starting"), server("starting", { project: "api-gateway", dir: "/p/api-gateway" })] });
+  assert.equal(v.announce, false, "said once");
+  assert.equal(v.status.text, "Starting todo-app… (+1)");
   v = step({ dashboard: true, servers: [server("ready")] });
-  assert.deepEqual([v.play, v.mood, v.tip.title], ["good", "idle", "todo-app is up"]);
+  assert.deepEqual([v.play, v.mood, v.tip.title, v.status.text], ["good", "idle", "todo-app is up", "todo-app is up at todo-app.localhost"]);
   v = step({ dashboard: true, servers: [server("ready")] });
   assert.equal(v.play, undefined, "the moment plays once");
   assert.match(v.tip.text, /1 server running: todo-app/);
+  assert.deepEqual(v.status, { text: "todo-app running", icon: "ok" });
+  const three = ["shop-website", "api-gateway"].map((p) => server("ready", { project: p, dir: `/p/${p}` }));
+  assert.equal(step({ dashboard: true, servers: [server("ready"), three[0]] }).status.text, "todo-app, shop-website running");
+  assert.equal(step({ dashboard: true, servers: [server("ready"), ...three] }).status.text, "3 servers running");
+  assert.deepEqual(step({ dashboard: true, servers: [] }).status, { text: "Nothing running", icon: "quiet" });
 
   const broken: Snap = { dashboard: true, servers: [server("ready", { errorCount: 1 })], error: { project: "todo-app", dir: "/p/todo-app", id: "e1", message: "TypeError: cart is undefined\n    at x", file: "/p/todo-app/src/cart.ts", line: 42 } };
   v = step(broken);
   assert.deepEqual([v.mood, v.sticky, v.announce], ["error", true, true]);
   assert.equal(v.tip.text, "TypeError: cart is undefined · cart.ts:42. Click me to see it.");
+  assert.deepEqual(v.status, { text: "todo-app: error in cart.ts:42", icon: "error" });
   assert.equal(step(broken).announce, false);
   mem = { ...mem, seen: ["/p/todo-app|e1"] };
-  assert.equal(step(broken).mood, "idle", "looked at: no longer shown");
-  assert.equal(step({ dashboard: true, servers: [server("failed")] }).tip.title, "todo-app stopped");
+  v = step(broken);
+  assert.equal(v.mood, "idle", "looked at: no longer shown");
+  assert.deepEqual(v.status, { text: "todo-app running · 1 error", icon: "error" }, "but still counted beside it");
+  v = step({ dashboard: true, servers: [server("failed")] });
+  assert.deepEqual([v.tip.title, v.status.text], ["todo-app stopped", "todo-app didn't start"]);
 
   v = step({ dashboard: true, servers: [], ai: { active: true, text: "Checked /health on api-gateway: 200" } });
-  assert.deepEqual([v.mood, v.tip.text], ["ai", "Checked /health on api-gateway: 200"]);
+  assert.deepEqual([v.mood, v.tip.text, v.status.text], ["ai", "Checked /health on api-gateway: 200", "AI: Checked /health on api-gateway: 200"]);
+  assert.equal(step({ dashboard: true, servers: [], ai: { active: true, project: "api-gateway" } }).status.text, "AI agent on api-gateway");
 
   mem = { ...mem, quietUntil: t + 60 * 60_000 };
+  v = step({ dashboard: true, servers: [server("ready")] });
+  assert.equal(v.mood, "sleep");
+  assert.match(v.status.text, /^Quiet until .+ · todo-app running$/);
   assert.equal(step({ dashboard: true, servers: [] }).mood, "sleep");
   assert.equal(step({ ...broken, error: { ...broken.error!, id: "e2" } }).mood, "error", "errors wake it");
   mem = { ...mem, quietUntil: undefined };

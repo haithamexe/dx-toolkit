@@ -331,7 +331,7 @@ function mockBadge(m, dir) {
   if (!m?.on) return null;
   return h(
     "a",
-    { class: "badge badge-warn", href: "#/activity", onclick: () => dir && setPref("activitySel", `p:${dir}`), title: `Its API calls are answered by dx from recordings${m.strict ? "; others get a 404" : ""}. Turn it off on the Activity page or with dx mock off.` },
+    { class: "badge badge-warn", href: "#/activity", onclick: () => dir && setPref("project", dir), title: `Its API calls are answered by dx from recordings${m.strict ? "; others get a 404" : ""}. Turn it off on the Activity page or with dx mock off.` },
     `Mocked: ${plural(m.enabled, "endpoint")}`,
   );
 }
@@ -938,50 +938,82 @@ function terminalSelect({ withLabel = false } = {}) {
 
 // ------------------------------------------------------------------ router
 
+/**
+ * Pages by what you came to do. Project pages work on the project chosen at the top of the sidebar;
+ * "Everything" pages are about all projects, this computer, or looking back. A page with `under`
+ * is a tab of another (its nav item lights up), and route ids are the old ones, so links keep working.
+ */
 const pages = [
-  { id: "projects", label: "Projects", icon: "projects", render: projectsPage },
-  { id: "tour", label: "Tour", icon: "map", render: tourPage },
-  { id: "new", label: "New project", icon: "new", render: newProjectPage },
-  { id: "ports", label: "Ports", icon: "ports", render: portsPage },
-  { id: "machine", label: "Machine", icon: "machine", render: machinePage },
-  { id: "git", label: "Git", icon: "git", render: gitPage },
-  { id: "activity", label: "Activity", icon: "activity", render: activityPage },
-  { id: "requests", label: "Requests", icon: "requests", render: requestsPage },
-  { id: "chaos", label: "Chaos", icon: "chaos", render: chaosPage },
-  { id: "data", label: "Data", icon: "data", render: dataPage },
-  { id: "env", label: "Env & secrets", icon: "key", render: envPage },
-  { id: "journal", label: "Journal", icon: "journal", render: journalPage },
-  { id: "summary", label: "Summary", icon: "summary", render: summaryPage },
-  { id: "cleanup", label: "Cleanup", icon: "cleanup", render: cleanupPage },
-  { id: "deps", label: "Dependencies", icon: "deps", render: depsPage },
-  { id: "health", label: "Health & settings", icon: "health", render: healthPage },
+  { id: "overview", label: "Overview", icon: "map", render: overviewPage, project: true },
+  { id: "git", label: "Code", title: "Code", icon: "git", render: gitPage, project: true },
+  { id: "requests", label: "API", icon: "requests", render: requestsPage, project: true },
+  { id: "activity", label: "Activity", icon: "activity", render: activityPage, project: true },
+  { id: "data", label: "Data", icon: "data", render: dataPage, project: true },
+  { id: "chaos", label: "Break it", icon: "chaos", render: chaosPage, project: true },
+  { id: "env", label: "Env & secrets", icon: "key", render: envPage, project: true },
+  { id: "projects", label: "All projects", icon: "projects", render: projectsPage, group: "everything" },
+  { id: "machine", label: "This computer", icon: "machine", render: machinePage, group: "everything", tab: "Machine" },
+  { id: "summary", label: "Look back", icon: "summary", render: summaryPage, group: "everything", tab: "Summary" },
+  { id: "ports", label: "Ports", icon: "ports", render: portsPage, under: "machine" },
+  { id: "cleanup", label: "Cleanup", icon: "cleanup", render: cleanupPage, under: "machine" },
+  { id: "deps", label: "Dependencies", icon: "deps", render: depsPage, under: "machine" },
+  { id: "journal", label: "Journal", icon: "journal", render: journalPage, under: "summary" },
+  { id: "new", label: "New project", icon: "new", render: newProjectPage, under: "projects", noTabs: true },
+  { id: "health", label: "Settings", icon: "health", render: healthPage, group: "settings" },
 ];
+// Old addresses that moved into another page.
+const MOVED = { tour: "overview" };
 
 let leaveCurrent = () => {};
 
 function renderNav(active) {
+  const page = pages.find((p) => p.id === active);
+  const lit = page?.under ?? active;
+  const link = (p) =>
+    h(
+      "a",
+      { href: `#/${p.id}`, "aria-current": p.id === lit ? "page" : undefined, dataset: { page: p.id } },
+      icon(p.icon),
+      h("span", { class: "nav-label" }, p.label),
+      p.id === "projects" ? h("span", { class: "count", id: "running-count", hidden: true }) : null,
+    );
+  const hasProject = !!currentProject();
   nav.replaceChildren(
-    ...pages.map((p) =>
-      h(
-        "a",
-        { href: `#/${p.id}`, "aria-current": p.id === active ? "page" : undefined, dataset: { page: p.id } },
-        icon(p.icon),
-        h("span", { class: "nav-label" }, p.label),
-        p.id === "projects" ? h("span", { class: "count", id: "running-count", hidden: true }) : null,
-      ),
-    ),
+    h("div", { class: "nav-group", role: "group", "aria-label": projectName() ? `Project ${projectName()}` : "Project" }, pages.filter((p) => p.project && hasProject).map(link)),
+    h("div", { class: "nav-group", role: "group", "aria-labelledby": "nav-everything" }, h("span", { class: "nav-heading", id: "nav-everything" }, "Everything"), pages.filter((p) => p.group === "everything").map(link)),
+    h("div", { class: "nav-group nav-settings" }, pages.filter((p) => p.group === "settings").map(link)),
+  );
+}
+
+/** The tabs of a page that has others under it (This computer, Look back), as links. */
+function pageTabs(page) {
+  const parent = pages.find((p) => p.id === (page.under ?? page.id));
+  const members = pages.filter((p) => (p.id === parent.id || p.under === parent.id) && !p.noTabs);
+  if (members.length < 2 || page.noTabs) return null;
+  return h(
+    "nav",
+    { class: "segmented page-tabs", "aria-label": parent.label },
+    members.map((p) => h("a", { href: `#/${p.id}`, "aria-current": p.id === page.id ? "page" : undefined }, p.tab ?? p.label)),
   );
 }
 
 function route() {
-  const id = location.hash.replace(/^#\/?/, "").split("?")[0] || "projects";
-  const page = pages.find((p) => p.id === id) ?? pages[0];
+  const raw = location.hash.replace(/^#\/?/, "").split("?")[0];
+  if (MOVED[raw]) return void location.replace(`#/${MOVED[raw]}${location.hash.includes("?") ? `?${location.hash.split("?")[1]}` : ""}`);
+  // A link that names a project (#/git?dir=…) makes it the project you're working on.
+  const linked = new URLSearchParams(location.hash.split("?")[1] ?? "").get("dir");
+  let page = pages.find((p) => p.id === (raw || (currentProject() ? "overview" : "projects"))) ?? pages.find((p) => p.id === "projects");
+  if (linked && page.project && projectList.some((p) => sameDir(p.dir, linked))) setPref("project", projectList.find((p) => sameDir(p.dir, linked)).dir);
+  if (page.project && !currentProject()) page = pages.find((p) => p.id === "projects");
   leaveCurrent();
   leaveCurrent = () => {};
   renderNav(page.id);
-  document.title = `${page.label} · dx`;
+  drawSwitcher();
+  document.title = `${page.project && projectName() ? `${page.title ?? page.label} · ${projectName()}` : page.label} · dx`;
   const container = h("div", { class: "page" });
   main.replaceChildren(container);
+  const tabs = pageTabs(page);
+  if (tabs) container.append(tabs);
   const cleanup = page.render(container);
   if (typeof cleanup === "function") leaveCurrent = cleanup;
   main.focus({ preventScroll: true });
@@ -991,9 +1023,81 @@ function route() {
   void updateRunningCount();
 }
 
+// ------------------------------------------------------------------ the project you're working on
+
+/**
+ * One project for every project page, chosen at the top of the sidebar and remembered. Before,
+ * each page had its own picker and its own memory, so Git and Chaos could be on different projects.
+ */
+let projectList = [];
+let projectServers = [];
+const sameDir = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+function currentProject() {
+  const dir = pref("project", "") || ["gitDir", "labDir", "chaosDir", "dataDir", "tourDir"].map((k) => pref(k, "")).find(Boolean) || "";
+  if (!projectList.length) return dir;
+  // The listed spelling, so pages comparing folders exactly agree with it.
+  return projectList.find((p) => sameDir(p.dir, dir))?.dir ?? projectList[0]?.dir ?? "";
+}
+function projectName() {
+  return projectList.find((p) => sameDir(p.dir, currentProject()))?.name ?? "";
+}
+/** For pages that fall back to another project when theirs is gone: keep the switcher in step. */
+function useProject(dir) {
+  if (dir && !sameDir(dir, pref("project", ""))) setPref("project", dir);
+  drawSwitcher();
+}
+
+const projectSwitch = document.getElementById("project-switch");
+const projectPicker = h("select", {
+  id: "project-picker",
+  "aria-label": "Project",
+  onchange: (e) => {
+    setPref("project", e.target.value);
+    const page = pages.find((p) => p.id === location.hash.replace(/^#\/?/, "").split("?")[0]);
+    // On a project page you stay on it, now for this project; elsewhere you go to its overview.
+    if (page?.project) location.hash.includes("?") ? (location.hash = `#/${page.id}`) : route();
+    else location.hash = "#/overview";
+  },
+});
+const projectState = h("span", { class: "project-switch-state", "aria-live": "polite" });
+projectSwitch.append(h("label", { class: "project-switch-label", for: "project-picker" }, "Project"), projectPicker, projectState);
+
+let switcherSig = "";
+function drawSwitcher() {
+  const dir = currentProject();
+  // The options are rebuilt only when the list or the choice changed, so a poll never closes the open list.
+  const sig = JSON.stringify([dir, projectList.map((p) => [p.dir, p.name])]);
+  if (sig !== switcherSig) {
+    switcherSig = sig;
+    projectPicker.replaceChildren(
+      ...(projectList.length ? projectList.map((p) => h("option", { value: p.dir, selected: sameDir(p.dir, dir) }, p.name)) : [h("option", { value: "" }, "No projects yet")]),
+    );
+    projectPicker.disabled = !projectList.length;
+  }
+  const s = projectServers.find((x) => sameDir(x.dir, dir) && x.status !== "stopped");
+  const errors = s?.errorCount ?? 0;
+  projectState.className = `project-switch-state ${s ? (errors || s.status === "failed" ? "status-fail" : s.status === "starting" ? "status-warn" : "status-ok") : ""}`;
+  projectState.replaceChildren(
+    !dir ? "" : !s ? "Not running" : s.status === "failed" ? "Didn't start" : s.status === "starting" ? "Starting…" : `Running${errors ? ` · ${plural(errors, "error")}` : ""}`,
+  );
+}
+
+async function loadProjectList() {
+  try {
+    projectList = await api("/api/projects");
+  } catch {
+    return;
+  }
+  const dir = currentProject();
+  if (dir && !sameDir(dir, pref("project", ""))) setPref("project", dir);
+  drawSwitcher();
+}
+
 async function updateRunningCount() {
   try {
     const servers = await api("/api/dev");
+    projectServers = servers;
+    drawSwitcher();
     const running = servers.filter((s) => s.status === "starting" || s.status === "ready").length;
     const el = document.getElementById("running-count");
     if (el) {
@@ -1008,7 +1112,75 @@ async function updateRunningCount() {
 
 // ------------------------------------------------------------------ Projects
 
-function projectsPage(root) {
+/**
+ * A project's home: the project you chose in the sidebar, run and watched as on All projects (its
+ * dev server's output, errors, checks and notes), then its tour.
+ */
+function overviewPage(root) {
+  const dir = currentProject();
+  const leave = projectsPage(root, { only: dir });
+  const spec = specCard(dir);
+  root.append(spec.el, tourSection(dir));
+  return () => (leave(), spec.stop());
+}
+
+/**
+ * The project's API spec on its Overview: the one it was given or dx found by itself (a spec file,
+ * or the running app's usual address), what uses it, and where to give or change it.
+ */
+function specCard(dir) {
+  const title = h("h2", { class: "section-title", id: "spec-title" }, "API spec");
+  const el = h("section", { class: "section", "aria-labelledby": "spec-title" }, title, loadingView("Looking for its API spec…"));
+  let timer = 0;
+  let stopped = false;
+  const toApiPage = (label, kind) => h("a", { class: `btn btn-sm${kind ? ` btn-${kind}` : ""}`, href: "#/requests", onclick: () => setPref("labTab", "api") }, label);
+  async function load() {
+    let r;
+    try {
+      r = await api(`/api/lab/spec?dir=${encodeURIComponent(dir)}`);
+    } catch (err) {
+      return fill(el, title, h("div", { class: "card card-pad" }, errorView(err, load)));
+    }
+    if (stopped) return;
+    const s = r.spec;
+    const called = s ? s.map.endpoints.filter((e) => e.calls).length : 0;
+    const mismatched = s ? s.map.endpoints.filter((e) => e.issues.length).length : 0;
+    fill(
+      el,
+      h("div", { class: "section-head" }, title, s ? toApiPage("Open on the API page") : null),
+      h(
+        "div",
+        { class: "card card-pad section" },
+        s
+          ? [
+              h("p", null, h("strong", null, `${s.title}${s.version ? ` ${s.version}` : ""}`), h("span", { class: "dim" }, ` · ${s.kind}, ${specSourceText(s.source)}${s.found ? ", found by dx" : ""}`)),
+              h(
+                "div",
+                { class: "machine-badges" },
+                h("span", { class: "badge" }, plural(s.map.endpoints.length, "endpoint")),
+                h("span", { class: "badge" }, `${called} called this week`),
+                s.map.undocumented.length ? h("span", { class: "badge badge-warn" }, `${plural(s.map.undocumented.length, "call")} it doesn't have`) : null,
+                mismatched ? h("span", { class: "badge badge-warn" }, `${plural(mismatched, "endpoint")} answering differently`) : null,
+              ),
+              h("p", { class: "dim" }, "Activity names each call by its endpoint, the tour lists it, mocks and Break it's unused routes start from it, and AI agents get it through dx."),
+            ]
+          : r.looking
+            ? loadingView("Looking for its API spec on the running app…")
+            : r.removed
+              ? [h("p", null, "You removed its API spec, so dx doesn't look for one by itself."), h("div", { class: "toolbar" }, toApiPage("Give it one on the API page", "primary"))]
+              : [
+                  h("p", null, "No API spec yet. dx looks for openapi or swagger files in the project, and at /openapi.json and the other usual addresses while dx runs it."),
+                  h("div", { class: "toolbar" }, toApiPage("Add one: a file, an address or pasted", "primary")),
+                ],
+      ),
+    );
+    if (r.looking) timer = setTimeout(load, 4000);
+  }
+  void load();
+  return { el, stop: () => ((stopped = true), clearTimeout(timer)) };
+}
+
+function projectsPage(root, { only } = {}) {
   let projects = [];
   let query = "";
   let focusDir = new URLSearchParams(location.hash.split("?")[1] ?? "").get("dir") ?? "";
@@ -1045,24 +1217,27 @@ function projectsPage(root) {
 
   append(
     root,
-    pageHead(
-      "Projects",
-      "Open a project, run its dev server here, or open it in the browser.",
-      search,
-      terminalPicker,
-      h("a", { class: "btn", href: "#/new" }, icon("new"), "New project"),
-      btn("Refresh", () => (load(), loadUnsaved()), { iconName: "refresh", kind: "ghost" }),
-    ),
-    devSection,
-    unsavedSection,
-    listSection,
+    only
+      ? pageHead(projectName() || "Overview", "Run it, watch its output and errors, and what it is.", terminalPicker, btn("Refresh", () => (load(), loadUnsaved()), { iconName: "refresh", kind: "ghost" }))
+      : pageHead(
+          "All projects",
+          "Every project in your projects folders: run one here, or open it.",
+          search,
+          terminalPicker,
+          h("a", { class: "btn", href: "#/new" }, icon("new"), "New project"),
+          btn("Refresh", () => (load(), loadUnsaved()), { iconName: "refresh", kind: "ghost" }),
+        ),
+    // On Overview the project comes first and its server under it; on All projects the running ones lead.
+    ...(only ? [listSection, devSection, unsavedSection] : [devSection, unsavedSection, listSection]),
   );
+  if (only) listSection.setAttribute("aria-label", "This project");
 
   async function load() {
     try {
       // Snapshots (a project as it was at a commit) show here while their dev server is around.
       const [list, snaps] = await Promise.all([api("/api/projects"), api("/api/snapshots").catch(() => [])]);
       projects = [...list, ...snaps.filter((s) => s.dev).map((s) => ({ name: s.name, dir: s.dir, snapshot: s, dev: s.dev }))];
+      if (only) projects = projects.filter((p) => sameDir(p.dir, only));
       renderList();
       renderDev();
       // Linked from the AI lane (#/projects?dir=…): bring that server's card into view, once.
@@ -1091,7 +1266,7 @@ function projectsPage(root) {
   }
 
   function renderUnsaved() {
-    const list = unsaved ?? [];
+    const list = (unsaved ?? []).filter((w) => !only || sameDir(w.dir, only));
     unsavedSection.hidden = list.length === 0;
     if (!list.length) return;
     const risky = list.filter((w) => w.unpushed || w.noRemote).length;
@@ -1102,7 +1277,7 @@ function projectsPage(root) {
         "summary",
         { class: "unsaved-summary" },
         icon("warn"),
-        h("strong", null, `${plural(list.length, "project")} with work that isn't backed up`),
+        h("strong", null, only ? "Work that isn't backed up" : `${plural(list.length, "project")} with work that isn't backed up`),
         risky ? h("span", { class: "badge badge-danger" }, `${risky} not pushed anywhere`) : null,
       ),
       h("ul", { class: "unsaved-list" }, list.map(unsavedRow)),
@@ -1157,7 +1332,9 @@ function projectsPage(root) {
         h(
           "div",
           { class: "project-name" },
-          p.name,
+          // On All projects a name opens that project's overview, making it the project you work on.
+          // On Overview the page title already names it.
+          only ? null : p.snapshot ? p.name : h("a", { href: "#/overview", class: "project-link", onclick: () => setPref("project", p.dir), title: `Open ${p.name}'s overview` }, p.name),
           h("span", { class: "badge" }, kind),
           p.stack ? h("span", { class: "badge badge-accent", title: `Found from ${STACK_SOURCES[p.stack.source] ?? "the project"}` }, `Stack: ${p.stack.services.map((s) => s.name).join(", ")}`) : null,
           running ? statusBadge(p.dev.status) : null,
@@ -1833,7 +2010,7 @@ function projectsPage(root) {
   let timer = setTimeout(pollLogs, 1000);
   // Also picks up dev servers an AI agent starts while the page is open.
   const statusTimer = setInterval(async () => {
-    const servers = await api("/api/dev").catch(() => null);
+    const servers = (await api("/api/dev").catch(() => null))?.filter((s) => !only || sameDir(s.dir, only)) ?? null;
     const differs = (s) => {
       const dev = projects.find((p) => p.dir === s.dir)?.dev;
       return dev?.status !== s.status || dev?.errorCount !== s.errorCount || dev?.startedBy !== s.startedBy;
@@ -2103,16 +2280,17 @@ function portsPage(root) {
 let labDraft = null;
 function openLab(dir, tab, draft) {
   labDraft = { dir, tab, draft };
-  setPref("labDir", dir);
+  setPref("project", dir);
   setPref("labTab", tab);
   location.hash = "#/requests";
 }
 
+// The spec comes first: it's what the API page is about. Then what changes requests in flight.
 const LAB_TABS = [
-  ["intercept", "Intercept"],
+  ["api", "Spec & mocks"],
   ["repeater", "Repeater"],
   ["rules", "Rules"],
-  ["api", "API & mocks"],
+  ["intercept", "Intercept"],
 ];
 const LAB_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const MOCK_SOURCES = { recorded: "recorded", cache: "cached", spec: "spec example", generated: "made up", ai: "AI" };
@@ -2162,32 +2340,13 @@ function parseJsonEditsText(text) {
 
 // ------------------------------------------------------------------ Tour
 
-function tourPage(root) {
-  let dir = pref("tourDir", "");
-  let projects = [];
-  const holder = h("div", { class: "section" });
-  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("tourDir", dir), load()) });
-  append(
-    root,
-    pageHead(
-      "Tour",
-      "A map of a project for someone new to it, or you in six months: what it is, how to run it, its pages and the calls each one makes, which file answers them, its data, its settings and where the work happens.",
-      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
-    ),
-    holder,
-  );
-
-  (async () => {
-    try {
-      projects = await api("/api/projects");
-    } catch (err) {
-      fill(holder, errorView(err));
-      return;
-    }
-    if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
-    fill(projectSelect, ...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
-    load();
-  })();
+/**
+ * The project's tour, on its Overview: a map for someone new to it, or you in six months. What it
+ * is, how to run it, its pages and the calls each one makes, which file answers them, its data,
+ * its settings and where the work happens.
+ */
+function tourSection(dir) {
+  const holder = h("section", { class: "section", "aria-labelledby": "tour-title" });
 
   // A file of the project, with its line when there is one, as a button that opens it in the editor.
   const openFile = (file, line) =>
@@ -2205,22 +2364,22 @@ function tourPage(root) {
   const section = (title, ...children) => h("div", { class: "card card-pad section" }, h("strong", null, title), ...children);
 
   async function load() {
-    if (!dir) return fill(holder, h("div", { class: "card" }, stateView("No projects", "dx looks for projects in your projects folders.")));
-    fill(holder, loadingView("Reading the project and its history…"));
+    const title = h("h2", { class: "section-title", id: "tour-title" }, "About this project");
+    fill(holder, title, loadingView("Reading the project and its history…"));
     let d;
     try {
       d = await api(`/api/tour?dir=${encodeURIComponent(dir)}`);
     } catch (err) {
-      return fill(holder, errorView(err, load));
+      return fill(holder, title, errorView(err, load));
     }
     const t = d.tour;
     const pagesUsed = t.pages.filter((p) => p.visits || p.calls.length || p.file);
     fill(
       holder,
+      h("div", { class: "section-head" }, title, h("div", { class: "toolbar" }, copyButton(d.markdown, "Copy the tour as Markdown"))),
       h(
         "div",
         { class: "card card-pad section" },
-        h("div", { class: "section-head" }, h("strong", null, t.project), h("div", { class: "toolbar" }, copyButton(d.markdown, "Copy as Markdown"))),
         t.about ? h("p", null, t.about) : h("p", { class: "dim" }, "No README paragraph says what the project is yet: the first paragraph after a README's title shows here."),
         t.tech.length ? h("div", { class: "machine-badges" }, t.tech.map((x) => h("span", { class: "badge" }, x))) : null,
         h("p", { class: "dim" }, t.history.events ? `The pages and calls below come from ${plural(t.history.events, "recorded event")} of the last ${plural(t.history.days, "day")}, and the routes in the code.` : "Nothing is recorded for it yet, so pages and calls come from the code alone. Use the app through dx and they fill in."),
@@ -2293,27 +2452,40 @@ function tourPage(root) {
             ),
           )
         : null,
+      t.spec
+        ? section(
+            `API spec: ${t.spec.title}${t.spec.version ? ` ${t.spec.version}` : ""}`,
+            h("p", { class: "dim" }, `${t.spec.kind}, ${specSourceText(t.spec.source)}. ${plural(t.spec.endpoints.length, "endpoint")}, ${t.spec.endpoints.filter((e) => e.calls).length} called in the history${t.spec.undocumented ? `, and ${plural(t.spec.undocumented, "call")} it doesn't have` : ""}.`),
+            h(
+              "div",
+              { class: "table-wrap" },
+              h(
+                "table",
+                { class: "table" },
+                h("thead", null, h("tr", null, h("th", { scope: "col" }, "Endpoint"), h("th", { scope: "col" }, "What"), h("th", { scope: "col", class: "num" }, "Calls"))),
+                h("tbody", null, t.spec.endpoints.slice(0, 150).map((e) => h("tr", null, h("td", { class: "mono" }, `${e.method} ${e.path}`), h("td", null, e.summary ?? h("span", { class: "dim" }, "—")), h("td", { class: "num" }, String(e.calls))))),
+              ),
+            ),
+          )
+        : null,
       t.data ? section("Data", h("p", { class: "dim" }, `From ${t.data.file}.`), h("div", { class: "machine-badges" }, t.data.tables.map((x) => h("span", { class: "badge" }, `${x.name}${x.links.length ? ` → ${x.links.join(", ")}` : ""}`)))) : null,
       t.folders.some((f) => f.what) ? section("Where things are", h("ul", { class: "tour-list" }, t.folders.filter((f) => f.what).map((f) => h("li", null, h("code", { class: "mono" }, `${f.path}/`), ` ${f.what} `, h("span", { class: "dim" }, `(${plural(f.files, "file")})`))))) : null,
       t.busy.length ? section("Where the work happens", h("p", { class: "dim" }, "Changed most in the last 90 days."), h("ul", { class: "tour-list" }, t.busy.map((b) => h("li", null, openFile(b.file), h("span", { class: "dim" }, ` ${plural(b.commits, "commit")}`))))) : null,
     );
   }
+  void load();
+  return holder;
 }
 
 // ------------------------------------------------------------------ Data
 
 function dataPage(root) {
-  let dir = pref("dataDir", "");
+  let dir = currentProject();
   let projects = [];
   const holder = h("div", { class: "section" });
-  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("dataDir", dir), load()) });
   append(
     root,
-    pageHead(
-      "Data",
-      "Believable, connected data for your development database in one click, edge cases included, and named scenes to switch between in seconds.",
-      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
-    ),
+    pageHead("Data", "Believable, connected data for your development database in one click, edge cases included, and named scenes to switch between in seconds."),
     holder,
   );
 
@@ -2324,8 +2496,7 @@ function dataPage(root) {
       fill(holder, errorView(err));
       return;
     }
-    if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
-    fill(projectSelect, ...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    if (!projects.some((p) => p.dir === dir)) useProject((dir = projects[0]?.dir ?? ""));
     load();
   })();
 
@@ -2610,7 +2781,7 @@ const CLOCK_PRESETS = [
 ];
 
 function chaosPage(root) {
-  let dir = pref("chaosDir", "");
+  let dir = currentProject();
   let tab = pref("chaosTab", "chaos");
   if (!CHAOS_TABS.some(([t]) => t === tab)) tab = "chaos";
   let projects = [];
@@ -2619,16 +2790,14 @@ function chaosPage(root) {
   let timer = 0;
 
   const holder = h("div", { class: "section" });
-  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("chaosDir", dir), load()) });
   // Each tab reads the settings and runs again: a run started from the CLI or another tab shows up.
   const tabs = segmented("Tool", CHAOS_TABS, tab, (v) => ((tab = v), setPref("chaosTab", v), load()));
   tabs.classList.add("segmented-wrap");
   append(
     root,
     pageHead(
-      "Chaos",
+      "Break it",
       "Break your app on purpose, before your users do: failing calls, a careless user, another clock, a weak phone, a missing setting. Then see what changed between versions, and what nobody uses.",
-      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
     ),
     h("div", { class: "card card-pad toolbar" }, tabs),
     holder,
@@ -2641,8 +2810,7 @@ function chaosPage(root) {
       fill(holder, errorView(err));
       return;
     }
-    if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
-    fill(projectSelect, ...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    if (!projects.some((p) => p.dir === dir)) useProject((dir = projects[0]?.dir ?? ""));
     load();
   })();
 
@@ -3314,26 +3482,25 @@ function chaosPage(root) {
 }
 
 function requestsPage(root) {
-  let dir = pref("labDir", "");
-  let tab = pref("labTab", "repeater");
-  if (!LAB_TABS.some(([t]) => t === tab)) tab = "repeater";
+  let dir = currentProject();
+  let tab = pref("labTab", "api");
+  if (!LAB_TABS.some(([t]) => t === tab)) tab = "api";
   let projects = [];
   let stopped = false;
   let pollTimer = 0;
   const draft = labDraft;
   labDraft = null;
-  if (draft) ((dir = draft.dir), (tab = draft.tab));
+  // Sent here from another page (Send to the Repeater): that request's project becomes the one you work on.
+  if (draft) ((dir = draft.dir), (tab = draft.tab), useProject(dir));
 
   const holder = h("div", { class: "section" });
-  const projectSelect = h("select", { onchange: (e) => ((dir = e.target.value), setPref("labDir", dir), draw()) });
   const tabs = segmented("Tool", LAB_TABS, tab, (v) => ((tab = v), setPref("labTab", v), draw()));
   tabs.classList.add("segmented-wrap");
   append(
     root,
     pageHead(
-      "Requests",
-      "Change what your app sends and gets back: hold requests to edit them, resend them, set rules, and give the app an API spec and a mock server of its own.",
-      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
+      "API",
+      "Its API spec, and what your app sends and gets back: hold requests to edit them, resend them, set rules, and give the app a mock server of its own.",
     ),
     h("div", { class: "card card-pad toolbar" }, tabs),
     holder,
@@ -3346,8 +3513,7 @@ function requestsPage(root) {
       holder.replaceChildren(errorView(err));
       return;
     }
-    if (!projects.some((p) => p.dir === dir)) dir = projects[0]?.dir ?? "";
-    projectSelect.replaceChildren(...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
+    if (!projects.some((p) => p.dir === dir)) useProject((dir = projects[0]?.dir ?? ""));
     draw();
   })();
 
@@ -4594,36 +4760,25 @@ function journalPage(root) {
 // ------------------------------------------------------------------ Env
 
 function envPage(root) {
+  // The project chosen at the top: its .env files, opened.
+  const dir = currentProject();
   let list = [];
-  let query = "";
-  let show = pref("envShow", "problems");
-  const open = new Set(); // project dirs opened
+  const query = "";
+  const show = "all";
+  const open = new Set([dir]); // project dirs opened
   const deep = new Map(); // dir -> full audit with the key scan
-  const holder = h("div", { class: "section" }, h("div", { class: "card" }, loadingView("Looking for .env files in your projects…")));
+  const holder = h("div", { class: "section" }, h("div", { class: "card" }, loadingView("Looking for its .env files…")));
   const summary = h("div");
-  const search = h("input", {
-    class: "input",
-    type: "search",
-    placeholder: "Search projects",
-    "aria-label": "Search projects",
-    oninput: (e) => ((query = e.target.value.trim().toLowerCase()), render()),
-  });
   append(
     root,
-    pageHead(
-      "Env & secrets",
-      "Every project's .env files, and whether git could leak them. Keys, certificates and .env files never belong in git (OWASP).",
-      search,
-      segmented("Show", [["problems", "Needs attention"], ["all", "All projects"]], show, (v) => ((show = v), setPref("envShow", v), render())),
-      btn("Check again", () => load(), { iconName: "refresh", kind: "ghost" }),
-    ),
+    pageHead("Env & secrets", "Its .env files, and whether git could leak them. Keys, certificates and .env files never belong in git (OWASP).", btn("Check again", () => load(), { iconName: "refresh", kind: "ghost" })),
     summary,
     holder,
   );
 
   async function load() {
     try {
-      list = await api("/api/env/all");
+      list = [await api(`/api/env/project?dir=${encodeURIComponent(dir)}`)];
       deep.clear();
       render();
     } catch (err) {
@@ -4643,8 +4798,8 @@ function envPage(root) {
     const files = list.reduce((n, p) => n + p.files.filter((f) => !f.example).length, 0);
     summary.replaceChildren(
       withProblems.length
-        ? h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, `${plural(withProblems.length, "project")} of ${list.length} could leak secrets or are missing .gitignore rules. ${plural(files, ".env file")} in all.`))
-        : h("div", { class: "note", role: "status" }, icon("check"), h("p", null, `No problems in ${plural(list.length, "project")}: every .env file is kept out of git. ${plural(files, ".env file")} in all.`)),
+        ? h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, `It could leak secrets, or is missing .gitignore rules. ${plural(files, ".env file")}.`))
+        : h("div", { class: "note", role: "status" }, icon("check"), h("p", null, files ? `No problems: every .env file is kept out of git. ${plural(files, ".env file")}.` : "No .env files, and nothing that could leak.")),
     );
     const shown = list.filter((p) => (show === "all" || p.problems > 0 || open.has(p.dir)) && (!query || p.name.toLowerCase().includes(query)));
     if (!shown.length) {
@@ -5136,9 +5291,16 @@ function snapshotRow(s, { onChange }) {
   );
 }
 
+const GIT_TABS = [
+  ["save", "Save"],
+  ["share", "Share"],
+  ["release", "Release"],
+  ["history", "History"],
+];
+
 function gitPage(root) {
-  const fromLink = new URLSearchParams(location.hash.split("?")[1] ?? "").get("dir");
-  let dir = fromLink || pref("gitDir", "");
+  // A link's ?dir= has already made its project the one you work on (route()).
+  let dir = currentProject();
   let projects = [];
   let status = null;
   let statusSig = "";
@@ -5171,15 +5333,6 @@ function gitPage(root) {
 
   const live = h("p", { class: "visually-hidden", "aria-live": "polite" });
   const say = (text) => (live.textContent = text);
-  const projectSelect = h("select", {
-    disabled: true,
-    onchange: (e) => {
-      drafts.set(dir, message.value);
-      dir = e.target.value;
-      setPref("gitDir", dir);
-      load();
-    },
-  });
   const headInfo = h("div", { class: "card card-pad git-branch", "aria-live": "polite" }, loadingView("Reading the repository…"));
   const opBanner = h("div", { class: "git-op", "aria-live": "polite" });
   const filePanel = h("div", { class: "git-file-panel" });
@@ -5341,48 +5494,75 @@ function gitPage(root) {
     dockZone("Go back here", "left", "Move the branch back to this commit, keeping uncommitted changes", (d) => goBackTo(d.hash, d.subject)),
   );
 
+  // One tab per thing you came to do, each with one main action: Commit, Push, New release; History has none.
+  let gitTab = pref("gitTab", "save");
+  if (!GIT_TABS.some(([k]) => k === gitTab)) gitTab = "save";
+  const gitTabs = segmented("What to do", GIT_TABS, gitTab, (v) => ((gitTab = v), setPref("gitTab", v), showGitTab()));
+  gitTabs.classList.add("git-tabs");
+  const releaseBody = h("div", { class: "git-release", "aria-live": "polite" });
+  const sectionHead = (id, title, hint) => h("div", { class: "section-head" }, h("h2", { class: "section-title", id }, title), hint ? h("p", { class: "dim git-section-hint" }, hint) : null);
+  const panels = {
+    save: h("div", { class: "git-panel", role: "region", "aria-label": "Save" }, board, filePanel),
+    share: h(
+      "div",
+      { class: "git-panel", role: "region", "aria-label": "Share" },
+      h("section", { class: "section", "aria-labelledby": "git-branches-title" }, sectionHead("git-branches-title", "Branches", "Switch, merge or rebase from a branch's ⋯ menu, or drag a branch onto another."), branchesBody),
+      h("section", { class: "section", "aria-labelledby": "git-proof-title" }, sectionHead("git-proof-title", "Proof for the pull request", "What was tested on this branch, written for reviewers."), proofBody),
+    ),
+    release: h("div", { class: "git-panel", role: "region", "aria-label": "Release" }, releaseBody),
+    history: h(
+      "div",
+      { class: "git-panel", role: "region", "aria-label": "History" },
+      rebasePanel,
+      h("section", { class: "section", "aria-labelledby": "git-history-title" }, sectionHead("git-history-title", "History", "Open a commit for what you can do with it: run it, revert it, branch or tag it, go back to it."), visualBar, history),
+      h(
+        "section",
+        { class: "section", "aria-labelledby": "git-run-title" },
+        sectionHead("git-run-title", "Run any commit", "The app as it was, beside yours, in its own folder: your working copy isn't touched."),
+        h("div", { class: "card commit-search" }, h("label", { class: "commit-search-field" }, icon("log"), commitSearch), snapBody, searchResults),
+      ),
+      h(
+        "details",
+        { class: "card git-undo", open: pref("gitUndoOpen", "0") === "1" || undefined, ontoggle: (e) => setPref("gitUndoOpen", e.target.open ? "1" : "0") },
+        h("summary", { class: "git-undo-head" }, icon("refresh"), h("span", null, "Undo history"), h("span", { class: "dim" }, "what you did here, and git's own record")),
+        undoBody,
+      ),
+    ),
+  };
+
   append(
     root,
     pageHead(
-      "Git",
-      "Drag your changes into the next commit, branches onto branches to merge them, and commits onto actions. Every step can be undone.",
-      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Project"), projectSelect),
+      "Code",
+      "Save your changes, share them, release them, or go back. Every step can be undone.",
       btn("Refresh", () => load({ keep: true }), { iconName: "refresh", kind: "ghost" }),
     ),
     headInfo,
     opBanner,
-    board,
-    filePanel,
-    h("section", { class: "section", "aria-labelledby": "git-branches-title" }, h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-branches-title" }, "Branches"), h("p", { class: "dim git-section-hint" }, "Drag a branch onto the one you're on to merge it; drag yours onto another to rebase.")), branchesBody),
-    rebasePanel,
-    h(
-      "section",
-      { class: "section", "aria-labelledby": "git-proof-title" },
-      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-proof-title" }, "Proof for the pull request"), h("p", { class: "dim git-section-hint" }, "What was tested on this branch, written for reviewers.")),
-      proofBody,
-    ),
-    h(
-      "section",
-      { class: "section", "aria-labelledby": "git-run-title" },
-      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-run-title" }, "Run any commit"), h("p", { class: "dim git-section-hint" }, "The app as it was, beside yours, in its own folder: your working copy isn't touched.")),
-      h("div", { class: "card commit-search" }, h("label", { class: "commit-search-field" }, icon("log"), commitSearch), snapBody, searchResults),
-    ),
-    h(
-      "section",
-      { class: "section", "aria-labelledby": "git-history-title" },
-      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "git-history-title" }, "History"), h("p", { class: "dim git-section-hint" }, "Drag a commit to revert, copy, branch, tag, edit or go back to it.")),
-      visualBar,
-      history,
-    ),
-    h(
-      "details",
-      { class: "card git-undo", open: pref("gitUndoOpen", "0") === "1" || undefined, ontoggle: (e) => setPref("gitUndoOpen", e.target.open ? "1" : "0") },
-      h("summary", { class: "git-undo-head" }, icon("refresh"), h("span", null, "Undo history"), h("span", { class: "dim" }, "what you did here, and git's own record")),
-      undoBody,
-    ),
+    gitTabs,
+    panels.save,
+    panels.share,
+    panels.release,
+    panels.history,
     dock,
     live,
   );
+  showGitTab();
+
+  /** Shows the chosen tab's panel; the branch bar above stays, so Push and Pull are always there. */
+  function showGitTab() {
+    for (const [key, el] of Object.entries(panels)) el.hidden = key !== gitTab;
+    if (gitTab === "release" && dir && status) void loadRelease();
+  }
+
+  /** A count on a tab's button (changes to save, commits to push), or none. */
+  function tabCount(key, n) {
+    const b = gitTabs.querySelector(`[data-v="${key}"]`);
+    if (!b) return;
+    const label = GIT_TABS.find(([k]) => k === key)[1];
+    b.replaceChildren(label, ...(n ? [h("span", { class: "tab-count" }, String(n))] : []));
+    b.setAttribute("aria-label", n ? `${label}, ${n}` : label);
+  }
 
   /** replaceChildren, skipping null and taking arrays, the way h() does. */
   function put(el, ...children) {
@@ -5564,6 +5744,7 @@ function gitPage(root) {
     markSelected();
     updateCommitBox();
     slideFromPlaces(board, places);
+    tabCount("save", status?.files.length ?? 0);
   }
 
   function updateCommitBox() {
@@ -5658,6 +5839,7 @@ function gitPage(root) {
   function renderHead() {
     const s = status;
     const branch = refs?.branches.find((b) => b.current);
+    tabCount("share", s.ahead ?? 0);
     const sync = !s.upstream
       ? h("span", { class: "dim" }, s.hasCommits ? "Not pushed anywhere yet." : "No commits yet.")
       : s.ahead || s.behind
@@ -5699,10 +5881,15 @@ function gitPage(root) {
     if (yes) act("push", { force: true });
   }
 
+  let lastOp = null;
   function renderOperation() {
     const op = status?.operation;
+    const started = op && op !== lastOp;
+    lastOp = op ?? null;
     if (!op) return opBanner.replaceChildren();
     const conflicts = status.files.filter((f) => f.conflicted).length;
+    // Conflicts are resolved on Save, where the files are: go there when a merge or rebase stops.
+    if (started && conflicts && gitTab !== "save") gitTabs.querySelector('[data-v="save"]')?.click();
     const what = { merge: "A merge", rebase: "A rebase", "cherry-pick": "A cherry-pick", revert: "A revert" }[op];
     put(
       opBanner,
@@ -6092,7 +6279,7 @@ function gitPage(root) {
 
   /** The committed cards fly into the top of the history, where the new commit appears. */
   async function flyToHistory(cards) {
-    if (reducedMotion.matches || !cards.length) return;
+    if (reducedMotion.matches || !cards.length || panels.history.hidden) return;
     const target = (historyList?.firstElementChild ?? history).getBoundingClientRect();
     await Promise.all(
       cards.slice(0, 30).map((c, i) => {
@@ -6223,35 +6410,139 @@ function gitPage(root) {
         : refs.remotes.length
           ? null
           : h("p", { class: "dim" }, "No remote: this repository lives only on this computer."),
+    ];
+  }
+
+  // ---------------------------------------------------------------- release: tags and GitHub releases
+
+  let release = null; // GET /api/git/releases: gh's state, GitHub's releases, the last tag, notes to start from
+  let releaseSeq = 0;
+  let releaseDraft = null; // what you typed, kept while you switch tabs: { tag, title, notes, draft, prerelease }
+  const releaseNote = h("div");
+  const releaseForm = h("form", { class: "card card-pad git-release-form", "aria-labelledby": "rel-title-h" });
+  const releaseList = h("div", { class: "card card-pad git-release-side" });
+  const tagsCard = h("div", { class: "card card-pad git-release-side" });
+  put(releaseBody, releaseNote, h("div", { class: "git-release-grid" }, releaseForm, h("div", { class: "git-release-col" }, releaseList, tagsCard)));
+
+  async function loadRelease() {
+    const seq = ++releaseSeq;
+    const forDir = dir;
+    if (!release) put(releaseForm, loadingView("Reading the tags and GitHub's releases…"));
+    let r;
+    try {
+      r = await api(`/api/git/releases?dir=${encodeURIComponent(dir)}`);
+    } catch (err) {
+      if (seq === releaseSeq) put(releaseForm, errorView(err, loadRelease));
+      return;
+    }
+    if (seq !== releaseSeq || forDir !== dir || stopped) return;
+    const fresh = !release || release.lastTag !== r.lastTag || release.commits !== r.commits;
+    release = r;
+    // A new tag or new commits start the form again from the new version and notes.
+    if (fresh) releaseDraft = null;
+    renderRelease();
+  }
+
+  function renderRelease() {
+    if (!release) return;
+    const r = release;
+    const d = (releaseDraft ??= { tag: r.suggested, title: [projectName(), r.suggested.replace(/^v/, "")].filter(Boolean).join(" "), notes: r.notes, draft: false, prerelease: false });
+    put(
+      releaseNote,
+      r.gh === "ok"
+        ? null
+        : h("div", { class: `note ${r.gh === "not-github" ? "" : "note-warn"}`, role: "status" }, icon(r.gh === "not-github" ? "info" : "warn"), h("p", null, r.why, r.gh === "missing" ? [" Install it with ", h("code", { class: "mono" }, "winget install GitHub.cli"), " (or brew install gh), then ", h("code", { class: "mono" }, "gh auth login"), "."] : null)),
+    );
+    const headShort = refs?.head?.slice(0, 7) ?? "";
+    const tagInput = h("input", { class: "input mono", id: "rel-tag", value: d.tag, placeholder: "v1.2.0", autocomplete: "off", spellcheck: "false", required: true, oninput: (e) => ((d.tag = e.target.value), tagHint()) });
+    const hint = h("span", { class: "field-hint" });
+    const tagHint = () => {
+      const t = d.tag.trim();
+      hint.textContent = !t ? "The version, as a tag." : refs?.tags.some((x) => x.name === t) ? `Uses the tag ${t} you already have.` : `Tags the commit you're on (${headShort}) as ${t}.`;
+    };
+    tagHint();
+    const titleInput = h("input", { class: "input", id: "rel-title", value: d.title, autocomplete: "off", oninput: (e) => (d.title = e.target.value) });
+    const notesInput = h("textarea", { class: "input mono git-release-notes", id: "rel-notes", rows: 9, spellcheck: "false", oninput: (e) => (d.notes = e.target.value) }, d.notes);
+    const draftBox = h("input", { type: "checkbox", id: "rel-draft", checked: d.draft, onchange: (e) => (d.draft = e.target.checked) });
+    const preBox = h("input", { type: "checkbox", id: "rel-pre", checked: d.prerelease, onchange: (e) => (d.prerelease = e.target.checked) });
+    const create = btn("Create release on GitHub", null, { kind: "primary", iconName: "tag", type: "submit", disabled: r.gh !== "ok" });
+    put(
+      releaseForm,
+      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "rel-title-h" }, "New release"), h("p", { class: "dim git-section-hint" }, !r.lastTag ? "No tags yet: this is the first." : r.commits ? `${plural(r.commits, "commit")} since ${r.lastTag}.` : `Nothing new since ${r.lastTag}.`)),
+      h("div", { class: "form-grid" }, h("label", { class: "field", for: "rel-tag" }, h("span", { class: "field-label" }, "Version tag"), tagInput, hint), h("label", { class: "field", for: "rel-title" }, h("span", { class: "field-label" }, "Title"), titleInput)),
+      h("label", { class: "field", for: "rel-notes" }, h("span", { class: "field-label" }, r.lastTag ? `Notes, from the commits since ${r.lastTag}` : "Notes, from the commits so far"), notesInput, h("span", { class: "field-hint" }, "Markdown, shown on the release's GitHub page. Edit freely.")),
+      h("div", { class: "toolbar" }, h("label", { class: "check", for: "rel-draft" }, draftBox, "Draft (only you see it on GitHub)"), h("label", { class: "check", for: "rel-pre" }, preBox, "Pre-release")),
+      h("div", { class: "form-actions" }, create, btn("Only tag it", (ev) => tagOnly(ev.currentTarget), { kind: "ghost", iconName: "tag", title: "Make the tag here without a GitHub release; push it from Tags" })),
+    );
+    releaseForm.onsubmit = (e) => (e.preventDefault(), createRelease(create));
+    put(
+      releaseList,
+      h("div", { class: "git-subtitle-row" }, h("h3", { class: "git-subtitle" }, "Releases"), r.gh === "ok" ? h("span", { class: "dim" }, "on GitHub") : null),
+      r.releases.length
+        ? h("ul", { class: "git-release-items" }, r.releases.map((x) => h("li", null, h("span", null, h("strong", null, x.name), " ", h("span", { class: "mono dim" }, x.tag)), h("span", { class: "git-release-meta" }, x.draft ? h("span", { class: "badge badge-warn" }, "draft") : null, x.prerelease ? h("span", { class: "badge" }, "pre-release") : null, x.latest ? h("span", { class: "badge badge-ok" }, "latest") : null, x.at ? h("span", { class: "dim" }, relativeTime(x.at)) : null))))
+        : h("p", { class: "dim" }, r.gh === "ok" ? "None on GitHub yet." : "Releases show here once dx can reach GitHub through gh."),
+    );
+    renderTags();
+  }
+
+  function renderTags() {
+    if (!refs) return;
+    const tags = refs.tags;
+    put(
+      tagsCard,
+      h(
+        "div",
+        { class: "git-subtitle-row" },
+        h("h3", { class: "git-subtitle" }, "Tags"),
+        h("div", { class: "toolbar" }, refs.remotes.length && tags.length ? btn("Push all", (ev) => act("push-tags", { all: true }, { button: ev.currentTarget, busyText: "Pushing…" }), { small: true, kind: "ghost", iconName: "right", title: "Push every tag to the remote" }) : null, btn("New tag…", () => newTagAt(refs.head), { small: true, kind: "ghost", iconName: "new", disabled: !refs.head })),
+      ),
       tags.length
         ? h(
-            "div",
-            { class: "git-chips-group" },
-            h(
-              "div",
-              { class: "git-subtitle-row" },
-              h("h3", { class: "git-subtitle" }, "Tags"),
-              refs.remotes.length ? btn("Push all tags", (ev) => act("push-tags", { all: true }, { button: ev.currentTarget, busyText: "Pushing…" }), { small: true, kind: "ghost", iconName: "right" }) : null,
-            ),
-            h(
-              "ul",
-              { class: "git-chips" },
-              tags.slice(0, 60).map((t) => {
-                const li = h(
-                  "li",
-                  { class: "git-chip", draggable: refs.remotes.length ? "true" : undefined, title: refs.remotes.length ? "Drag onto the push box to push this tag" : undefined },
-                  h("span", { class: "graph-ref graph-ref-tag", title: t.annotated ? "Annotated tag" : "Tag" }, icon("tag"), t.name),
-                  refs.remotes.length ? btn(null, (ev) => act("push-tags", { name: t.name }, { button: ev.currentTarget, busyText: "…" }), { small: true, kind: "ghost", iconName: "right", name: `Push the tag ${t.name}`, title: "Push the tag" }) : null,
-                  btn(null, () => deleteTag(t.name), { small: true, kind: "ghost", iconName: "x", name: `Delete the tag ${t.name}`, title: "Delete the tag (here only)" }),
-                );
-                li.addEventListener("dragstart", (e) => startDrag(e, { kind: "tag", name: t.name }, t.name));
-                li.addEventListener("dragend", endDrag);
-                return li;
-              }),
+            "ul",
+            { class: "git-chips" },
+            // Pushed by its own button: the push box it could be dragged onto is on the Share tab.
+            tags.slice(0, 60).map((t) =>
+              h(
+                "li",
+                { class: "git-chip" },
+                h("span", { class: "graph-ref graph-ref-tag", title: t.annotated ? "Annotated tag" : "Tag" }, icon("tag"), t.name),
+                refs.remotes.length ? btn(null, (ev) => act("push-tags", { name: t.name }, { button: ev.currentTarget, busyText: "…" }), { small: true, kind: "ghost", iconName: "right", name: `Push the tag ${t.name}`, title: "Push the tag" }) : null,
+                btn(null, () => deleteTag(t.name), { small: true, kind: "ghost", iconName: "x", name: `Delete the tag ${t.name}`, title: "Delete the tag (here only)" }),
+              ),
             ),
           )
-        : null,
-    ];
+        : h("p", { class: "dim" }, "No tags yet. A release makes one, or New tag marks the commit you're on."),
+    );
+  }
+
+  async function createRelease(button) {
+    const d = releaseDraft;
+    const tag = d.tag.trim();
+    if (!tag) return toast("Give the release a version tag, like v1.2.0.", "error");
+    const exists = refs?.tags.some((t) => t.name === tag);
+    const remote = refs?.remotes.includes("origin") ? "origin" : (refs?.remotes[0] ?? "the remote");
+    const yes = await confirmDialog({
+      title: `Release ${tag} on GitHub?`,
+      text: [`${exists ? `Pushes the tag ${tag}` : `Tags the commit you're on (${refs?.head?.slice(0, 7) ?? ""}) as ${tag}, pushes the tag`} to ${remote}, and creates the release ${d.draft ? "as a draft only you can see" : "on the repository's GitHub page"}.`, "Change or delete it on GitHub afterwards; it can't be undone from here."],
+      confirm: d.draft ? "Create draft" : "Publish release",
+      danger: false,
+    });
+    if (!yes) return;
+    const r = await act("release-create", { tag, title: d.title, notes: d.notes, draft: d.draft, prerelease: d.prerelease }, { button, busyText: "Releasing…" });
+    if (r?.ok) {
+      releaseDraft = null;
+      release = null;
+      if (r.url) toast(h("span", null, "On GitHub: ", h("a", { href: r.url, target: "_blank", rel: "noreferrer" }, r.url)));
+      void loadRelease();
+    }
+  }
+
+  async function tagOnly(button) {
+    const d = releaseDraft;
+    const tag = d.tag.trim();
+    if (!tag) return toast("Give the tag a name, like v1.2.0.", "error");
+    const r = await act("tag-create", { name: tag, at: refs?.head, message: d.title || tag }, { button, busyText: "Tagging…" });
+    if (r?.ok) void loadRelease();
   }
 
   async function switchTo(name, button) {
@@ -7086,6 +7377,7 @@ function gitPage(root) {
       refs = r;
       renderBranches();
       renderShelf();
+      if (!panels.release.hidden) renderTags();
       if (status) renderHead();
     } catch (err) {
       put(branchesBody, h("div", { class: "card card-pad" }, errorView(err, () => loadRefs())));
@@ -7142,6 +7434,7 @@ function gitPage(root) {
     }
     await Promise.all([loadStatus(), loadGraph(), loadRefs(), loadUndo(), loadSnapshots(), loadVisual()]);
     if (keep && openFile) refreshOpenFile();
+    if (gitTab === "release") void loadRelease();
   }
 
   (async () => {
@@ -7151,16 +7444,15 @@ function gitPage(root) {
       headInfo.replaceChildren(errorView(err, () => route()));
       return;
     }
-    if (!projects.length) {
+    const mine = projects.find((p) => sameDir(p.dir, dir));
+    if (!mine) {
       board.hidden = true;
-      headInfo.replaceChildren(stateView("No git projects", "dx didn't find a project with git in your projects folders.", h("a", { class: "btn", href: "#/projects" }, "Go to projects")));
-      for (const el of root.querySelectorAll("section.section, details.git-undo")) el.hidden = true;
+      headInfo.replaceChildren(stateView(`${projectName() || "This project"} doesn't use git`, "Its folder has no git repository, so there's nothing to commit, share or release. Run git init in it, or pick another project at the top.", h("a", { class: "btn", href: "#/overview" }, "Go to its overview")));
+      gitTabs.hidden = true;
+      for (const el of Object.values(panels)) el.hidden = true;
       return;
     }
-    if (!projects.some((p) => p.dir.toLowerCase() === dir.toLowerCase())) dir = [...projects].sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0))[0].dir;
-    else dir = projects.find((p) => p.dir.toLowerCase() === dir.toLowerCase()).dir;
-    projectSelect.replaceChildren(...projects.map((p) => h("option", { value: p.dir, selected: p.dir === dir }, p.name)));
-    projectSelect.disabled = false;
+    dir = mine.dir;
     renderBoard({ animate: false });
     load();
   })();
@@ -7194,6 +7486,19 @@ function isProblemEvent(e) {
   return e.level === "error";
 }
 
+/** A spec path template as a pattern: a {param} (and so a folded :id) fits one segment. */
+function specPathRe(template) {
+  const parts = template.split("/").map((s) => (/^\{[^}]+\}$/.test(s) ? "[^/]+" : s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  return new RegExp(`^${parts.join("/")}/?$`, "i");
+}
+
+/** Where a project's API spec came from, in words. */
+function specSourceText(source) {
+  if (source?.startsWith("file:")) return `from ${source.slice(5)}`;
+  if (source?.startsWith("url:")) return `from the running app at ${source.slice(4)}`;
+  return "pasted in";
+}
+
 const ACTIVITY_VIEWS = [
   ["sessions", "Sessions"],
   ["apis", "APIs"],
@@ -7216,6 +7521,8 @@ function siteUrl(host) {
 function activityPage(root) {
   // What's shown: everything (""), one project ("p:<dir>") or a recorded site of its own ("s:<host>").
   let sel = pref("activitySel", null) ?? (pref("activityDir", "") ? `p:${pref("activityDir", "")}` : "");
+  // It opens on the project chosen at the top; everything, or a recorded site of its own, is a choice made here.
+  if (currentProject()) sel = `p:${currentProject()}`;
   // Linked from the AI lane: #/activity?dir=…&who=ai
   const linked = new URLSearchParams(location.hash.split("?")[1] ?? "");
   if (linked.get("dir")) sel = `p:${linked.get("dir")}`;
@@ -7248,6 +7555,7 @@ function activityPage(root) {
 
   // Mock mode for the project shown: its set (without whole bodies) and the endpoint being edited.
   let mocks = null;
+  let apiSpec = null; // { dir, spec }: the project's API spec, for the APIs view
   let mockEdit = null; // { id, el }
   const mockHolder = h("div", { class: "mock-holder" });
 
@@ -7447,6 +7755,8 @@ function activityPage(root) {
     aiSig = "";
     setPref("activitySel", sel);
     setPref("activityDir", dir);
+    // Picking a project here makes it the one you work on, as the switcher at the top would.
+    if (dir) useProject(dir);
     if (moment !== null) leaveMoment();
     mockEdit = null;
     renderNav();
@@ -7933,6 +8243,28 @@ function activityPage(root) {
   }
 
   /** Every API with its calls: how often, how fast, how many failed; open one for each call's payload and response. */
+  /** The project's API spec (given, or found by dx), so the APIs view can name each call by its endpoint. */
+  async function loadApiSpec() {
+    const d = dir;
+    if (!d) return void (apiSpec = null);
+    if (apiSpec?.dir === d) return;
+    try {
+      const r = await api(`/api/lab/spec?dir=${encodeURIComponent(d)}`);
+      if (d !== dir || stopped) return;
+      apiSpec = { dir: d, spec: r.spec ? { title: r.spec.title, version: r.spec.version, endpoints: r.spec.map.endpoints.map((e) => ({ ...e, re: specPathRe(e.path) })) } : null };
+    } catch {
+      apiSpec = { dir: d, spec: null };
+    }
+    if (view === "apis") render();
+  }
+
+  /** A spec endpoint for a call, by method and path (a folded :id fits any {param}); the exact path wins. */
+  function specEndpointFor(endpoint) {
+    const [method, p] = endpoint.split(" ");
+    const fits = (apiSpec?.spec?.endpoints ?? []).filter((e) => e.method === method && e.re.test(p.split("?")[0]));
+    return fits.sort((a, b) => b.path.split("/").filter((s) => !s.includes("{")).length - a.path.split("/").filter((s) => !s.includes("{")).length)[0];
+  }
+
   function renderApis(many) {
     const groups = new Map();
     for (const e of shown) {
@@ -7942,9 +8274,30 @@ function activityPage(root) {
       const g = groups.get(key) ?? groups.set(key, { key, endpoint: endpointOf(e), project: e.project, service: e.service, env: e.env, calls: [] }).get(key);
       g.calls.push(e);
     }
-    if (!groups.size) return holder.replaceChildren(stateView("No API calls", "Requests your app makes to its API show up here, each endpoint with its calls, payloads, responses and times."));
+    // With one project shown and a spec for it, each call is named by its endpoint, and the spec's others are listed.
+    const spec = !many && dir && apiSpec?.dir === dir ? apiSpec.spec : null;
+    const ownCall = (g) => !g.env || g.env === "local";
+    const matched = new Set();
+    for (const g of groups.values()) {
+      g.spec = spec && ownCall(g) ? specEndpointFor(g.endpoint) : undefined;
+      if (g.spec) matched.add(`${g.spec.method} ${g.spec.path}`);
+    }
+    const uncalled = spec ? spec.endpoints.filter((e) => !matched.has(`${e.method} ${e.path}`)) : [];
+    const specNote = spec
+      ? h(
+          "details",
+          { class: "card card-pad api-spec-note" },
+          h("summary", null, h("strong", null, `API spec: ${spec.title}${spec.version ? ` ${spec.version}` : ""}`), h("span", { class: "dim" }, ` · ${plural(spec.endpoints.length, "endpoint")}, ${uncalled.length ? `${uncalled.length} not called here` : "all called here"}`)),
+          uncalled.length
+            ? h("ul", { class: "tour-list" }, uncalled.slice(0, 100).map((e) => h("li", null, h("span", { class: "badge mono" }, e.method), " ", h("span", { class: "mono" }, e.path), e.summary ? h("span", { class: "dim" }, ` ${e.summary}`) : null)))
+            : h("p", { class: "dim" }, "Every endpoint in the spec was called in this time."),
+          h("p", { class: "dim" }, "From the project's API spec, given or found by dx: ", h("a", { href: "#/requests", onclick: () => setPref("labTab", "api") }, "see it on the API page"), "."),
+        )
+      : null;
+    if (!groups.size) return holder.replaceChildren(...[specNote, stateView("No API calls", "Requests your app makes to its API show up here, each endpoint with its calls, payloads, responses and times.")].filter(Boolean));
     const list = [...groups.values()].sort((a, b) => Date.parse(b.calls[b.calls.length - 1].at) - Date.parse(a.calls[a.calls.length - 1].at));
     holder.replaceChildren(
+      ...(specNote ? [specNote] : []),
       h(
         "div",
         { class: "api-list" },
@@ -7971,6 +8324,9 @@ function activityPage(root) {
                 { class: "api-endpoint" },
                 h("span", { class: "badge mono" }, method),
                 h("span", { class: "mono" }, rest.join(" ")),
+                g.spec?.summary ? h("span", { class: "dim api-spec-summary", title: `${g.spec.method} ${g.spec.path} in the API spec` }, g.spec.summary) : null,
+                spec && ownCall(g) && !g.spec && (method !== "GET" || /\/api\/|graphql|trpc/.test(rest.join(" "))) ? h("span", { class: "badge badge-warn", title: "The project's API spec has no endpoint for this call" }, "not in the spec") : null,
+                g.spec?.issues?.length ? h("span", { class: "badge badge-warn", title: g.spec.issues.join("\n") }, "doesn't match the spec") : null,
                 many ? h("span", { class: "badge" }, g.project) : null,
                 envBadge(g.env),
                 g.service ? h("span", { class: "badge" }, g.service) : null,
@@ -8451,6 +8807,7 @@ function activityPage(root) {
 
   async function loadMocks() {
     const d = dir;
+    void loadApiSpec();
     if (!d) {
       mocks = null;
       return renderMocks();
@@ -9670,6 +10027,11 @@ function healthPage(root) {
       .then((u) => activityUse.replaceChildren(u.bytes ? `Now ${formatBytes(u.bytes)}${u.projects.length > 1 ? ` across ${plural(u.projects.length, "project")}` : ""}. The oldest days go first when it's full.` : "Nothing recorded yet."))
       .catch(() => {});
     const save = btn("Save settings", null, { kind: "primary", type: "submit" });
+    const theme = h(
+      "select",
+      { id: "cfg-theme", onchange: () => (applyTheme(theme.value), setPref("theme", theme.value)) },
+      [["auto", "Same as the system"], ["light", "Light"], ["dark", "Dark"]].map(([value, label]) => h("option", { value, selected: value === pref("theme", "auto") }, label)),
+    );
 
     const settings = h(
       "form",
@@ -9703,6 +10065,7 @@ function healthPage(root) {
         h("label", { class: "field", for: "cfg-github" }, h("span", { class: "field-label" }, "GitHub username"), github, h("span", { class: "field-hint" }, "For pull requests in the summary")),
         h("label", { class: "field", for: "cfg-depth" }, h("span", { class: "field-label" }, "Look for projects"), depth),
         terminalSelect({ withLabel: true }),
+        h("label", { class: "field", for: "cfg-theme" }, h("span", { class: "field-label" }, "Theme"), theme, h("span", { class: "field-hint" }, "Changes at once, for this computer")),
         h(
           "div",
           { class: "field" },
@@ -9985,16 +10348,40 @@ aiLaneEl.addEventListener("keydown", (e) => {
 
 // ------------------------------------------------------------------ start
 
-const themeSelect = document.getElementById("theme");
+// The theme is chosen on Health & settings; it's this computer's, so it lives with the page's other preferences.
 function applyTheme(value) {
   if (value === "auto") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", value);
 }
-themeSelect.value = pref("theme", "auto");
-applyTheme(themeSelect.value);
-themeSelect.addEventListener("change", () => (applyTheme(themeSelect.value), setPref("theme", themeSelect.value)));
+applyTheme(pref("theme", "auto"));
+
+// Run Floppy: beside the sidebar's Floppy, shown on Windows while Floppy isn't on the desktop.
+const runFloppyButton = btn("Run Floppy", (ev) => runFloppy(ev.currentTarget), { iconName: "play", small: true, title: "Put Floppy on your desktop: it shows what dx is doing" });
+runFloppyButton.hidden = true;
+document.getElementById("floppy-row").append(runFloppyButton);
+let floppyPoll;
+async function updateFloppyButton() {
+  try {
+    const s = await api("/api/floppy/status");
+    runFloppyButton.hidden = !s.available || s.running;
+    // No Floppy on this system (macOS, Linux): nothing to keep asking about.
+    if (!s.available) clearInterval(floppyPoll);
+  } catch {
+    // the dashboard went away; the page says so elsewhere
+  }
+}
+async function runFloppy(button) {
+  const r = await busy(button, "Starting…", () => api("/api/floppy/start", { method: "POST" }));
+  if (!r) return;
+  toast(r.message, r.running ? "ok" : "error");
+  void updateFloppyButton();
+}
 
 window.addEventListener("hashchange", route);
 setInterval(updateRunningCount, 5000);
-route();
+// New folders and clones show up in the switcher without a reload.
+setInterval(loadProjectList, 60_000);
+floppyPoll = setInterval(updateFloppyButton, 5000);
+void updateFloppyButton();
+void loadProjectList().finally(route);
 void refreshAiLane();

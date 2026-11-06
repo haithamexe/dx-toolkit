@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -203,6 +203,22 @@ function git(cwd: string, args: string[], options: GitRunOptions = {}): Promise<
 
 export function gitFailure(r: Result, what: string): GitError {
   return failure(r, what);
+}
+
+/**
+ * The GitHub CLI already on this computer, for what lives on GitHub (pull requests, releases):
+ * fixed arguments, anything written (a body, release notes) on stdin, never prompting. `code` is
+ * -2 when gh isn't installed.
+ */
+export function runGh(dir: string, args: string[], input?: string, timeoutMs = 60_000): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = execFile("gh", args, { cwd: dir, windowsHide: true, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" } }, (err, stdout, stderr) => {
+      const missing = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+      resolve({ code: missing ? -2 : err ? (typeof (err as NodeJS.ErrnoException).code === "number" ? Number((err as NodeJS.ErrnoException).code) : 1) : 0, stdout: String(stdout), stderr: missing ? "gh isn't installed" : String(stderr) });
+    });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(input ?? "");
+  });
 }
 
 function failure(r: Result, what: string): GitError {

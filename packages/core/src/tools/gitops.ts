@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { dxPath } from "../config.js";
-import { GitError, gitCommit, gitFailure, gitOperation, gitRoot, gitRun, gitStatusAt, type GitOperation, type GitResult, type GitStatus } from "./git.js";
+import { GitError, gitCommit, gitFailure, gitOperation, gitRoot, gitRun, gitStatusAt, runGh, type GitOperation, type GitResult, type GitStatus } from "./git.js";
 
 /**
  * The git operations behind the Git page's drag and drop: branches, tags, revert, cherry-pick,
@@ -984,6 +984,102 @@ export async function gitPushTags(dir: string, options: { name?: string; all?: b
   const what = options.all ? `every tag (${refs.tags.length})` : `the tag ${options.name}`;
   journal(root, "push-tag", `Pushed ${what} to ${remote}`, undefined, "A push changes the remote: it can't be undone from here.");
   return { ok: true, message: `Pushed ${what} to ${remote}.` };
+}
+
+// ------------------------------------------------------------------ releases (GitHub, through gh)
+
+export interface GitRelease {
+  tag: string;
+  name: string;
+  draft: boolean;
+  prerelease: boolean;
+  latest: boolean;
+  /** Published, or created for a draft (ms). */
+  at: number;
+}
+
+export interface GitReleaseState {
+  /** Whether releases can be made here, and why not: gh missing or signed out, or not on GitHub. */
+  gh: "ok" | "missing" | "signed-out" | "not-github" | "error";
+  why?: string;
+  releases: GitRelease[];
+  /** The newest tag HEAD comes from, if any. */
+  lastTag?: string;
+  /** The next version after it ("" when the last tag isn't a version). */
+  suggested: string;
+  /** The commits since that tag (or all of them, up to 200), newest first, as notes to start from. */
+  notes: string;
+  commits: number;
+}
+
+/** A minor bump when a commit since adds something ("Add …", "feat: …", "New …"), else a patch; keeps a leading v. */
+export function nextVersion(last: string | undefined, subjects: string[]): string {
+  if (!last) return "v0.1.0";
+  const m = /^(v?)(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(last);
+  if (!m) return "";
+  const [, v, major, minor, patch] = m;
+  const adds = subjects.some((s) => /^(feat(\(.+\))?!?:|add(s|ed)?\b|new\b)/i.test(s.trim()));
+  return adds ? `${v}${major}.${Number(minor) + 1}.0` : `${v}${major}.${minor}.${Number(patch) + 1}`;
+}
+
+/** What gh said, as a reason someone can act on. */
+function ghWhy(r: { code: number; stderr: string }): Pick<GitReleaseState, "gh" | "why"> {
+  if (r.code === -2) return { gh: "missing", why: "The GitHub CLI (gh) isn't installed, so releases can't be made from here. Tags still can." };
+  if (/auth login|not logged in|authentication|HTTP 401/i.test(r.stderr)) return { gh: "signed-out", why: "gh isn't signed in: run gh auth login in a terminal, then check again." };
+  return { gh: "error", why: r.stderr.trim().split(/\r?\n/)[0] || "gh couldn't read the releases." };
+}
+
+/** The Release tab: GitHub's releases, the last tag, and a version and notes for the next one. */
+export async function gitReleaseState(dir: string): Promise<GitReleaseState> {
+  const root = await gitRoot(dir);
+  const refs = await refsAt(root);
+  const described = refs.head ? await gitRun(root, ["describe", "--tags", "--abbrev=0", "HEAD"]) : undefined;
+  const lastTag = described?.code === 0 && refs.tags.some((t) => t.name === described.stdout.trim()) ? described.stdout.trim() : undefined;
+  const log = refs.head ? await gitRun(root, ["log", "--no-merges", "--max-count=200", "--format=%s", lastTag ? `refs/tags/${lastTag}..HEAD` : "HEAD"]) : undefined;
+  const subjects = log?.code === 0 ? log.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean) : [];
+  const state: GitReleaseState = { gh: "ok", releases: [], lastTag, suggested: nextVersion(lastTag, subjects), notes: subjects.map((s) => `- ${s}`).join("\n"), commits: subjects.length };
+  const url = refs.remotes.length ? (await gitRun(root, ["remote", "get-url", remoteFor(refs)])).stdout.trim() : "";
+  if (!/github\.com[:/]/i.test(url)) {
+    return { ...state, gh: "not-github", why: refs.remotes.length ? "Its remote isn't on GitHub, so releases aren't made here. Tags are, and push like branches." : "It isn't on GitHub yet (no remote), so releases wait for that. Tags can be made now." };
+  }
+  const r = await runGh(root, ["release", "list", "--limit", "20", "--json", "tagName,name,isDraft,isPrerelease,isLatest,publishedAt,createdAt"]);
+  if (r.code !== 0) return { ...state, ...ghWhy(r) };
+  try {
+    const list = JSON.parse(r.stdout) as { tagName: string; name: string; isDraft: boolean; isPrerelease: boolean; isLatest: boolean; publishedAt?: string; createdAt?: string }[];
+    state.releases = list.map((x) => ({ tag: x.tagName, name: x.name || x.tagName, draft: !!x.isDraft, prerelease: !!x.isPrerelease, latest: !!x.isLatest, at: Date.parse(x.publishedAt || x.createdAt || "") || 0 }));
+  } catch {
+    return { ...state, gh: "error", why: "gh's list of releases couldn't be read." };
+  }
+  return state;
+}
+
+/**
+ * A GitHub release: the tag (an existing one, or a new annotated one on HEAD, named as any new tag
+ * must be) is pushed first, then `gh release create --verify-tag` with fixed arguments, the title as
+ * one `--title=` argument and the notes on stdin. Only on the button; it can't be undone from here.
+ */
+export async function gitCreateRelease(dir: string, options: { tag: string; title?: string; notes?: string; draft?: boolean; prerelease?: boolean }): Promise<GitActionResult & { url?: string }> {
+  const root = await gitRoot(dir);
+  const refs = await refsAt(root);
+  const tag = (options.tag ?? "").trim();
+  if (!tag || tag.startsWith("-")) throw new GitError("Give the release a version tag, like v1.2.0.");
+  const title = (options.title ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 200) || tag;
+  const notes = (options.notes ?? "").slice(0, 60_000);
+  remoteFor(refs);
+  if (!refs.tags.some((t) => t.name === tag)) await gitCreateTag(dir, tag, { message: title });
+  // GitHub makes the release from a tag it already has, so the tag goes first (refused if the remote's is on another commit).
+  await gitPushTags(dir, { name: tag });
+  const args = ["release", "create", tag, "--verify-tag", `--title=${title}`, "--notes-file", "-"];
+  if (options.draft) args.push("--draft");
+  if (options.prerelease) args.push("--prerelease");
+  const r = await runGh(root, args, notes, 120_000);
+  if (r.code !== 0) {
+    const why = ghWhy(r).why ?? "gh couldn't create the release.";
+    throw new GitError(`The tag ${tag} is pushed, but the release wasn't made: ${why}`);
+  }
+  const url = r.stdout.split(/\s+/).find((s) => /^https:\/\/github\.com\//.test(s));
+  journal(root, "release", `Released ${tag}${options.draft ? " as a draft" : ""} on GitHub`, undefined, "A release is on GitHub: change or delete it there.");
+  return { ok: true, message: `Released ${tag}${options.draft ? " as a draft" : ""} on GitHub.`, url };
 }
 
 // ------------------------------------------------------------------ editing history (interactive rebase)

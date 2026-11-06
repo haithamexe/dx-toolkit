@@ -27,6 +27,6 @@ export function floppySnapshot(): FloppySnapshot {
     }
   }
   const lane = aiLane({ limit: 1 });
-  snapshot.ai = { active: lane.active, text: lane.calls[0]?.text };
+  snapshot.ai = { active: lane.active, text: lane.calls[0]?.text, project: lane.calls[0]?.project ?? lane.servers.find((s) => s.status !== "stopped")?.project };
   return snapshot;
 }

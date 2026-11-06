@@ -335,10 +335,55 @@ select {
 .brand-name {
   font: 400 var(--t-xl) / 1 var(--pixel);
 }
+/* The project you're working on: every page in the nav's first group is about it. */
+.project-switch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+.project-switch-label,
+.nav-heading {
+  padding: 0 var(--s3);
+  color: var(--text-dim);
+  font: 400 var(--t-label) / 1.5 var(--pixel);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.project-switch select {
+  width: 100%;
+  font-weight: 600;
+}
+.project-switch-state {
+  min-height: 1.5em;
+  padding: 0 var(--s3);
+  color: var(--text-dim);
+  font-size: var(--t-xs);
+}
 .nav {
   display: flex;
   flex-direction: column;
+  gap: var(--s4);
+}
+.nav-group {
+  display: flex;
+  flex-direction: column;
   gap: 1px;
+}
+.nav-group:empty {
+  display: none;
+}
+.nav-settings {
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+}
+/* All projects: a name opens that project's overview. */
+.project-link {
+  color: inherit;
+  text-decoration: none;
+}
+.project-link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
 }
 .nav a {
   position: relative;
@@ -388,15 +433,17 @@ select {
   display: flex;
   flex-direction: column;
 }
-/* Floppy stands on the theme picker. */
+/* Floppy at the foot of the sidebar; Run Floppy waits beside it while it isn't on the desktop. */
+.sidebar-floppy-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
 .sidebar-floppy {
   width: 64px;
   height: 60px;
-  margin: 0 0 -6px var(--s2);
+  margin-left: var(--s2);
   image-rendering: pixelated;
-}
-.theme-select select {
-  width: 100%;
 }
 .main {
   min-width: 0;
@@ -577,6 +624,29 @@ select {
 .segmented button[aria-pressed="true"] {
   background: var(--accent-soft);
   color: var(--accent);
+}
+/* The same control as links, for pages that are tabs of one another (This computer, Look back). */
+.segmented a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--s3);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-weight: 550;
+  text-decoration: none;
+}
+.segmented a:hover {
+  color: var(--text);
+}
+.segmented a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.page-tabs {
+  align-self: flex-start;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 .field {
   display: flex;
@@ -2406,11 +2476,28 @@ summary.error-row {
     overflow-x: auto;
   }
   .brand-name,
-  .sidebar-foot {
+  .sidebar-foot,
+  .project-switch-label,
+  .project-switch-state,
+  .nav-heading {
     display: none;
   }
-  .nav {
+  .project-switch {
+    flex: none;
+    width: 10rem;
+  }
+  .nav,
+  .nav-group {
     flex-direction: row;
+  }
+  .nav {
+    gap: var(--s2);
+  }
+  .nav-settings {
+    padding-top: 0;
+    padding-left: var(--s2);
+    border-top: 0;
+    border-left: 1px solid var(--border);
   }
   .nav a {
     padding: var(--s2);
@@ -2468,6 +2555,84 @@ summary.error-row {
 .git-branch-name {
   padding: var(--s1) var(--s3);
   font-size: var(--t-sm);
+}
+/* The Code page's tabs: Save, Share, Release, History, under the branch bar. */
+.git-tabs {
+  align-self: flex-start;
+}
+.git-tabs[hidden] {
+  display: none;
+}
+.git-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.tab-count {
+  min-width: 18px;
+  padding: 0 var(--s1);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--t-xs);
+  font-weight: 650;
+  text-align: center;
+}
+.git-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s6);
+}
+.git-panel[hidden] {
+  display: none;
+}
+.git-release-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: var(--s4);
+  align-items: start;
+}
+.git-release-col,
+.git-release-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+.git-release-notes {
+  min-height: 10rem;
+  resize: vertical;
+  line-height: 1.6;
+}
+.git-release-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.git-release-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.git-release-items li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s2);
+}
+.git-release-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+@media (max-width: 1100px) {
+  .git-release-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .git-board {
   display: grid;

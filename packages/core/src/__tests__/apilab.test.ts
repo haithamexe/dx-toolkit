@@ -25,6 +25,11 @@ const {
   mapApi,
   validate,
   findSpecFiles,
+  projectSpec,
+  forgetSpec,
+  saveSpec,
+  specSource,
+  specTurnedOff,
   templateMatches,
   matchMock,
   putMocks,
@@ -232,6 +237,28 @@ test("openapi: spec files are found in the project, most likely first", () => {
   fs.writeFileSync(path.join(dir, "node_modules", "lib", "openapi.json"), JSON.stringify({ openapi: "3.0.0" }));
   fs.writeFileSync(path.join(dir, "api.json"), JSON.stringify({ not: "a spec" }));
   assert.deepEqual(findSpecFiles(dir), ["swagger.json", "docs/openapi.yaml"]);
+});
+
+test("openapi: a project's spec is found by itself, read fresh, and stays gone once removed", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shop-website-"));
+  assert.equal(projectSpec(dir), undefined, "no spec file, none given");
+  fs.mkdirSync(path.join(dir, "docs"));
+  fs.writeFileSync(path.join(dir, "docs", "openapi.yaml"), SPEC_YAML);
+  const found = projectSpec(dir)!;
+  assert.deepEqual([found.source, found.found, specSource(found.source)], ["file:docs/openapi.yaml", true, "from docs/openapi.yaml"]);
+  const count = (s: ReturnType<typeof projectSpec>) => readSpec(s!.doc).endpoints.length;
+  const before = count(projectSpec(dir));
+  // An edit to the file shows the next time, without giving it again.
+  fs.writeFileSync(path.join(dir, "docs", "openapi.yaml"), SPEC_YAML.replace("paths:", "paths:\n  /api/health:\n    get:\n      summary: Up?\n      responses:\n        '200':\n          description: ok"));
+  assert.equal(count(projectSpec(dir)), before + 1);
+  // Removed on purpose: the file is still there, but dx doesn't pick it up again by itself.
+  forgetSpec(dir);
+  assert.equal(specTurnedOff(dir), true);
+  assert.equal(projectSpec(dir), undefined);
+  // Giving it one again replaces that.
+  saveSpec(dir, "pasted", parseSpecText(SPEC_YAML));
+  assert.equal(specTurnedOff(dir), false);
+  assert.deepEqual([projectSpec(dir)!.source, projectSpec(dir)!.found, specSource("url:/openapi.json")], ["pasted", undefined, "from the running app at /openapi.json"]);
 });
 
 test("rules: only known fields of the right shape, and dx's own headers stay dx's", () => {

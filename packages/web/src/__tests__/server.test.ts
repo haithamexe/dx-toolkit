@@ -247,6 +247,12 @@ test("git: graph, status, staging by file and by block, and commit, only on know
   assert.equal((await act("branch-create", { name: "--upload-pack=evil" })).status, 400, "names are checked");
   assert.equal((await act("revert", { hash: "HEAD; rm -rf ." })).status, 400);
   assert.equal((await act("switch", { name: "no-such-branch" })).status, 409);
+  // Releases: read without gh when the repository isn't on GitHub; a tag can't pass as one of gh's options.
+  const releases = (await api(`/api/git/releases?${q}`)).json;
+  assert.equal(releases.gh, "not-github");
+  assert.equal(releases.suggested, "v0.1.0");
+  assert.equal((await act("release-create", { tag: "--draft" })).status, 400);
+  assert.match((await act("release-create", { tag: "v1.0.0" })).json.error, /no remote/);
   assert.equal((await act("branch-create", { name: "idea" })).status, 200);
   const refs = (await api(`/api/git/refs?${q}`)).json;
   assert.deepEqual(refs.branches.map((b: { name: string }) => b.name).sort(), ["idea", "main"]);

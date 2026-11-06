@@ -12,7 +12,7 @@ process.env.DX_HOME = home;
 fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ projectsRoots: [root], editor: "code", autoConnectAi: false, localDomainsPort: 0 }));
 
 const { startDashboard } = await import("../server.js");
-const { readFloppyInfo, floppyLauncher } = await import("../floppy.js");
+const { readFloppyInfo, floppyLauncher, runFloppy } = await import("../floppy.js");
 let dashboard: Awaited<ReturnType<typeof startDashboard>>;
 let idle = 0;
 
@@ -41,6 +41,27 @@ test("quiet questions don't keep a background dashboard awake", async () => {
     await new Promise((r) => setTimeout(r, 150));
   }
   assert.ok(idle > 0, "it went idle while Floppy kept asking");
+});
+
+test("Run Floppy: whether there's one to start, behind the token, and it brings back a Floppy you'd sent away", async () => {
+  const res = await fetch(new URL("/api/floppy/status", dashboard.url), { headers: { "X-DX-Token": dashboard.token } });
+  assert.deepEqual(await res.json(), { available: process.platform === "win32", running: false });
+  assert.equal((await fetch(new URL("/api/floppy/start", dashboard.url), { method: "POST" })).status, 401);
+
+  // The route's work, with a stand-in for the real window: a test never puts Floppy on the desktop.
+  const configFile = path.join(home, "config.json");
+  const floppyConfig = () => JSON.parse(fs.readFileSync(configFile, "utf8")).floppy ?? {};
+  fs.writeFileSync(configFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(configFile, "utf8")), floppy: { off: true } }));
+  let starts = 0;
+  const r = await runFloppy(async () => (starts++, { started: true, pid: 1, message: "Floppy is on your desktop." }));
+  if (process.platform !== "win32") {
+    assert.deepEqual([r.running, starts, floppyConfig().off], [false, 0, true]);
+    return;
+  }
+  assert.deepEqual([r.started, r.running, r.message, starts], [true, true, "Floppy is on your desktop.", 1]);
+  assert.equal(floppyConfig().off, undefined, "sent away no more: the app brings it along again");
+  assert.equal(floppyConfig().startup, undefined, "no Startup shortcut from a dx with its own DX_HOME");
+  assert.ok(fs.existsSync(path.join(home, "floppy", "sprites", "manifest.json")), "its frames are drawn");
 });
 
 test("no Floppy running here, and the Startup shortcut would run node with Floppy's own entry", () => {

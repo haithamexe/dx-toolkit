@@ -13,6 +13,7 @@ import {
   mapApi,
   mocksFromSpec,
   parseSpecText,
+  projectSpec,
   purgeMocks,
   putMocks,
   putRule,
@@ -28,6 +29,7 @@ import {
   SPEC_MAX_BYTES,
   SPEC_URL_PATHS,
   SpecError,
+  specTurnedOff,
   templateMatches,
   updateMock,
   validate,
@@ -122,17 +124,53 @@ function fetchSpec(route: LocalRoute, specPath: string): Promise<string> {
 }
 
 function specSummary(project: Project) {
-  const stored = loadSpec(project.dir);
+  const stored = projectSpec(project.dir);
   if (!stored) return undefined;
   const spec = readSpec(stored.doc);
   flushActivity();
   const events = readActivity({ dir: project.dir, since: new Date(Date.now() - 7 * 86_400_000), limit: 5000 });
-  return { source: stored.source, savedAt: stored.savedAt, title: spec.title, version: spec.version, kind: spec.kind, basePath: spec.basePath, map: mapApi(spec, events) };
+  return { source: stored.source, found: !!stored.found, savedAt: stored.savedAt, title: spec.title, version: spec.version, kind: spec.kind, basePath: spec.basePath, map: mapApi(spec, events) };
+}
+
+/**
+ * A project with no spec file whose dev server dx runs: its usual spec addresses are tried once, in
+ * the background, through dx's own route on this computer (again after 10 minutes). True while it looks.
+ */
+const servedSpecTried = new Map<string, { at: number; looking: boolean }>();
+function lookForServedSpec(project: Project): boolean {
+  if (projectSpec(project.dir) || specTurnedOff(project.dir)) return false;
+  let route: LocalRoute;
+  try {
+    route = routeOf(project);
+  } catch {
+    return false;
+  }
+  const key = project.dir.toLowerCase();
+  const tried = servedSpecTried.get(key);
+  if (tried && (tried.looking || Date.now() - tried.at < 10 * 60_000)) return !!tried.looking;
+  const state = { at: Date.now(), looking: true };
+  servedSpecTried.set(key, state);
+  void (async () => {
+    for (const p of SPEC_URL_PATHS) {
+      try {
+        const doc = parseSpecText(await fetchSpec(route, p));
+        if (!loadSpec(project.dir) && !specTurnedOff(project.dir)) {
+          saveSpec(project.dir, `url:${p}`, doc, { found: true });
+          recordRun("spec", true, `${project.name}: API spec found at ${p}`, "web", { project: project.name });
+        }
+        break;
+      } catch {
+        // not there: the next address
+      }
+    }
+    state.looking = false;
+  })();
+  return true;
 }
 
 /** The spec's schema for a mock's answer, when there's a spec and it has that endpoint and status. */
 function schemaFor(dir: string, ep: { method: string; path: string; pattern?: string; status: number }): Schema | undefined {
-  const stored = loadSpec(dir);
+  const stored = projectSpec(dir);
   if (!stored) return undefined;
   const spec = readSpec(stored.doc);
   const sample = ep.pattern ?? ep.path.replace(/:id/g, "1");
@@ -209,10 +247,12 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
   "GET /api/lab/history": (req) => sendHistory(knownProject(req.query.get("dir")).dir),
 
   // ------------------------------------------------------------ the API spec
+  // Also the project's Overview and Activity: the spec it has (found by itself when it wasn't given one).
   "GET /api/lab/spec": (req) => {
     const project = knownProject(req.query.get("dir"));
     const running = [...localRoutes().values()].some((r) => r.dir.toLowerCase() === project.dir.toLowerCase());
-    return { files: findSpecFiles(project.dir), urls: SPEC_URL_PATHS, running, spec: call(() => specSummary(project)) };
+    const looking = lookForServedSpec(project);
+    return { files: findSpecFiles(project.dir), urls: SPEC_URL_PATHS, running, looking, removed: specTurnedOff(project.dir), spec: call(() => specSummary(project)) };
   },
   "POST /api/lab/spec": async (req) => {
     const project = knownProject(req.body.dir);
@@ -250,7 +290,7 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
   },
   "POST /api/lab/spec/mocks": (req) => {
     const project = knownProject(req.body.dir);
-    const stored = loadSpec(project.dir);
+    const stored = projectSpec(project.dir);
     if (!stored) throw new HttpError(404, `${project.name} has no API spec yet.`);
     const r = putMocks(project.dir, project.name, mocksFromSpec(readSpec(stored.doc)));
     forgetMocks();

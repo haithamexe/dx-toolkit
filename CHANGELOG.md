@@ -4,6 +4,19 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Changed
+
+- **The dashboard is arranged by what you came to do.** Pick a project at the top of the sidebar, and every page under it is about that project: **Overview** (run it, its output and errors, its API spec and its tour), **Code**, **API**, **Activity**, **Data**, **Break it** and **Env & secrets**. Before, six pages each had their own project picker and their own memory. Under **Everything**: **All projects** (with New project), **This computer** (Machine, Ports, Cleanup and Dependencies as tabs) and **Look back** (Summary and Journal). **Settings** is at the foot, and the theme moved there. Old links still work.
+- **Code** (the Git page) is four tabs, each with one main action, under a branch bar with Fetch, Pull, Push and Undo: **Save** (the commit board and the shelf), **Share** (branches, merge and rebase, proof for the pull request), **Release** and **History** (the graph, Run any commit, and the undo history). Every commit action has a button as well as a drop target, and a merge that stops on conflicts opens Save.
+
+### Added
+
+- **Releases** on the Code page: **New release** suggests the next version from the last tag and notes from the commits since, then tags, pushes the tag and creates the GitHub release through the GitHub CLI, only on the button and after saying what it will do (Draft and Pre-release too). **Only tag it** makes the tag alone. Tags are listed, made, pushed and deleted there, where before they could only be made by dragging a commit.
+- **An API spec on every project, with nothing to set up**: dx finds an OpenAPI or Swagger file in the project, or the running app's usual spec address, and keeps it with the project; you can still give it one on the API page, and removing it is remembered. Overview shows it, Activity's APIs view names each call by its endpoint and marks calls it doesn't have, the tour lists it, and mocks, Break it's unused routes and the AI agents' `api_map` use it.
+
+- **A line beside Floppy** says what's going on and in which project, always, so you don't have to read its face: `todo-app running`, `shop-website: Install packages…`, `todo-app: error in cart.ts:42`, `AI: Checked /health on api-gateway: 200`, with a coloured dot. Errors you've already looked at stay counted (`todo-app running · 1 error`). Hover it for the balloon, click it to open dx.
+- **Run Floppy** in the dashboard: a button beside the Floppy at the bottom of the sidebar, shown on Windows while Floppy isn't on the desktop. It does what `dx floppy` does, so it also brings back a Floppy you'd sent away.
+
 ## 1.5.0 (2026-11-06)
 
 dx is an app now: `dx ui` opens it in a window of its own that starts with you, with Floppy on the taskbar and a new teal look. Also new since 1.4.0: the Git page, the Machine page, Chaos, Run any commit, the dx browser for deployed sites, Ask Claude to fix, the AI lane and Your year. Update with `npm install -g dx-devkit@latest`.

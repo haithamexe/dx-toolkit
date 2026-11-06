@@ -14,8 +14,11 @@ const {
   gitConflict,
   gitContinue,
   gitCreateBranch,
+  gitCreateRelease,
   gitCreateTag,
   gitDeleteBranch,
+  gitReleaseState,
+  nextVersion,
   gitDeleteTag,
   gitDiscard,
   gitFetch,
@@ -143,6 +146,70 @@ test("tags: create (plain and annotated) and delete, with undo", async () => {
   assert.equal(tags.find((t) => t.name === "v1.0.0")?.annotated, true, "the annotated tag comes back as it was");
   assert.equal(r.git("tag", "-l", "--format=%(contents:subject)", "v1.0.0").trim(), "The first release");
   await assert.rejects(gitCreateTag(r.dir, "has space"), /can't be a tag name/);
+});
+
+test("the next version: a minor bump when something was added, else a patch, keeping the v", () => {
+  assert.equal(nextVersion(undefined, []), "v0.1.0");
+  assert.equal(nextVersion("v1.4.2", ["Fix the cart total"]), "v1.4.3");
+  assert.equal(nextVersion("v1.4.2", ["Fix the cart total", "Add coupons"]), "v1.5.0");
+  assert.equal(nextVersion("2.0.9", ["feat(cart): coupons"]), "2.1.0");
+  assert.equal(nextVersion("1.0.0-beta.1", ["Tidy up"]), "1.0.1");
+  assert.equal(nextVersion("nightly", ["Add coupons"]), "", "a tag that isn't a version suggests nothing");
+});
+
+test("releases: the last tag and notes from the commits since, and why there's no GitHub release here", async () => {
+  const r = repo();
+  r.commit("a.txt", "a\n", "First version");
+  let state = await gitReleaseState(r.dir);
+  assert.deepEqual([state.gh, state.lastTag, state.suggested, state.notes, state.commits], ["not-github", undefined, "v0.1.0", "- First version", 1]);
+  assert.match(state.why!, /isn't on GitHub yet/);
+  await gitCreateTag(r.dir, "v1.0.0", { message: "The first release" });
+  r.commit("b.txt", "b\n", "Fix the cart total");
+  r.commit("c.txt", "c\n", "Add coupons");
+  state = await gitReleaseState(r.dir);
+  assert.deepEqual([state.lastTag, state.suggested, state.notes, state.commits], ["v1.0.0", "v1.1.0", "- Add coupons\n- Fix the cart total", 2]);
+
+  await assert.rejects(gitCreateRelease(r.dir, { tag: "v1.1.0" }), /no remote/);
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), "dx-gitops-remote-"));
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main"], { cwd: remote });
+  r.git("remote", "add", "origin", remote);
+  state = await gitReleaseState(r.dir);
+  assert.equal(state.gh, "not-github");
+  assert.match(state.why!, /remote isn't on GitHub/);
+  await assert.rejects(gitCreateRelease(r.dir, { tag: "--draft" }), /version tag/, "a tag can't pass as one of gh's options");
+  await assert.rejects(gitCreateRelease(r.dir, { tag: "bad..name" }), /isn't a valid|can't|name/i);
+});
+
+test("a GitHub release through gh: the tag pushed first, fixed arguments, notes on stdin", { skip: process.platform === "win32" ? "a stand-in gh is a shell script" : false }, async () => {
+  const r = repo();
+  r.commit("a.txt", "a\n", "First version");
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), "dx-gitops-remote-"));
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main"], { cwd: remote });
+  // Fetches name GitHub; pushes go to the local bare repository.
+  r.git("remote", "add", "origin", "https://github.com/octocat/shop-website.git");
+  r.git("config", `url.${remote}.pushInsteadOf`, "https://github.com/octocat/shop-website.git");
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "dx-fake-gh-"));
+  const log = path.join(bin, "calls.txt");
+  fs.writeFileSync(
+    path.join(bin, "gh"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\nif [ "$1 $2" = "release list" ]; then echo '[{"tagName":"v0.9.0","name":"Beta","isDraft":false,"isPrerelease":true,"isLatest":false,"publishedAt":"2026-10-01T10:00:00Z"}]'; exit 0; fi\nif [ "$1 $2" = "release create" ]; then cat > "${log}.notes"; echo "https://github.com/octocat/shop-website/releases/tag/$3"; exit 0; fi\nexit 1\n`,
+    { mode: 0o755 },
+  );
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${oldPath}`;
+  try {
+    const state = await gitReleaseState(r.dir);
+    assert.equal(state.gh, "ok");
+    assert.deepEqual(state.releases, [{ tag: "v0.9.0", name: "Beta", draft: false, prerelease: true, latest: false, at: Date.parse("2026-10-01T10:00:00Z") }]);
+    const made = await gitCreateRelease(r.dir, { tag: "v1.0.0", title: "Shop 1.0\nwith a line break", notes: "- First version\n- `--draft` in the notes stays text", draft: true });
+    assert.equal(made.url, "https://github.com/octocat/shop-website/releases/tag/v1.0.0");
+    assert.equal(execFileSync("git", ["tag", "-l"], { cwd: remote, encoding: "utf8" }).trim(), "v1.0.0", "the tag went to the remote first");
+    const calls = fs.readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(calls.at(-1), "release create v1.0.0 --verify-tag --title=Shop 1.0 with a line break --notes-file - --draft");
+    assert.equal(fs.readFileSync(`${log}.notes`, "utf8"), "- First version\n- `--draft` in the notes stays text");
+  } finally {
+    process.env.PATH = oldPath;
+  }
 });
 
 test("revert and cherry-pick, each undone", async () => {

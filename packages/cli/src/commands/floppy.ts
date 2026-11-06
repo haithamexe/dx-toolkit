@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { FLOPPY_COLOURWAYS, floppyStartsWithWindows, loadConfig, saveConfig, setFloppyStartup, writeFloppySprites, type FloppyColourway } from "@dx/core";
-import { floppyLauncher, floppySpritesDir, readFloppyInfo, startFloppy, stopFloppy } from "@dx/web/floppy";
+import { floppyLauncher, floppySpritesDir, readFloppyInfo, settleFloppyStartup, startFloppy, stopFloppy } from "@dx/web/floppy";
 import type { Command } from "../command.js";
 import { c, info, ok, UsageError, warn } from "../ui.js";
 
@@ -67,10 +67,9 @@ export const floppyCommand: Command = {
       save();
       restart = !!readFloppyInfo();
     }
-    // The shortcut uses Floppy's icon, so its frames are drawn first.
-    writeFloppySprites(floppySpritesDir(), floppy.colourway ?? "navy");
-
     if (values.startup !== undefined) {
+      // The shortcut uses Floppy's icon, so its frames are drawn first.
+      writeFloppySprites(floppySpritesDir(), floppy.colourway ?? "navy");
       const r = setFloppyStartup(values.startup, floppyLauncher());
       if (!r.ok) {
         warn(r.message);
@@ -80,16 +79,11 @@ export const floppyCommand: Command = {
       save();
       ok(r.message);
       if (!values.startup) return 0;
-    } else if (floppy.startup === undefined) {
-      // You asked for it to start with Windows; the first run sets that up, and says how to undo it.
-      const r = setFloppyStartup(true, floppyLauncher());
-      floppy.startup = r.ok;
-      save();
-      if (r.ok) info(`Floppy will start when you sign in to Windows. ${c.dim("dx floppy --no-startup turns that off.")}`);
-      else warn(r.message);
-    } else if (floppy.startup) {
-      // Paths change when dx or node is updated; the shortcut follows.
-      setFloppyStartup(true, floppyLauncher());
+    } else {
+      // The first run sets up starting with Windows and says how to undo it; later runs keep the shortcut's paths current.
+      const settled = settleFloppyStartup();
+      if (settled.message) info(`${settled.message} ${c.dim("dx floppy --no-startup turns that off.")}`);
+      if (settled.warning) warn(settled.warning);
     }
 
     if (restart) await stopFloppy();
