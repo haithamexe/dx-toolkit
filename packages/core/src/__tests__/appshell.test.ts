@@ -206,6 +206,47 @@ test("macOS opens it at sign-in with a LaunchAgent, Linux with an autostart entr
   assert.equal(shell.appLauncherEntry(env), path.join(env.HOME, ".local", "share", "applications", "dx.desktop"));
 });
 
+test("a Windows shortcut is written byte by byte in the Shell Link format, its target in the environment block", async () => {
+  const { shortcutBytes, shortcutArgs } = await import("../tools/shortcuts.js");
+  // Arguments come back the way Windows splits them (checked by opening one through the shell).
+  assert.equal(shortcutArgs(["C:\\a\\shell", "two words", 'say "hi"', "C:\\end\\", ""]), 'C:\\a\\shell "two words" "say \\"hi\\"" C:\\end\\ ""');
+  assert.equal(shortcutArgs(["C:\\with space\\"]), '"C:\\with space\\\\"');
+  const target = "C:\\Users\\octocat\\.dx\\app\\current\\dx.exe";
+  const b = shortcutBytes({ command: target, args: ["C:\\dx\\shell", "--minimized"], icon: "C:\\dx\\floppy.ico" }, "dx", { minimised: true, workingDir: "C:\\Users\\octocat" });
+  assert.equal(b.readUInt32LE(0), 0x4c, "header size");
+  assert.equal(b.subarray(4, 20).toString("hex"), "0114020000000000c000000000000046", "the Shell Link class id");
+  assert.equal(b.readUInt32LE(20), 0x200 | 0x4 | 0x10 | 0x20 | 0x40 | 0x80, "description, working folder, arguments, icon, Unicode, environment block");
+  assert.equal(b.readUInt32LE(60), 7, "starts minimised");
+  // StringData after the header: each a length and UTF-16 text.
+  let at = 0x4c;
+  const strings: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const n = b.readUInt16LE(at);
+    strings.push(b.subarray(at + 2, at + 2 + n * 2).toString("utf16le"));
+    at += 2 + n * 2;
+  }
+  assert.deepEqual(strings, ["dx", "C:\\Users\\octocat", "C:\\dx\\shell --minimized", "C:\\dx\\floppy.ico"]);
+  assert.equal(b.readUInt32LE(at), 0x314, "environment block size");
+  assert.equal(b.readUInt32LE(at + 4), 0xa0000001, "its signature");
+  assert.equal(b.subarray(at + 8, at + 8 + 260).toString("latin1").replace(/\0+$/, ""), target);
+  assert.equal(b.subarray(at + 268, at + 268 + 520).toString("utf16le").replace(/\0+$/, ""), target);
+  assert.equal(b.readUInt32LE(at + 0x314), 0, "the terminal block");
+  assert.equal(b.length, at + 0x314 + 4);
+  const unicode = shortcutBytes({ command: "C:\\Users\\Zoë\\dx.exe", args: [] }, "dx");
+  assert.ok(unicode.includes(Buffer.from("C:\\Users\\Zoë\\dx.exe", "utf16le")), "a name outside ASCII keeps its letters in the Unicode path");
+  assert.throws(() => shortcutBytes({ command: "C:\\" + "x".repeat(300), args: [] }, "dx"), /too long/);
+
+  // One that says the same is left alone, Windows' own additions and all; anything different is rewritten.
+  const { shortcutMatches } = await import("../tools/shortcuts.js");
+  const launch = { command: target, args: ["C:\\dx\\shell", "--minimized"], icon: "C:\\dx\\floppy.ico" };
+  const grown = Buffer.concat([b.subarray(0, 0x4c), Buffer.from("item ids Windows adds"), b.subarray(0x4c)]);
+  assert.equal(shortcutMatches(grown, launch, "dx", { minimised: true }), true);
+  assert.equal(shortcutMatches(b, launch, "dx", { minimised: false }), false, "another window style");
+  assert.equal(shortcutMatches(b, { ...launch, args: ["C:\\other\\shell"] }, "dx", { minimised: true }), false, "other arguments");
+  assert.equal(shortcutMatches(b, { ...launch, command: "C:\\elsewhere\\dx.exe" }, "dx", { minimised: true }), false, "another program");
+  assert.equal(shortcutMatches(Buffer.from("not a shortcut"), launch, "dx"), false);
+});
+
 test("an Exec line's arguments are quoted and escaped as the Desktop Entry spec asks", () => {
   assert.equal(shell.desktopExecArg("/plain/path"), "/plain/path");
   assert.equal(shell.desktopExecArg("/with space"), '"/with space"');
