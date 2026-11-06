@@ -576,3 +576,278 @@
     Intl.DateTimeFormat = Format;
   }
 })();
+
+// ------------------------------------------------------------------ custom tools that change the page
+// The project's page tools (dx's Tools page): panels, sections and table columns showing data dx
+// works out (asked for at /__dx/tools/<id>/<n> on this page's own origin), and highlighted or hidden
+// elements. Text only, never HTML; dx's own elements carry data-dx-tool, so each is added once.
+(function () {
+  var tools = window.__dxPageTools;
+  if (!Array.isArray(tools) || !tools.length) return;
+  var TONES = { danger: "#d61f1f", warn: "#d97706", ok: "#16a34a" };
+  var cache = {};
+  var waiting = {};
+
+  function pathMatches(pattern, p) {
+    var pat = pattern.split("?")[0].split("/").filter(Boolean);
+    var segs = p.split("?")[0].split("#")[0].split("/").filter(Boolean);
+    for (var i = 0; i < pat.length; i++) {
+      if (pat[i] === "**") return true;
+      if (i >= segs.length) return false;
+      if (pat[i] === "*" || pat[i].charAt(0) === ":" || /^\{.+\}$/.test(pat[i])) continue;
+      if (pat[i].toLowerCase() !== segs[i].toLowerCase()) return false;
+    }
+    return pat.length === segs.length;
+  }
+  function get(v, p) {
+    if (!p || p === ".") return v;
+    var cur = v;
+    var segs = p.split(".");
+    for (var i = 0; i < segs.length; i++) {
+      if (cur === null || cur === undefined || segs[i] === "__proto__" || segs[i] === "constructor" || segs[i] === "prototype") return undefined;
+      cur = Object.prototype.hasOwnProperty.call(cur, segs[i]) ? cur[segs[i]] : undefined;
+    }
+    return cur;
+  }
+  function fmt(v, f) {
+    if (v === undefined || v === null || v === "") return "—";
+    var n = typeof v === "number" ? v : Number(v);
+    var ok = typeof v !== "boolean" && isFinite(n);
+    if (f === "number" && ok) return n.toLocaleString();
+    if (f === "money" && ok) return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (f === "percent" && ok) return (Math.abs(n) <= 1 ? n * 100 : n).toLocaleString(undefined, { maximumFractionDigits: 1 }) + "%";
+    if (f === "ms" && ok) return Math.round(n) + " ms";
+    if (f === "date" || f === "ago") {
+      var d = new Date(v);
+      if (!isNaN(d.getTime())) return d.toLocaleString();
+    }
+    return typeof v === "object" ? JSON.stringify(v) : String(v);
+  }
+  function el(tag, style, text) {
+    var e = document.createElement(tag);
+    if (style) for (var k in style) e.style[k] = style[k];
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  var CELL = { padding: "4px 8px", borderBottom: "1px solid rgba(0,0,0,.12)", textAlign: "left", font: "12px/1.4 system-ui, sans-serif" };
+  var mark = function (key) {
+    return '[data-dx-tool="' + key + '"]';
+  };
+  // The app's own elements a tool restyled, with the style each had, so leaving the tool's pages
+  // (a route change in the app) puts them back.
+  var changed = [];
+  function restyle(node, key, prop, value) {
+    for (var i = 0; i < changed.length; i++) if (changed[i].node === node && changed[i].key === key) return;
+    changed.push({ node: node, key: key, prop: prop, before: node.style[prop] });
+    node.style[prop] = value;
+  }
+  function putBack(key) {
+    for (var i = changed.length - 1; i >= 0; i--) {
+      var c = changed[i];
+      if (c.key !== key && c.node.isConnected) continue;
+      if (c.node.isConnected) c.node.style[c.prop] = c.before;
+      changed.splice(i, 1);
+    }
+  }
+
+  // A view's data, drawn plainly: a number, bars, a table, or the JSON.
+  function render(body, r) {
+    body.textContent = "";
+    if (!r || (r.meta && r.meta.error)) return void body.appendChild(el("div", { color: "#b45309", font: "12px system-ui, sans-serif" }, (r && r.meta && r.meta.error) || "No data from dx."));
+    var d = r.display || {};
+    var data = r.data;
+    var rows = Array.isArray(data) ? data : data === null || data === undefined ? [] : [data];
+    if (d.as === "number") return void body.appendChild(el("div", { font: "600 22px system-ui, sans-serif" }, fmt(Array.isArray(data) ? data.length : data, d.format || "number")));
+    if (d.as === "bars") {
+      var max = 1;
+      rows.forEach(function (x) {
+        max = Math.max(max, Math.abs(Number(get(x, d.value)) || 0));
+      });
+      rows.slice(0, 50).forEach(function (x) {
+        var line = el("div", { display: "flex", alignItems: "center", gap: "6px", font: "12px system-ui, sans-serif", margin: "2px 0" });
+        line.appendChild(el("span", { width: "40%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, String(get(x, d.label))));
+        var track = el("span", { flex: "1", height: "8px", background: "rgba(0,0,0,.08)", borderRadius: "4px", overflow: "hidden" });
+        track.appendChild(el("span", { display: "block", height: "100%", width: (Math.abs(Number(get(x, d.value)) || 0) / max) * 100 + "%", background: "#0b7a78" }));
+        line.appendChild(track);
+        line.appendChild(el("span", null, fmt(get(x, d.value), d.format || "number")));
+        body.appendChild(line);
+      });
+      return;
+    }
+    if (d.as === "table" || d.as === "cards") {
+      if (!rows.length) return void body.appendChild(el("div", { font: "12px system-ui, sans-serif" }, "Nothing to show."));
+      var first = rows[0];
+      var cols = d.columns || d.fields || (first && typeof first === "object" ? Object.keys(first).slice(0, 8).map(function (f) { return { field: f }; }) : [{ field: "", label: "Value" }]);
+      var table = el("table", { borderCollapse: "collapse", width: "100%" });
+      var head = el("tr");
+      cols.forEach(function (c) {
+        head.appendChild(el("th", Object.assign({ fontWeight: "600" }, CELL), c.label || c.field));
+      });
+      table.appendChild(head);
+      rows.slice(0, 200).forEach(function (x, i) {
+        var tr = el("tr");
+        var tone = r.tones && r.tones[i];
+        if (tone) tr.style.background = TONES[tone] + "22";
+        cols.forEach(function (c) {
+          tr.appendChild(el("td", CELL, fmt(get(x, c.field), c.format)));
+        });
+        table.appendChild(tr);
+      });
+      return void body.appendChild(table);
+    }
+    body.appendChild(el("pre", { margin: "0", font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre-wrap", maxHeight: "260px", overflow: "auto" }, JSON.stringify(data, null, 2)));
+  }
+
+  // The data for one change, asked of dx at most every 15 seconds.
+  function load(id, n, cb) {
+    var k = id + "/" + n;
+    var c = cache[k];
+    if (c && Date.now() - c.at < 15000) return cb(c.data);
+    (waiting[k] = waiting[k] || []).push(cb);
+    if (waiting[k].length > 1) return;
+    fetch("/__dx/tools/" + id + "/" + n, { credentials: "same-origin" })
+      .then(function (res) {
+        return res.json();
+      })
+      .catch(function () {
+        return { meta: { error: "dx didn't answer." } };
+      })
+      .then(function (j) {
+        cache[k] = { at: Date.now(), data: j };
+        var list = waiting[k] || [];
+        delete waiting[k];
+        list.forEach(function (f) {
+          f(j);
+        });
+      });
+  }
+
+  function box(key, title, tool) {
+    var wrap = el("div", { border: "1px solid rgba(0,0,0,.18)", borderRadius: "8px", background: "#fff", color: "#111", margin: "8px 0", font: "12px system-ui, sans-serif", boxShadow: "0 2px 8px rgba(0,0,0,.08)" });
+    wrap.setAttribute("data-dx-tool", key);
+    var bar = el("div", { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", padding: "4px 8px", background: "#e6f4f3", borderRadius: "8px 8px 0 0", font: "600 12px system-ui, sans-serif" });
+    bar.appendChild(el("span", null, title));
+    bar.appendChild(el("span", { fontWeight: "400", opacity: ".7" }, "dx · " + tool));
+    var body = el("div", { padding: "6px 8px", maxHeight: "320px", overflow: "auto" }, "Loading…");
+    wrap.appendChild(bar);
+    wrap.appendChild(body);
+    return { wrap: wrap, body: body };
+  }
+
+  function panelHost() {
+    var host = document.querySelector(mark("panels"));
+    if (!host) {
+      host = el("div", { position: "fixed", right: "12px", bottom: "12px", width: "360px", maxWidth: "calc(100vw - 24px)", maxHeight: "70vh", overflow: "auto", zIndex: "2147483000" });
+      host.setAttribute("data-dx-tool", "panels");
+      document.body.appendChild(host);
+    }
+    return host;
+  }
+
+  function addColumn(t, c, n, key) {
+    var table;
+    try {
+      table = document.querySelector(c.table);
+    } catch (e) {
+      table = null;
+    }
+    if (!table) return;
+    var trs = table.querySelectorAll("tr");
+    if (!trs.length) return;
+    var headRow = table.tHead && table.tHead.rows[0] ? table.tHead.rows[0] : trs[0];
+    if (!headRow.querySelector(mark(key))) {
+      var th = el("th", null, c.header);
+      th.setAttribute("data-dx-tool", key);
+      headRow.appendChild(th);
+    }
+    var todo = [];
+    for (var i = 0; i < trs.length; i++) if (trs[i] !== headRow && !trs[i].querySelector(mark(key))) todo.push(trs[i]);
+    if (!todo.length) return;
+    load(t.id, n, function (r) {
+      var items = r && Array.isArray(r.data) ? r.data : [];
+      todo.forEach(function (tr) {
+        if (tr.querySelector(mark(key))) return;
+        var cell = tr.cells[c.key.cell];
+        var keyText = cell ? cell.textContent.trim() : "";
+        var item = null;
+        for (var j = 0; j < items.length; j++) {
+          if (String(get(items[j], c.key.field)) === keyText) {
+            item = items[j];
+            break;
+          }
+        }
+        var td = el("td", null, item ? fmt(get(item, c.value), c.format) : "—");
+        td.setAttribute("data-dx-tool", key);
+        tr.appendChild(td);
+      });
+    });
+  }
+
+  function apply() {
+    if (!document.body) return;
+    var p = location.pathname;
+    tools.forEach(function (t) {
+      var on = pathMatches(t.path, p);
+      t.changes.forEach(function (c, n) {
+        var key = t.id + "-" + n;
+        var mine = document.querySelector(mark(key));
+        if (c.panel || c.section) {
+          if (!on) return void (mine && mine.remove());
+          if (mine) return;
+          var b = box(key, (c.panel || c.section).title, t.name);
+          if (c.panel) panelHost().appendChild(b.wrap);
+          else {
+            var at;
+            try {
+              at = document.querySelector(c.section.at);
+            } catch (e) {
+              at = null;
+            }
+            if (!at || !at.parentNode) return;
+            if (c.section.place === "before") at.parentNode.insertBefore(b.wrap, at);
+            else if (c.section.place === "inside") at.appendChild(b.wrap);
+            else at.parentNode.insertBefore(b.wrap, at.nextSibling);
+          }
+          load(t.id, n, function (r) {
+            render(b.body, r);
+          });
+        } else if (c.column) {
+          if (on) addColumn(t, c.column, n, key);
+          else document.querySelectorAll(mark(key)).forEach(function (x) {
+            x.remove();
+          });
+        } else if ((c.highlight || c.hide) && !on) putBack(key);
+        else if (c.highlight || c.hide) {
+          var found;
+          try {
+            found = document.querySelectorAll((c.highlight || c.hide).selector);
+          } catch (e) {
+            found = [];
+          }
+          for (var x = 0; x < found.length; x++) {
+            var node = found[x];
+            if (node.closest && node.closest("[data-dx-tool]")) continue;
+            if (c.hide) restyle(node, key, "display", "none");
+            else if (!c.highlight.text || node.textContent.toLowerCase().indexOf(c.highlight.text.toLowerCase()) >= 0) restyle(node, key, "outline", "2px solid " + (TONES[c.highlight.tone] || TONES.warn));
+          }
+        }
+      });
+    });
+  }
+
+  // Again when the page changes (a route, new rows), but not for dx's own elements.
+  var timer = 0;
+  function soon() {
+    clearTimeout(timer);
+    timer = setTimeout(apply, 300);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var target = list[i].target;
+      if (!(target.closest && target.closest("[data-dx-tool]"))) return soon();
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener("popstate", soon);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", apply);
+  else apply();
+})();

@@ -190,7 +190,8 @@ const pendingCache = new Map<string, { project: string; events: ActivityEvent[];
  */
 export function cacheAnswer(route: LocalRoute, e: TrafficEntry, fullBody: string | undefined): void {
   const set = projectMocks(route.dir);
-  if (!set?.cache || e.mocked || e.kind !== "api" || e.error || fullBody === undefined) return;
+  // An answer one of the project's tools changed isn't the server's: it's never kept as one.
+  if (!set?.cache || e.mocked || e.kind !== "api" || e.error || fullBody === undefined || e.rules?.some((r) => r.startsWith("tool: "))) return;
   const status = e.status ?? 0;
   if (status < 200 || status >= 500 || (status >= 300 && status < 400)) return;
   const event: ActivityEvent = {

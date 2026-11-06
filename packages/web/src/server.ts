@@ -8,6 +8,7 @@ import { certCovers, dxPath, ensureCert, loadConfig, projectHostNames, type Cert
 import { releaseAll } from "./intercept.js";
 import { flushCache, listMockServers, startMockServer, stopAllMockServers } from "./mocks.js";
 import { prunePhones, stopAllPhones } from "./phone.js";
+import { startEnvWatch } from "./envwatch.js";
 import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
 import { DOMAIN_PORTS, startLocalDomains, type LocalDomains, type TlsOptions } from "./proxy.js";
 import { clearDashboardInfo, writeDashboardInfo } from "./link.js";
@@ -72,9 +73,12 @@ export interface Dashboard {
 
 const DEFAULT_PORT = 4646;
 const MAX_BODY = 1024 * 1024;
-// A bug bundle (at most 2 MB) and a mock's body (at most 1 MB, larger once escaped as JSON) come in whole.
+// A bug bundle (at most 2 MB), a mock's body (at most 1 MB, larger once escaped as JSON) and a tools file (at most 2 MB) come in whole.
 const LARGE_BODY = 3 * 1024 * 1024;
-const LARGE_PATHS = new Set(["/api/activity/bundle/replay", "/api/mocks/update"]);
+const LARGE_PATHS = new Set(["/api/activity/bundle/replay", "/api/mocks/update", "/api/tools/import/check", "/api/tools/import"]);
+// A dx state file (at most 25 MB, core's STATE_MAX), checked and then imported whole.
+const STATE_BODY = 26 * 1024 * 1024;
+const STATE_PATHS = new Set(["/api/state/import/check", "/api/state/import"]);
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -122,7 +126,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       let body: Record<string, unknown> = {};
       if (req.method === "POST") {
         try {
-          body = await readJson(req, LARGE_PATHS.has(url.pathname) ? LARGE_BODY : MAX_BODY);
+          body = await readJson(req, STATE_PATHS.has(url.pathname) ? STATE_BODY : LARGE_PATHS.has(url.pathname) ? LARGE_BODY : MAX_BODY);
         } catch (err) {
           return send(res, 400, { error: (err as Error).message });
         }
@@ -178,11 +182,14 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   idleTimer.unref();
   // A commit made in a terminal under a dev server dx runs gets its visual diff too.
   const stopHeadWatch = startHeadWatch();
+  // .env files changed, staged or committed in any project: a warning, with a sound and the system's notification.
+  const stopEnvWatch = startEnvWatch();
 
   function close(): Promise<void> {
     closing ??= (async () => {
       clearInterval(idleTimer);
       stopHeadWatch();
+      stopEnvWatch();
       clearDashboardInfo();
       // Anything held in Intercept goes on as it was; the cache's last answers are written down.
       releaseAll();

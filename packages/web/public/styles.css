@@ -2144,15 +2144,21 @@ summary.error-row {
   .activity-row .activity-text {
     flex-basis: 100%;
   }
+  .api-calls {
+    padding-left: var(--s4);
+  }
+}
+/* The endpoint list narrows by its own width, which the Activity page's left column shares. */
+.api-list {
+  container-type: inline-size;
+}
+@container (max-width: 600px) {
   .api-row {
     grid-template-columns: minmax(0, 1fr) 3em 5em;
   }
   .api-row > :nth-child(4),
   .api-row > :nth-child(5) {
     display: none;
-  }
-  .api-calls {
-    padding-left: var(--s4);
   }
 }
 .visit {
@@ -2400,6 +2406,21 @@ summary.error-row {
 .toast-error {
   border-left-color: var(--danger);
 }
+.env-alerts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2) var(--s5);
+}
+.env-alerts-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+.toast-warn {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
 .dialog {
   width: min(480px, calc(100vw - 2 * var(--s4)));
   padding: 0;
@@ -2555,6 +2576,274 @@ summary.error-row {
 .git-branch-name {
   padding: var(--s1) var(--s3);
   font-size: var(--t-sm);
+}
+/* Tools: the project's own views, watches and operations, and the chat that makes them. */
+.tool-list {
+  display: grid;
+  /* Wide enough for a tool's four buttons on one line. */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+  gap: var(--s3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tool-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+/* Delete sits apart from the other actions, at the end of the row. */
+.tool-item .toolbar > :last-child {
+  margin-inline-start: auto;
+}
+.tool-item-open {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.tool-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s2);
+}
+.api-tool-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.api-tool-line {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s3);
+  font-variant-numeric: tabular-nums;
+}
+.tool-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s1);
+}
+.tool-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--s4);
+}
+.tool-examples {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s2);
+  max-width: 34rem;
+  margin: 0 auto;
+}
+.btn.tool-example {
+  justify-content: flex-start;
+  min-height: auto;
+  padding: var(--s2) var(--s3);
+  white-space: normal;
+  text-align: left;
+}
+.tool-builder-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: var(--s5);
+  align-items: start;
+}
+.tool-builder-chat,
+.tool-builder-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  min-width: 0;
+}
+.tool-chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  max-height: 26rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.tool-msg {
+  max-width: 90%;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r2);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.tool-msg-user {
+  align-self: flex-end;
+  background: var(--accent-soft);
+}
+.tool-msg-hint {
+  max-width: none;
+  background: transparent;
+  color: var(--text-dim);
+}
+.tool-msg-by {
+  display: block;
+  color: var(--text-dim);
+  font-size: var(--t-xs);
+}
+.tool-msg-problem {
+  color: var(--warn);
+}
+.tool-chat-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.tool-chat-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s3);
+}
+.tool-chat-settings .field {
+  min-width: 8rem;
+}
+.tool-chat-settings .btn {
+  margin-left: auto;
+}
+.tool-json {
+  width: 100%;
+  min-height: 12rem;
+  resize: vertical;
+}
+.tool-raw > summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.tool-number {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+.tool-number-value {
+  font: 600 var(--t-2xl) / 1.1 var(--font);
+  font-variant-numeric: tabular-nums;
+}
+.tool-bars,
+.tool-matches,
+.tool-steps,
+.tool-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* The import preview of a dx state file, on the Settings page. */
+.state-import {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  margin-top: var(--s4);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--border);
+}
+.state-lines,
+.state-projects {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+.state-projects li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2) var(--s4);
+  padding: var(--s2) 0;
+  border-bottom: 1px solid var(--border);
+}
+.state-projects li > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.state-projects select {
+  max-width: 100%;
+}
+.tool-bars li {
+  display: grid;
+  grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s3);
+}
+.tool-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-bar-track {
+  height: var(--s3);
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.tool-bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.tool-bar-value {
+  font-variant-numeric: tabular-nums;
+}
+.tool-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: var(--s3);
+}
+.tool-fields {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--s1) var(--s3);
+  margin: var(--s2) 0 0;
+}
+.tool-fields dt {
+  color: var(--text-dim);
+}
+.tool-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.tool-tone-danger {
+  background: var(--danger-soft);
+}
+.tool-tone-warn {
+  background: var(--warn-soft);
+}
+.tool-tone-ok {
+  background: var(--ok-soft);
+}
+.tool-matches li,
+.tool-steps summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+.tool-steps summary {
+  cursor: pointer;
+}
+.tool-match-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1100px) {
+  .tool-builder-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 /* The Code page's tabs: Save, Share, Release, History, under the branch bar. */
 .git-tabs {

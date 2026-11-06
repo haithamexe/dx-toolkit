@@ -92,6 +92,11 @@ export function listActivity(q: ActivityQuery): ActivityEvent[] {
   return readActivity(q);
 }
 
+/** The events this dashboard saw since a moment (from memory, oldest first): for watches on Floppy's line. */
+export function recentActivity(sinceMs: number): ActivityEvent[] {
+  return recent.filter((e) => Date.parse(e.at) >= sinceMs);
+}
+
 /** Forgets the in-memory copy too, when a history is cleared. */
 export function forgetRecentActivity(dir?: string): void {
   flushActivity();

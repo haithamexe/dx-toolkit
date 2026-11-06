@@ -75,6 +75,54 @@ export function parseJournal(text: string): JournalEntry[] {
   return entries;
 }
 
+/**
+ * Adds entries the journal doesn't have yet (from another computer's dx state), each under its
+ * day's heading in time order, a new day's heading in date order. Everything else in the text,
+ * written by hand or not, stays as it is.
+ */
+export function mergeJournalText(text: string, entries: JournalEntry[]): { text: string; added: number } {
+  const id = (e: JournalEntry) => `${e.date} ${e.time} ${e.text}`;
+  const have = new Set(parseJournal(text).map(id));
+  const missing: JournalEntry[] = [];
+  for (const e of [...entries].sort((a, b) => id(a).localeCompare(id(b)))) {
+    if (have.has(id(e))) continue;
+    have.add(id(e));
+    missing.push(e);
+  }
+  if (!missing.length) return { text, added: 0 };
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text ? text.replace(/\r?\n$/, "").split(/\r?\n/) : ["# Work journal"];
+  for (const e of missing) {
+    const line = e.time ? `- ${e.time} ${e.text}` : `- ${e.text}`;
+    const headings = lines.flatMap((l, i) => {
+      const m = HEADING.exec(l);
+      return m ? [{ i, date: m[1] }] : [];
+    });
+    const same = headings.find((h) => h.date === e.date);
+    if (same) {
+      const next = headings.find((h) => h.i > same.i)?.i ?? lines.length;
+      // After the last earlier entry and the indented lines under it, which belong to it.
+      let at = same.i + 1;
+      let under = false;
+      for (let i = same.i + 1; i < next; i++) {
+        const m = ENTRY.exec(lines[i]);
+        if (m) under = (m[1] ?? "") <= e.time;
+        else if (!/^\s+\S/.test(lines[i])) under = false;
+        if (under) at = i + 1;
+      }
+      lines.splice(at, 0, line);
+      continue;
+    }
+    const later = headings.find((h) => h.date > e.date);
+    if (later) lines.splice(later.i, 0, `## ${e.date}`, line, "");
+    else {
+      if (lines.length && lines[lines.length - 1].trim()) lines.push("");
+      lines.push(`## ${e.date}`, line);
+    }
+  }
+  return { text: lines.join(eol) + eol, added: missing.length };
+}
+
 function lastHeading(text: string): string | undefined {
   const lines = text.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i--) {

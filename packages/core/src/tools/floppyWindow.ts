@@ -127,7 +127,7 @@ $tail.HorizontalAlignment = 'Center'
 $tip.Content = $stack
 $tip.Cursor = [System.Windows.Input.Cursors]::Hand
 
-$colors = @{ info = '#2563EB'; error = '#D61F1F'; ok = '#16A34A'; ai = '#7C3AED'; quiet = '#6B7280' }
+$colors = @{ info = '#2563EB'; error = '#D61F1F'; ok = '#16A34A'; ai = '#7C3AED'; quiet = '#6B7280'; warn = '#D97706' }
 $tipState = @{ data = $null; sticky = $false; until = [DateTime]::MinValue; hover = $false }
 $away = @{ hidden = $false; n = 0 }
 function PlaceTip() {

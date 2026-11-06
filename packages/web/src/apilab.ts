@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import crypto from "node:crypto";
-import { breakJson, editBody, editHeaders, loadRules, MASK, maskBody, maskHeaders, matchRules, planRules, rulesFile, type Headers, type RulePlan, type RuleSet } from "@dx/core";
+import { applyAnswerTool, breakJson, editBody, editHeaders, loadRules, MASK, maskBody, maskHeaders, matchRules, planRules, rulesFile, type Headers, type RulePlan, type RuleSet } from "@dx/core";
 import type { LocalRoute } from "./dev.js";
 import { answered, callKey, holdForNext } from "./chaos.js";
 import { hold } from "./intercept.js";
@@ -100,7 +100,7 @@ export async function relayWithRules(req: http.IncomingMessage, res: http.Server
   const names = plan.rules.map((r) => r.name);
   const rec = recordExchange(req, route, o.label);
   const chaos = plan.chaos;
-  rec.entry.rules = [...names, ...(chaos ? [chaos.label] : [])];
+  rec.entry.rules = [...names, ...(plan.answerTools ?? []).map((t) => `tool: ${t.name}`), ...(chaos ? [chaos.label] : [])];
   const ua = String(req.headers["user-agent"] ?? "");
   let finished = false;
   const finish = (error?: string) => {
@@ -242,6 +242,17 @@ export async function relayWithRules(req: http.IncomingMessage, res: http.Server
       delete resHeaders["content-encoding"];
       let t = text;
       for (const e of plan.response) if (e.body !== undefined || e.json?.length) t = editBody(t, e).body;
+      // Custom tools of kind answer: fields worked out or taken out of a JSON answer. Not JSON, nothing changes.
+      if (plan.answerTools?.length) {
+        try {
+          let data = JSON.parse(t) as unknown;
+          for (const at of plan.answerTools) data = applyAnswerTool(data, at as Parameters<typeof applyAnswerTool>[1]);
+          t = JSON.stringify(data);
+          if (resHeaders["content-type"] === undefined) resHeaders["content-type"] = "application/json";
+        } catch {
+          rec.entry.rules = rec.entry.rules!.filter((r) => !r.startsWith("tool: "));
+        }
+      }
       if (chaos?.fault === "baddata" && status < 300) {
         const broken = breakJson(t, 0, chaos.salt);
         if (broken) {

@@ -328,6 +328,8 @@ export interface RulePlan {
   needsResponseBody: boolean;
   /** Chaos mode's fault for this call, on top of the rules. */
   chaos?: ChaosDecision;
+  /** Custom tools of kind answer that change this call's JSON answer (after the rules). */
+  answerTools?: { name: string; at?: string; set?: Record<string, unknown>; remove?: string[] }[];
 }
 
 export function planRules(rules: TrafficRule[]): RulePlan | undefined {

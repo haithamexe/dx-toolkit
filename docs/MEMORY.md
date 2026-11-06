@@ -10,22 +10,26 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - the Chaos page (Chaos mode, Gremlins, fake clock, weak phone, languages, missing .env values, behaviour diff, the graveyard, Security) and `dx chaos`, `dx attack`;
   - the Tour page and `dx tour`; proof for the pull request (`dx proof`); trying an upgrade in a copy (`dx try`); queries per request (`dx queries`);
   - the Data page (realistic data and scenes) and `dx data`; Open on my phone and `dx phone`; speed and accessibility per commit;
+  - the Tools page (a project's own tools, made in a chat, run without AI) and `dx tools`; .env alerts; your dx on another computer (`dx state`);
   - the core tools;
   - Floppy, the desktop assistant on the Windows taskbar (`dx floppy`), and the dx app: the dashboard in its own Electron window, installed on first use, opening at sign-in on Windows (`dx ui`);
-  - the `dx` command: `ui, floppy, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, terminal, git, chaos, attack, data, queries, phone, tour, proof, try, prepare, visual, machine, browser, sites, setup, https, config, runs, doctor`;
+  - the `dx` command: `ui, floppy, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, tools, terminal, git, chaos, attack, data, queries, phone, tour, proof, try, prepare, visual, machine, browser, sites, setup, https, config, state, runs, doctor`;
   - the MCP server with 46 tools, 25 of them for running, checking and breaking apps;
   - stacks and local domains (`shop.localhost`), with opt-in https;
-  - the dashboard, arranged by intent: a project switcher, then that project's Overview (with its tour), Code, API, Activity, Data, Break it and Env & secrets; under Everything, All projects (and New project), This computer (Machine, Ports, Cleanup, Dependencies) and Look back (Summary, Journal); Settings;
+  - the dashboard, arranged by intent: a project switcher, then that project's Overview (with its tour), Code, API, Activity, Tools, Data, Break it and Env & secrets; under Everything, All projects (and New project), This computer (Machine, Ports, Cleanup, Dependencies) and Look back (Summary, Journal); Settings;
   - the activity history (requests, routes, clicks, console, errors, kept 7 days), for deployed sites too through the dx browser, and opening projects in a terminal you pick;
   - error detection in dev-server output, and in the browser (headless check);
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.6.0. Nothing under *Unreleased* yet.
+- **Latest release**: 1.6.0. *Unreleased*: your own tools, .env alerts, your dx on another computer.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
 
+- **Your own tools, not yet tried**: a chat with the real Claude Code or Codex (only the stand-in in tests; the maintainer's agent wasn't run during development); running a tool from the terminal (`dx tools` lists, exports and imports only); a watch's system notification (watches speak in dx and on Floppy's line only).
+- **.env alerts beyond Windows**: the macOS (`osascript`) and Linux (`notify-send`) notifications are written from their documentation; only the Windows toast was seen.
+- **Your dx on another computer, next**: a project in the file that isn't on this computer is left out; offering to clone it (it has its remote) would finish the move. The Settings page's Undo button wasn't clicked through in a rendering window (the pane was hidden, so the dialog's close event never fired); the route, the CLI and the tests undo for real.
 - **Raycast**: the extension type-checks (six commands, Work Summary and Clean Up Projects added), but has never been run in Raycast itself.
 - **`dx https` end to end**: the proxy's https is tested with a throwaway openssl certificate; the real `mkcert -install` path hasn't been run on a maintainer machine (it changes the system trust store, so it needs the maintainer's go-ahead).
 - **Coverage in `dx test`**, and screenshot comparison before and after a change.
@@ -69,6 +73,37 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - With port 80 taken (another dashboard), the `.localhost` addresses show `:1355`.
 
 ## Decisions
+
+### Your dx on another computer (`core/src/tools/state.ts`, `web/src/stateapi.ts`, the Settings page, `dx state`)
+
+- **The maintainer works on two computers and asked to carry "everything" between them, but not live things like commits.** So: what dx keeps that a person chose or made goes (settings, journal, saved summaries, templates, and per project tools, mocks, rules, a spec given by hand or removed, chaos settings, made and saved data scenes, the note, alert choices, recorded sites); what's live or this computer's own stays (git, the activity history and run log, snapshots, captures, caches, the dx browser's profile, certificates, the dashboard's token, `.env` files, backup scenes, a spec dx found by itself, the app's install, Floppy's place).
+- **Projects are named by their remote, never a path**: `remoteKey` makes `host/owner/repo` (lower case, no user or password, `file:` remotes have none), matched first; then the folder name, unless both have remotes that differ. The import can map a project to another one here, or leave it out. Folders and the templates folder go only as `~/…` and are added only if they exist.
+- **The file wins where both have something; nothing here is deleted.** Tools replace the same name (`importTools` with replace), mocks and rules merge by id, scenes by slug, journal entries are slotted in under their day (`mergeJournalText`, which leaves hand-written text where it is), a note only when newer. **Mock mode and Chaos mode switches stay as they are here**: carried across, they'd answer or break the app's calls on the other computer without being asked. The clock, weak phone and languages settings do come along; they're shown on Break it.
+- **Undo is exact, not a re-import**: before the first write to each file, `Before` keeps its bytes (or that it wasn't there), and the backup in `~/.dx/state-backups` lists them, relative to `~/.dx` or the templates folder only. Undo writes them back or removes the new ones, then forgets that backup; the last 5 are kept.
+- **Read like every other file from outside**: strict (unknown fields refused by name), each part through its store's own checker. `cleanMockEndpoint` was added to mocks for this: the same checks as an edit. An editor setting is a command dx runs, so one from a file must be a known editor name.
+- **The page's preferences come along from the page only** (`STATE_PAGE_PREFS`, none holding a path): only the page can read its localStorage. The CLI's export leaves them out and says so on import.
+- **Size**: at most 25 MB in all, templates 10 MB and data scenes 10 MB (what doesn't fit is named in `left`); the two import routes read up to 26 MB.
+- **Found in review, before release**: the templates folder was a setting the file could bring, and templates were written there, so a file could write almost anywhere under the home folder (`~/.config/git/config`). It's no longer a setting a file carries: templates go into this computer's own folder. The backup was written last, so a failure part-way left no undo; now an import that stops part-way is put back at once (all or nothing), and the backup records the folders it wrote to. Two clones of one repository on the other computer could both land on the one here; now each project here is taken once, a name match first, and a lone clone only when no other project in the file has its name.
+
+### .env alerts (`core/src/tools/envwatch.ts`, `web/src/envwatch.ts`)
+
+- **The maintainer asked for a warning in text and sound, and from the system, each time a .env file changes, is staged or is committed, on by default, with a per-project switch for the system part or for all of it.**
+- **Polled every 10 s from file times, with no git unless something moved**: each `.env` file's mtime and size every look (a folder walk for new ones every sixth look), git's index mtime for staged (`git diff --cached --name-only` only then), and the lines git appended to `logs/HEAD` since the last look for committed (read straight from the file, so `commit && pull --rebase` in one tick still counts the commit). "Committed" is a reflog entry starting with `commit`, so checking out a branch that has a `.env` isn't reported as committing one. The first look at a project only remembers. "Changed" is said at most once per 10 s per project.
+- **The system's notification never goes through a shell**: Windows runs dx's own PowerShell script from stdin with the words in environment variables (a toast under the dx app's id when its Start menu entry exists, else PowerShell's), macOS `osascript` with arguments, Linux `notify-send`. Nothing is sent while `DX_HOME` is set, so tests and demo dashboards stay quiet. Checked on Windows: the toast shows.
+- **In dx**: a warning toast with a short sound made with WebAudio (no file to ship), from the page's 5 s checks, and Floppy's line (the alert block in `floppyView`, two minutes).
+
+### Your own tools (`core/src/tools/customtools.ts`, `web/src/toolsapi.ts`, the Tools page, `recorder.js`'s page tools)
+
+- **The maintainer asked for tools made in a chat but run without AI afterwards, kept with the project, editable, deletable, importable and exportable.** Asked how a tool is expressed, they picked **building blocks** over AI-written code: a tool is JSON in dx's own vocabulary (sources, steps, expressions, displays, matches), so dx can check it completely and nothing it runs was written by the AI.
+- **Six kinds**: view, watch, operation (asked for first), then answer, page and column when the maintainer asked for tools that change things, and chose all three places offered: the app's API answers, the app's pages, and dx's own pages.
+- **Expressions are a small JSON language** (`{"mul": ["price", "qty"]}`, `if`, `concat`, `default`…): a string is always a path, literal text is `{"value": …}`. That one rule keeps the chat's answers unambiguous; it's in the guide the agent gets.
+- **The chat**: dx's guide (every block with an example of each kind) plus the project's spec endpoints and recorded calls with one answer each, masked, go to `claude -p` or `codex exec` as for AI mock data; the answer's JSON must pass `cleanTool`, or dx sends the problem back once. The model and effort are picked beside the chat (remembered per computer); Codex has no `xhigh`/`max`, so those ask for `high`.
+- **Answer tools are the rules' plan**, applied in `relayWithRules` after the rules' edits, and labelled `tool: <name>` in the history. Their preview asks the dev server directly (the Repeater's sender, which bypasses rules and mocks) for a plain GET, since the history already holds answers as the tool changed them.
+- **Page tools ride the recorder script**: only the changes, without their sources, go in front of it; the data comes from dx on the page's own origin, so the page never learns where it's from and nothing crosses origins. Changes are reapplied after the app redraws (a MutationObserver, debounced), marked `data-dx-tool`.
+- **Activity's API list measures itself** for the tools' columns, and its narrow layout became a container query: the projects column beside it meant a wide window could still leave the list narrow, and the endpoint was squeezed to a letter (seen while trying the page). Without room, a tool's value sits under the endpoint.
+- **Stored per project** like mocks (`~/.dx/tools/<name>-<hash>.json`, 0600, temp file and rename); the proxy rereads them when the file's time or size changes.
+- **Found in review, before release**: watch toasts are tracked by the newest event id the page has seen, not by time (a slow request's time is when it started, so it could be older than one already shown and be missed, or one shown twice). An answer a tool changed is labelled in the history and never cached or made into a mock as the server's; the preview of a templated target reads only answers no tool changed. Page tools put the app's styles back and remove their columns when the app moves to a page they aren't for. In a chat, the tool so far goes to the agent with its credential headers hidden (`hideToolSecrets`) and put back in the answer; bodies go as written. An exported tools file holds headers and bodies as written, so it's 0600 and says so.
+
 
 ### The dx app (`core/src/tools/appshell.ts`, `shortcuts.ts`; `web/src/app.ts`, `shellrules.ts`, `ensure.ts`, `appinstall.ts`; `web/shell/`)
 

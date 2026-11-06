@@ -55,6 +55,13 @@ export interface DxConfig {
    * and compare them with the commit before's (default true).
    */
   visualDiff?: boolean;
+  /** Warn (a sound in the dashboard, and a notification from the system) when a project's .env file changes, is staged or is committed (default true). */
+  envAlerts?: boolean;
+  /**
+   * Per project (by its folder, lower case): `off` silences all of dx's alerts for it (.env warnings
+   * and its tools' watches), `osOff` only the system's notifications. Both are on when not set.
+   */
+  projectAlerts?: Record<string, { off?: boolean; osOff?: boolean }>;
   /** Also capture those pages at a phone's size, 390 × 844 (default false). */
   visualMobile?: boolean;
   /** The terminal projects open in, by id (`dx terminal --list`); the first one found when unset. */

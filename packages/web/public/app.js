@@ -138,9 +138,32 @@ async function busy(button, busyLabel, fn) {
 }
 
 function toast(message, kind = "ok", { ms } = {}) {
-  const el = h("div", { class: `toast ${kind === "error" ? "toast-error" : ""}` }, h("div", null, message));
+  const el = h("div", { class: `toast ${kind === "error" ? "toast-error" : kind === "warn" ? "toast-warn" : ""}` }, h("div", null, message));
   document.getElementById("toasts").append(el);
-  setTimeout(() => el.remove(), ms ?? (kind === "error" ? 9000 : 4500));
+  setTimeout(() => el.remove(), ms ?? (kind === "ok" ? 4500 : 9000));
+}
+
+/** Two short tones for a warning, made in the page (nothing to load). Browsers may hold it until the page has been clicked once. */
+let audioContext;
+function warningSound() {
+  try {
+    audioContext ??= new AudioContext();
+    if (audioContext.state === "suspended") void audioContext.resume();
+    const t = audioContext.currentTime;
+    for (const [freq, at] of [[880, 0], [660, 0.18]]) {
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t + at);
+      gain.gain.exponentialRampToValueAtTime(0.2, t + at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + at + 0.16);
+      osc.connect(gain).connect(audioContext.destination);
+      osc.start(t + at);
+      osc.stop(t + at + 0.17);
+    }
+  } catch {
+    // no sound here: the toast still says it
+  }
 }
 
 function confirmDialog({ title, text, confirm = "Confirm", danger = true }) {
@@ -277,6 +300,9 @@ function pref(key, fallback) {
     return fallback;
   }
 }
+
+/** The page's preferences that go along in a dx state file (none holds a path); core's STATE_PAGE_PREFS checks them again. */
+const STATE_PAGE_PREFS = ["theme", "detailMode", "aiLane", "toolAgent", "toolModel", "toolEffort", "gitTab", "chaosTab", "labTab", "activityView", "activitySince", "activityWho", "cleanupDays", "journalDays", "summaryDays", "summaryGithub", "visualView", "gremlinActions", "gremlinPath", "localePaths", "localeRtl"];
 
 function setPref(key, value) {
   try {
@@ -948,6 +974,7 @@ const pages = [
   { id: "git", label: "Code", title: "Code", icon: "git", render: gitPage, project: true },
   { id: "requests", label: "API", icon: "requests", render: requestsPage, project: true },
   { id: "activity", label: "Activity", icon: "activity", render: activityPage, project: true },
+  { id: "tools", label: "Tools", icon: "template", render: toolsPage, project: true },
   { id: "data", label: "Data", icon: "data", render: dataPage, project: true },
   { id: "chaos", label: "Break it", icon: "chaos", render: chaosPage, project: true },
   { id: "env", label: "Env & secrets", icon: "key", render: envPage, project: true },
@@ -1120,8 +1147,36 @@ function overviewPage(root) {
   const dir = currentProject();
   const leave = projectsPage(root, { only: dir });
   const spec = specCard(dir);
-  root.append(spec.el, tourSection(dir));
+  root.append(pinnedTools(dir), spec.el, tourSection(dir));
   return () => (leave(), spec.stop());
+}
+
+/** The project's views pinned to its Overview (a Tools page choice), each run as the page opens. */
+function pinnedTools(dir) {
+  const el = h("section", { class: "section", "aria-labelledby": "pinned-title", hidden: true });
+  (async () => {
+    let tools;
+    try {
+      tools = (await api(`/api/tools?dir=${encodeURIComponent(dir)}`)).tools.filter((t) => t.kind === "view" && t.pin?.includes("overview"));
+    } catch {
+      return;
+    }
+    if (!tools.length) return;
+    el.hidden = false;
+    fill(
+      el,
+      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "pinned-title" }, "Pinned tools"), h("a", { class: "btn btn-sm btn-ghost", href: "#/tools" }, "All tools")),
+      tools.map((t) => {
+        const body = h("div", { "aria-live": "polite" }, loadingView(`Running ${t.name}…`));
+        api("/api/tools/run", { method: "POST", body: { dir, id: t.id } }).then(
+          (r) => fill(body, toolResultView(r, t)),
+          (err) => fill(body, errorView(err)),
+        );
+        return h("div", { class: "card card-pad section" }, h("strong", null, t.name), body);
+      }),
+    );
+  })();
+  return el;
 }
 
 /**
@@ -4769,12 +4824,50 @@ function envPage(root) {
   const deep = new Map(); // dir -> full audit with the key scan
   const holder = h("div", { class: "section" }, h("div", { class: "card" }, loadingView("Looking for its .env files…")));
   const summary = h("div");
+  const alertsCard = h("div", { class: "card card-pad env-alerts" });
   append(
     root,
     pageHead("Env & secrets", "Its .env files, and whether git could leak them. Keys, certificates and .env files never belong in git (OWASP).", btn("Check again", () => load(), { iconName: "refresh", kind: "ghost" })),
+    alertsCard,
     summary,
     holder,
   );
+
+  // This project's alerts: on unless turned off here, or everywhere in Settings.
+  async function loadAlerts() {
+    let s;
+    try {
+      s = await api(`/api/alerts/project?dir=${encodeURIComponent(dir)}`);
+    } catch {
+      return alertsCard.remove();
+    }
+    const on = h("input", { type: "checkbox", id: "env-alerts-on", checked: s.on, disabled: !s.everywhere });
+    const os = h("input", { type: "checkbox", id: "env-alerts-os", checked: s.os, disabled: !s.on });
+    const save = async () => {
+      try {
+        const r = await api("/api/alerts/project", { method: "POST", body: { dir, on: on.checked, os: os.checked } });
+        os.disabled = !r.on;
+        os.checked = r.os;
+        toast(r.on ? (r.os ? "Alerts on, with system notifications" : "Alerts on, in dx only") : "Alerts off for this project");
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+    on.addEventListener("change", save);
+    os.addEventListener("change", save);
+    fill(
+      alertsCard,
+      h("strong", null, "Alerts"),
+      h(
+        "div",
+        { class: "env-alerts-options" },
+        h("label", { class: "check", for: "env-alerts-on" }, on, "Warn me when a .env file changes, is staged or is committed, and when this project's tools say something"),
+        h("label", { class: "check", for: "env-alerts-os" }, os, "Also as a notification from the system, outside dx"),
+      ),
+      s.everywhere ? null : h("p", { class: "dim" }, "Alerts are off for every project in ", h("a", { href: "#/health" }, "Settings"), "."),
+    );
+  }
+  void loadAlerts();
 
   async function load() {
     try {
@@ -7556,6 +7649,7 @@ function activityPage(root) {
   // Mock mode for the project shown: its set (without whole bodies) and the endpoint being edited.
   let mocks = null;
   let apiSpec = null; // { dir, spec }: the project's API spec, for the APIs view
+  let columnTools = { dir: "", tools: [] }; // the project's Activity column tools that are on
   let mockEdit = null; // { id, el }
   const mockHolder = h("div", { class: "mock-holder" });
 
@@ -8247,6 +8341,18 @@ function activityPage(root) {
   async function loadApiSpec() {
     const d = dir;
     if (!d) return void (apiSpec = null);
+    // The project's column tools (Tools page) add columns to the APIs view.
+    if (columnTools.dir !== d) {
+      columnTools = { dir: d, tools: [] };
+      api(`/api/tools?dir=${encodeURIComponent(d)}`).then(
+        (r) => {
+          if (d !== dir) return;
+          columnTools = { dir: d, tools: r.tools.filter((t) => t.kind === "column" && !t.off) };
+          if (view === "apis" && columnTools.tools.length) render();
+        },
+        () => {},
+      );
+    }
     if (apiSpec?.dir === d) return;
     try {
       const r = await api(`/api/lab/spec?dir=${encodeURIComponent(d)}`);
@@ -8296,12 +8402,23 @@ function activityPage(root) {
       : null;
     if (!groups.size) return holder.replaceChildren(...[specNote, stateView("No API calls", "Requests your app makes to its API show up here, each endpoint with its calls, payloads, responses and times.")].filter(Boolean));
     const list = [...groups.values()].sort((a, b) => Date.parse(b.calls[b.calls.length - 1].at) - Date.parse(a.calls[a.calls.length - 1].at));
+    // Columns from the project's column tools, each worked out from an endpoint's calls (oldest first).
+    const extra = !many && dir && columnTools.dir === dir ? columnTools.tools : [];
+    const fitsColumn = (t, g) => {
+      const [m, ...p] = g.endpoint.split(" ");
+      return (!t.endpoint?.method || t.endpoint.method === m) && (!t.endpoint?.path || toolPathMatches(t.endpoint.path, (g.calls[0]?.url ?? p.join(" ")).replace(/^https?:\/\/[^/]+/, "")));
+    };
+    const columnCell = (t, g) => (fitsColumn(t, g) ? toolFormat(toolAggregate([...g.calls].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((c) => toolColumnValue(t.from, c)), t.show), t.format) : h("span", { class: "dim" }, "—"));
+    // By the list's own width (the Activity page's left column takes part of the window): the
+    // stylesheet narrows the list under 600 px, and each tool's column needs about 120 px more.
+    const wide = extra.length > 0 && holder.clientWidth >= 600 + extra.length * 120;
+    const grid = wide ?{ gridTemplateColumns: `minmax(0, 1fr) 4.5em 5.5em 5.5em 9em ${extra.map(() => "8em").join(" ")}` } : undefined;
     holder.replaceChildren(
       ...(specNote ? [specNote] : []),
       h(
         "div",
         { class: "api-list" },
-        h("div", { class: "api-row api-header", "aria-hidden": "true" }, h("span", null, "Endpoint"), h("span", null, "Calls"), h("span", null, "Avg"), h("span", null, "Slowest"), h("span", null, "Last")),
+        h("div", { class: "api-row api-header", "aria-hidden": "true", style: grid }, h("span", null, "Endpoint"), h("span", null, "Calls"), h("span", null, "Avg"), h("span", null, "Slowest"), h("span", null, "Last"), wide ? extra.map((t) => h("span", { title: `${t.name} (a tool)` }, t.label)) : null),
         list.map((g) => {
           const times = g.calls.map((c) => c.ms).filter((ms) => ms !== undefined);
           const avg = times.length ? Math.round(times.reduce((a, b) => a + b, 0) / times.length) : undefined;
@@ -8318,7 +8435,7 @@ function activityPage(root) {
             },
             h(
               "summary",
-              { class: "api-row" },
+              { class: "api-row", style: grid },
               h(
                 "span",
                 { class: "api-endpoint" },
@@ -8334,11 +8451,14 @@ function activityPage(root) {
                   ? h("span", { class: `badge ${mocks.on ? "badge-warn" : ""}`, title: mocks.on ? "Answered by dx's mock mode while it's on" : "Has a mock; mock mode is off" }, mocks.on ? "mocked" : "mock ready")
                   : null,
                 failed ? h("span", { class: "badge badge-danger" }, `${failed} failed`) : null,
+                // Without room for the tools' columns, their values sit under the endpoint, label and value.
+                !wide && extra.length ? h("span", { class: "dim api-tool-line" }, extra.map((t) => h("span", null, `${t.label}: `, columnCell(t, g)))) : null,
               ),
               h("span", null, String(g.calls.length)),
               h("span", { class: "dim" }, avg === undefined ? "–" : `${avg} ms`),
               h("span", { class: slow !== undefined && slow > 1000 ? "api-slow" : "dim" }, slow === undefined ? "–" : `${slow} ms`),
               h("span", null, h("span", { class: `badge ${isProblemEvent(last) ? "badge-danger" : "badge-ok"}` }, last.error ? "failed" : String(last.status ?? "…")), h("span", { class: "dim" }, ` ${relativeTime(Date.parse(last.at))}`)),
+              wide ? extra.map((t) => h("span", { class: "api-tool-cell", title: t.label }, columnCell(t, g))) : null,
             ),
             h("ul", { class: "activity-list api-calls" }, [...g.calls].reverse().slice(0, 50).map((c) => activityRow(c, false, openRows.has(String(c.id))))),
           );
@@ -9980,6 +10100,654 @@ function depsPage(root) {
   };
 }
 
+// ------------------------------------------------------------------ Tools
+
+const TOOL_KINDS = { view: "View", watch: "Watch", operation: "Operation", answer: "Changes answers", page: "Changes the app's page", column: "Activity column" };
+/** Kinds that change something while they're on, so they can be switched off without deleting them. */
+const TOOL_SWITCHABLE = new Set(["answer", "page", "column"]);
+
+/** A path pattern against a path, as the server reads it: "*" one segment, "**" the rest, ":id" any value. */
+function toolPathMatches(pattern, p) {
+  const pat = pattern.split("?")[0].split("/").filter(Boolean);
+  const segs = p.split("?")[0].split("#")[0].split("/").filter(Boolean);
+  for (let i = 0; i < pat.length; i++) {
+    if (pat[i] === "**") return true;
+    if (i >= segs.length) return false;
+    if (pat[i] === "*" || pat[i].startsWith(":") || /^\{.+\}$/.test(pat[i])) continue;
+    if (pat[i].toLowerCase() !== segs[i].toLowerCase()) return false;
+  }
+  return pat.length === segs.length;
+}
+
+/** One call's value for an Activity column tool, and the values as one (as core's columnValue and aggregateColumn do). */
+function toolColumnValue(from, e) {
+  if (from === "status") return e.status;
+  if (from === "ms") return e.ms;
+  const body = from.startsWith("body") ? e.responseBody : e.requestBody;
+  let data;
+  try {
+    data = JSON.parse(body ?? "");
+  } catch {
+    data = body;
+  }
+  return toolPath(data, from.startsWith("body") ? from.slice(5) : from.slice(8));
+}
+function toolAggregate(values, show) {
+  const present = values.filter((v) => v !== undefined && v !== null && v !== "");
+  const nums = present.map(Number).filter((n) => Number.isFinite(n));
+  if (show === "last") return present[present.length - 1];
+  if (show === "count") return present.length;
+  if (show === "unique") return [...new Set(present.map((v) => (typeof v === "object" ? JSON.stringify(v) : String(v))))].slice(0, 10).join(", ");
+  if (!nums.length) return show === "sum" ? 0 : undefined;
+  if (show === "sum") return nums.reduce((a, b) => a + b, 0);
+  if (show === "avg") return nums.reduce((a, b) => a + b, 0) / nums.length;
+  return show === "min" ? Math.min(...nums) : Math.max(...nums);
+}
+const TOOL_EXAMPLES = [
+  "Show the latest /api/orders answer as a table of customer, total and status, failed ones in red",
+  "Tell me, on Floppy's line too, whenever a request answers 500",
+  "Log in as the test user, then create 5 orders with the token it gives back",
+];
+
+/** The value at a dot path, as the server reads it ("" is the value itself). */
+function toolPath(v, p) {
+  if (!p || p === ".") return v;
+  let cur = v;
+  for (const seg of p.split(".")) {
+    if (cur === null || cur === undefined || ["__proto__", "constructor", "prototype"].includes(seg)) return undefined;
+    cur = Array.isArray(cur) && /^\d+$/.test(seg) ? cur[Number(seg)] : typeof cur === "object" && Object.prototype.hasOwnProperty.call(cur, seg) ? cur[seg] : undefined;
+  }
+  return cur;
+}
+
+/** A value the way a tool's display asks for it: money, dates, times, sizes… */
+function toolFormat(v, format) {
+  if (v === undefined || v === null || v === "") return h("span", { class: "dim" }, "—");
+  const n = typeof v === "number" ? v : Number(v);
+  const finite = typeof v !== "boolean" && Number.isFinite(n);
+  switch (format) {
+    case "number":
+      return finite ? n.toLocaleString() : String(v);
+    case "money":
+      return finite ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v);
+    case "percent":
+      return finite ? `${(Math.abs(n) <= 1 ? n * 100 : n).toLocaleString(undefined, { maximumFractionDigits: 1 })}%` : String(v);
+    case "date": {
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString();
+    }
+    case "ago": {
+      const t = typeof v === "number" ? v : Date.parse(v);
+      return Number.isNaN(t) ? String(v) : relativeTime(t);
+    }
+    case "ms":
+      return finite ? `${Math.round(n)} ms` : String(v);
+    case "bytes":
+      return finite ? formatBytes(n) : String(v);
+    case "badge":
+      return h("span", { class: "badge" }, String(v));
+    case "json":
+      return h("code", { class: "mono" }, JSON.stringify(v));
+    default:
+      return typeof v === "object" ? h("code", { class: "mono" }, JSON.stringify(v)) : String(v);
+  }
+}
+
+/** A view's data in the shape its display asks for: a table, cards, one number, bars, or the data as a tree. */
+function toolDisplayView(display, data, tones = []) {
+  const rows = Array.isArray(data) ? data : data === undefined || data === null ? [] : [data];
+  const tone = (i) => (tones[i] ? `tool-tone-${tones[i]}` : "");
+  const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+  if (data === undefined) return stateView("Nothing to show", "The tool's data came back empty.");
+  switch (display?.as) {
+    case "number":
+      return h("div", { class: "tool-number" }, h("span", { class: "tool-number-value" }, toolFormat(Array.isArray(data) ? data.length : data, display.format ?? "number")), display.label ? h("span", { class: "dim" }, display.label) : null);
+    case "bars": {
+      const vals = rows.map((r) => Number(toolPath(r, display.value)) || 0);
+      const max = Math.max(1, ...vals.map(Math.abs));
+      return h(
+        "ul",
+        { class: "tool-bars" },
+        rows.slice(0, 100).map((r, i) =>
+          h(
+            "li",
+            null,
+            h("span", { class: "tool-bar-label" }, String(toolPath(r, display.label) ?? "—")),
+            h("span", { class: "tool-bar-track" }, h("span", { class: "tool-bar", style: { width: `${(Math.abs(vals[i]) / max) * 100}%` } })),
+            h("span", { class: "tool-bar-value" }, toolFormat(vals[i], display.format ?? "number")),
+          ),
+        ),
+      );
+    }
+    case "cards":
+      return h(
+        "div",
+        { class: "tool-cards" },
+        rows.slice(0, 200).map((r, i) => {
+          const fields = display.fields ?? (isObj(r) ? Object.keys(r).filter((k) => k !== display.title).slice(0, 8).map((field) => ({ field })) : []);
+          return h("div", { class: `card card-pad tool-card ${tone(i)}` }, h("strong", null, String(toolPath(r, display.title) ?? "—")), h("dl", { class: "tool-fields" }, fields.map((c) => [h("dt", null, c.label ?? c.field), h("dd", null, toolFormat(toolPath(r, c.field), c.format))])));
+        }),
+      );
+    case "table": {
+      if (!rows.length) return stateView("Nothing to show", "No rows after the tool's steps.");
+      const cols = display.columns ?? (isObj(rows[0]) ? Object.keys(rows[0]).slice(0, 12).map((field) => ({ field })) : [{ field: "", label: "Value" }]);
+      return h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "table" },
+          h("thead", null, h("tr", null, cols.map((c) => h("th", { scope: "col" }, c.label ?? c.field)))),
+          h("tbody", null, rows.slice(0, 1000).map((r, i) => h("tr", { class: tone(i) || undefined }, cols.map((c) => h("td", null, toolFormat(toolPath(r, c.field), c.format)))))),
+        ),
+      );
+    }
+    default:
+      return h("div", { class: "card card-pad" }, jsonTree(data));
+  }
+}
+
+/** What a run gave back: a view's display, a watch's matches, or an operation's requests one by one. */
+function toolResultView(r, tool) {
+  if (r.kind === "answer") {
+    if (r.note) return h("div", { class: "note", role: "status" }, icon("info"), h("p", null, r.note));
+    return h(
+      "div",
+      { class: "tool-compare" },
+      h("div", { class: "section" }, h("strong", null, "The latest answer"), h("div", { class: "card card-pad" }, jsonTree(r.before))),
+      h("div", { class: "section" }, h("strong", null, "As the app gets it, with this tool"), h("div", { class: "card card-pad" }, jsonTree(r.after))),
+    );
+  }
+  if (r.kind === "page") {
+    return h(
+      "div",
+      { class: "section" },
+      h("p", { class: "dim" }, `On ${r.path} while you use the app through dx (its .localhost address). Your code isn't touched.`),
+      r.changes.map((c) =>
+        h(
+          "div",
+          { class: "section" },
+          h("strong", null, c.title ? `${c.type[0].toUpperCase()}${c.type.slice(1)}: ${c.title}` : `${c.type[0].toUpperCase()}${c.type.slice(1)}`),
+          c.note ? h("p", { class: "dim" }, c.note) : null,
+          c.data !== undefined ? toolDisplayView(c.display, c.data, c.tones) : null,
+        ),
+      ),
+    );
+  }
+  if (r.kind === "column") {
+    if (!r.rows.length) return h("p", { class: "dim" }, "No recorded calls match it yet. Use the app through dx and the column fills in on the Activity page.");
+    return h(
+      "div",
+      { class: "section" },
+      h("p", { class: "dim" }, "As it shows in Activity's API list, from the last 7 days:"),
+      h(
+        "div",
+        { class: "table-wrap" },
+        h("table", { class: "table" }, h("thead", null, h("tr", null, h("th", { scope: "col" }, "Endpoint"), h("th", { scope: "col" }, r.label), h("th", { scope: "col", class: "num" }, "Calls"))), h("tbody", null, r.rows.map((x) => h("tr", null, h("td", { class: "mono" }, x.endpoint), h("td", null, toolFormat(x.value, r.format)), h("td", { class: "num" }, String(x.calls)))))),
+      ),
+    );
+  }
+  if (r.kind === "view") {
+    const meta = r.meta ?? {};
+    return h(
+      "div",
+      { class: "section" },
+      meta.status !== undefined || meta.ms !== undefined ? h("p", { class: "dim" }, `Asked the dev server: ${meta.status ?? meta.error} in ${meta.ms ?? "?"} ms`) : null,
+      meta.error ? h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, meta.error)) : toolDisplayView(tool.display ?? r.display, r.data, r.tones),
+      r.data !== undefined ? h("details", { class: "tool-raw" }, h("summary", null, "The data"), liveDetail(bodyBlock("After the steps", JSON.stringify(r.data, null, 2), "application/json"))) : null,
+    );
+  }
+  if (r.kind === "watch") {
+    return h(
+      "div",
+      { class: "section" },
+      h("p", null, h("strong", null, plural(r.count, "match", "matches")), h("span", { class: "dim" }, ` in the last 24 hours, ${r.lastHour} in the last hour.`)),
+      r.matches.length
+        ? h(
+            "ul",
+            { class: "tool-matches" },
+            r.matches.map((m) =>
+              h(
+                "li",
+                null,
+                h("span", { class: "dim" }, relativeTime(Date.parse(m.at))),
+                m.status !== undefined ? h("span", { class: `badge ${m.status >= 400 ? "badge-danger" : "badge-ok"}` }, String(m.status)) : h("span", { class: "badge" }, m.type),
+                h("span", { class: "mono tool-match-text" }, m.url ? `${(m.method ?? "GET").toUpperCase()} ${m.url}` : m.text),
+              ),
+            ),
+          )
+        : h("p", { class: "dim" }, "Nothing matched yet. It keeps watching while dx runs; use the app and matches show up here."),
+      h("p", { class: "dim" }, "Each match is in the project's ", h("a", { href: "#/activity" }, "Activity"), " with its details."),
+    );
+  }
+  return h(
+    "div",
+    { class: "section" },
+    r.stopped ? h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, r.stopped)) : h("div", { class: "note", role: "status" }, icon(r.ok ? "check" : "warn"), h("p", null, r.ok ? `All ${plural(r.steps.length, "request")} answered as expected.` : "Some requests didn't answer as expected.")),
+    h(
+      "ul",
+      { class: "tool-steps" },
+      r.steps.map((s) =>
+        h(
+          "li",
+          null,
+          h(
+            "details",
+            null,
+            h("summary", null, h("span", { class: `badge ${s.ok ? "badge-ok" : "badge-danger"}` }, s.error ?? String(s.status ?? "?")), h("strong", null, s.name), h("span", { class: "mono dim" }, `${s.method} ${s.path}`), h("span", { class: "dim" }, `${s.ms} ms`)),
+            s.body !== undefined ? liveDetail(bodyBlock("Answer", s.body, "application/json")) : null,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * The project's custom tools: views of its data, watches on what it does, operations to run. Made
+ * in a chat with Claude Code or Codex (only when you send), then run by dx with no AI; kept in
+ * ~/.dx/tools, edited, deleted, exported and imported as one file.
+ */
+function toolsPage(root) {
+  const dir = currentProject();
+  let tools = [];
+  let agents = [];
+  let efforts = [];
+  let running = false;
+  let openId = "";
+  let builder = null; // { id?, tool, history, name, named }
+  let watchTimer = 0;
+  let stopped = false;
+  const listEl = h("section", { class: "section", "aria-labelledby": "tools-title" });
+  const panel = h("div", { class: "section" });
+  const importPanel = h("div");
+  const fileInput = h("input", {
+    type: "file",
+    accept: ".json,application/json",
+    hidden: true,
+    "aria-label": "Tools file",
+    onchange: () => {
+      const f = fileInput.files?.[0];
+      fileInput.value = "";
+      if (f) void importFile(f);
+    },
+  });
+  append(
+    root,
+    pageHead(
+      "Tools",
+      "Your own helpers for this project: views of its data, watches on what it does, and operations to run. Made in a chat, then run by dx the same way every time, with no AI.",
+      btn("New tool", () => openBuilder(), { kind: "primary", iconName: "new" }),
+      btn("Import", () => fileInput.click(), { iconName: "folder", kind: "ghost", title: "Add tools from a .dxtools.json file" }),
+      btn("Export", (ev) => exportAll(ev.currentTarget), { iconName: "save", kind: "ghost", title: "Save every tool of this project in one file, with their requests' headers and bodies as written" }),
+    ),
+    importPanel,
+    panel,
+    listEl,
+    fileInput,
+  );
+
+  async function load() {
+    try {
+      const d = await api(`/api/tools?dir=${encodeURIComponent(dir)}`);
+      ({ tools, agents, efforts, running } = d);
+    } catch (err) {
+      return fill(listEl, errorView(err, load));
+    }
+    renderList();
+  }
+
+  function renderList() {
+    const title = h("h2", { class: "section-title", id: "tools-title" }, "This project's tools");
+    if (!tools.length) {
+      fill(
+        listEl,
+        title,
+        h(
+          "div",
+          { class: "card" },
+          stateView(
+            "No tools yet",
+            "Describe what you want and it's made for you: a table of an API's answers, a watch on failing requests, a few requests sent in order.",
+            h(
+              "div",
+              { class: "tool-examples" },
+              TOOL_EXAMPLES.map((ex) => {
+                const b = btn(ex, () => openBuilder(null, ex), { small: true, title: "Start a tool from this" });
+                b.classList.add("tool-example");
+                return b;
+              }),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+    fill(
+      listEl,
+      title,
+      h(
+        "ul",
+        { class: "tool-list" },
+        tools.map((t) =>
+          h(
+            "li",
+            { class: `card card-pad tool-item ${t.id === openId ? "tool-item-open" : ""}` },
+            h(
+              "div",
+              { class: "tool-item-head" },
+              h("strong", null, t.name),
+              h("span", { class: "tool-badges" }, h("span", { class: "badge" }, TOOL_KINDS[t.kind]), t.off ? h("span", { class: "badge badge-warn" }, "off") : null, t.pin?.includes("overview") ? h("span", { class: "badge badge-accent" }, "on Overview") : null),
+            ),
+            t.description ? h("p", { class: "dim" }, t.description) : null,
+            h(
+              "div",
+              { class: "toolbar" },
+              btn(t.kind === "operation" ? "Open" : TOOL_SWITCHABLE.has(t.kind) ? "Preview" : "Run", () => openTool(t), { small: true, kind: t.id === openId ? "" : "primary", iconName: "play" }),
+              TOOL_SWITCHABLE.has(t.kind) ? btn(t.off ? "Turn on" : "Turn off", (ev) => switchTool(ev.currentTarget, t), { small: true, kind: "ghost", iconName: t.off ? "play" : "stop", title: t.off ? "Start changing things again" : "Stop changing things, without deleting it" }) : null,
+              btn("Edit", () => openBuilder(t), { small: true, kind: "ghost", iconName: "fix" }),
+              btn(null, () => removeTool(t), { small: true, kind: "danger-ghost", iconName: "x", name: `Delete ${t.name}`, title: "Delete this tool" }),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  const runTool = (t, extra = {}) => api("/api/tools/run", { method: "POST", body: t.id && !extra.draft ? { dir, id: t.id, ...extra } : { dir, tool: t, ...extra, draft: undefined } });
+
+  function openTool(t) {
+    builder = null;
+    openId = t.id;
+    clearTimeout(watchTimer);
+    renderList();
+    const result = h("div", { "aria-live": "polite" }, loadingView("Running it…"));
+    const inputs = (t.inputs ?? []).map((i) => ({ i, el: h("input", { class: "input", id: `tool-in-${i.name}`, value: i.default ?? "" }) }));
+    const go = async (button) => {
+      const values = Object.fromEntries(inputs.map(({ i, el }) => [i.name, el.value]));
+      const run = async () => {
+        try {
+          fill(result, toolResultView(await runTool(t, { inputs: values }), t));
+        } catch (err) {
+          fill(result, errorView(err, () => go()));
+        }
+      };
+      if (button) await busy(button, "Running…", run);
+      else await run();
+      if (t.kind === "watch" && openId === t.id && !stopped) watchTimer = setTimeout(() => go(), 5000);
+    };
+    const runButton = btn(t.kind === "operation" ? "Run it" : "Refresh", (ev) => go(ev.currentTarget), { kind: t.kind === "operation" ? "primary" : "", iconName: t.kind === "operation" ? "play" : "refresh" });
+    const offNote = TOOL_SWITCHABLE.has(t.kind) && t.off ? h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, "It's off: this is what it would do. Turn it on in the list to apply it.")) : null;
+    fill(
+      panel,
+      h(
+        "div",
+        { class: "card card-pad section tool-open" },
+        h(
+          "div",
+          { class: "section-head" },
+          h("div", null, h("h2", { class: "section-title" }, t.name), t.description ? h("p", { class: "dim" }, t.description) : null),
+          h("div", { class: "toolbar" }, runButton, btn("Edit", () => openBuilder(t), { kind: "ghost", iconName: "fix" }), btn("Close", () => ((openId = ""), clearTimeout(watchTimer), fill(panel), renderList()), { kind: "ghost", iconName: "x" })),
+        ),
+        t.kind === "operation" && !running ? h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, "It sends its requests to the dev server dx runs: run the project from its Overview first.")) : null,
+        offNote,
+        inputs.length ? h("div", { class: "form-grid" }, inputs.map(({ i, el }) => h("label", { class: "field", for: el.id }, h("span", { class: "field-label" }, i.label ?? i.name), el))) : null,
+        t.kind === "operation" ? h("p", { class: "dim" }, `${plural(t.requests.length, "request")} to the dev server, in order, when you press Run it.`) : null,
+        result,
+      ),
+    );
+    if (t.kind === "operation") fill(result);
+    else void go();
+  }
+
+  async function switchTool(button, t) {
+    const { createdAt: _c, updatedAt: _u, ...tool } = t;
+    const r = await busy(button, t.off ? "Turning on…" : "Turning off…", () => api("/api/tools/save", { method: "POST", body: { dir, tool: { ...tool, off: t.off ? undefined : true } } }));
+    if (!r) return;
+    toast(r.off ? `"${r.name}" is off` : `"${r.name}" is on`);
+    await load();
+  }
+
+  async function removeTool(t) {
+    const yes = await confirmDialog({ title: `Delete "${t.name}"?`, text: "It's removed from this project's tools. Export them first if you might want it back.", confirm: "Delete" });
+    if (!yes) return;
+    try {
+      await api("/api/tools/delete", { method: "POST", body: { dir, id: t.id } });
+      toast(`Deleted "${t.name}"`);
+      if (openId === t.id) ((openId = ""), fill(panel));
+      await load();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  // ---- making or editing one, in a chat
+
+  function openBuilder(existing = null, prompt = "") {
+    openId = "";
+    clearTimeout(watchTimer);
+    const { id: _i, createdAt: _c, updatedAt: _u, ...tool } = existing ?? {};
+    builder = { id: existing?.id, tool: existing ? tool : null, history: [], name: existing?.name ?? "", named: !!existing };
+    renderList();
+    renderBuilder(prompt);
+  }
+
+  function renderBuilder(prompt = "") {
+    const b = builder;
+    const messages = h("ol", { class: "tool-chat", "aria-live": "polite", "aria-label": "The conversation" });
+    const drawMessages = () =>
+      fill(
+        messages,
+        b.history.length ? null : h("li", { class: "tool-msg tool-msg-hint" }, b.tool ? "Say what to change: a column, a filter, the display, what to watch for…" : "Describe the tool: what data, which shape, what to watch for, or which requests to send."),
+        b.history.map((m) => h("li", { class: `tool-msg tool-msg-${m.role}` }, m.role === "assistant" && m.by ? h("span", { class: "tool-msg-by" }, m.by) : null, m.text, m.problem ? h("span", { class: "tool-msg-problem" }, ` (${m.problem})`) : null)),
+      );
+    drawMessages();
+    const input = h("textarea", { class: "input", id: "tool-msg", rows: 3, placeholder: "e.g. Show /api/orders as a table of customer, total and status", "aria-label": "Message" }, prompt);
+    const agentSelect = h("select", { id: "tool-agent", "aria-label": "Agent", onchange: () => (setPref("toolAgent", agentSelect.value), fillModels()) }, agents.map((a) => h("option", { value: a.id, selected: a.id === pref("toolAgent", agents[0]?.id) }, a.name)));
+    const modelList = h("datalist", { id: "tool-models" });
+    const modelInput = h("input", { class: "input", id: "tool-model", list: "tool-models", placeholder: "Default", value: pref("toolModel", ""), autocomplete: "off", spellcheck: "false", onchange: () => setPref("toolModel", modelInput.value.trim()) });
+    const fillModels = () => fill(modelList, (agents.find((a) => a.id === agentSelect.value)?.models ?? []).map((m) => h("option", { value: m })));
+    fillModels();
+    const effortSelect = h("select", { id: "tool-effort", onchange: () => setPref("toolEffort", effortSelect.value) }, h("option", { value: "" }, "Default"), efforts.map((e) => h("option", { value: e, selected: e === pref("toolEffort", "") }, e)));
+    const send = btn("Send", null, { kind: "primary", iconName: "right", type: "submit", disabled: !agents.length });
+    const chatForm = h(
+      "form",
+      {
+        class: "tool-chat-form",
+        onsubmit: (e) => {
+          e.preventDefault();
+          void sendMessage();
+        },
+      },
+      input,
+      h(
+        "div",
+        { class: "tool-chat-settings" },
+        agents.length > 1 ? h("label", { class: "field", for: "tool-agent" }, h("span", { class: "field-label" }, "Agent"), agentSelect) : null,
+        h("label", { class: "field", for: "tool-model" }, h("span", { class: "field-label" }, "Model"), modelInput, modelList),
+        h("label", { class: "field", for: "tool-effort" }, h("span", { class: "field-label" }, "Effort"), effortSelect),
+        send,
+      ),
+    );
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) (e.preventDefault(), void sendMessage());
+    });
+
+    const preview = h("div", { class: "tool-preview", "aria-live": "polite" });
+    const nameInput = h("input", { class: "input", id: "tool-name", value: b.name, placeholder: "Name it", oninput: () => ((b.name = nameInput.value), (b.named = true)) });
+    const json = h("textarea", { class: "input mono tool-json", id: "tool-json", rows: 14, spellcheck: "false", "aria-label": "The tool's definition" });
+    const showJson = () => (json.value = b.tool ? JSON.stringify(b.tool, null, 2) : "");
+    showJson();
+    const useJson = btn("Use this", async (ev) => {
+      const button = ev.currentTarget;
+      let parsed;
+      try {
+        parsed = JSON.parse(json.value);
+      } catch {
+        return toast("That isn't valid JSON.", "error");
+      }
+      const r = await busy(button, "Checking…", () => api("/api/tools/check", { method: "POST", body: { dir, tool: parsed } }));
+      if (!r) return;
+      const { id: _i, ...tool } = r;
+      b.tool = tool;
+      if (!b.named) ((b.name = tool.name), (nameInput.value = tool.name));
+      showJson();
+      void drawPreview();
+    }, { small: true, iconName: "check", title: "Check the definition and preview it" });
+    const save = btn(b.id ? "Save changes" : "Save tool", null, { kind: "primary", iconName: "save", type: "button" });
+    save.addEventListener("click", async (ev) => {
+      const button = ev.currentTarget;
+      if (!b.tool) return toast("There's no tool yet: describe it in the chat, or write its definition.", "error");
+      const r = await busy(button, "Saving…", () => api("/api/tools/save", { method: "POST", body: { dir, tool: { ...b.tool, id: b.id, name: (b.name || b.tool.name).trim() } } }));
+      if (!r) return;
+      toast(`Saved "${r.name}"`);
+      builder = null;
+      fill(panel);
+      await load();
+      openTool(tools.find((t) => t.id === r.id) ?? r);
+    });
+
+    async function drawPreview(force = false) {
+      if (!b.tool) return fill(preview, h("p", { class: "dim" }, "The tool shows here as soon as there is one."));
+      if (b.tool.kind === "operation" && !force)
+        return fill(
+          preview,
+          h("p", { class: "dim" }, `An operation: ${plural(b.tool.requests.length, "request")} to the dev server, in order.`),
+          btn("Try it once", (ev) => void tryOperation(ev.currentTarget), { iconName: "play", title: "Sends its requests to the dev server dx runs" }),
+        );
+      fill(preview, loadingView("Running it…"));
+      try {
+        fill(preview, toolResultView(await runTool(b.tool, { draft: true }), b.tool));
+      } catch (err) {
+        fill(preview, errorView(err, () => drawPreview(force)));
+      }
+    }
+    async function tryOperation(button) {
+      const yes = await confirmDialog({ title: `Send ${plural(b.tool.requests.length, "request")} to the dev server?`, text: "The operation runs once, for real, against the dev server dx runs for this project.", confirm: "Send them", danger: false });
+      if (yes) await busy(button, "Sending…", () => drawPreview(true));
+    }
+
+    async function sendMessage() {
+      const message = input.value.trim();
+      if (!message) return;
+      if (!agents.length) return toast("Install Claude Code or Codex to make tools in a chat. You can write one by hand under Definition.", "error");
+      const previous = b.history.map(({ role, text }) => ({ role, text }));
+      b.history.push({ role: "user", text: message });
+      input.value = "";
+      drawMessages();
+      const thinking = h("li", { class: "tool-msg tool-msg-assistant" }, h("span", { class: "spinner", "aria-hidden": "true" }), ` ${agents.find((a) => a.id === agentSelect.value)?.name ?? "The agent"} is working on it…`);
+      messages.append(thinking);
+      send.disabled = true;
+      try {
+        const r = await api("/api/tools/chat", { method: "POST", body: { dir, message, history: previous, tool: b.tool ?? undefined, agent: agents.length > 1 ? agentSelect.value : undefined, model: modelInput.value.trim() || undefined, effort: effortSelect.value || undefined } });
+        b.history.push({ role: "assistant", text: r.reply || (r.tool ? "Here it is." : ""), by: r.by, problem: r.problem });
+        if (r.tool) {
+          const { id: _i, ...tool } = r.tool;
+          b.tool = tool;
+          if (!b.named) ((b.name = tool.name), (nameInput.value = tool.name));
+          showJson();
+          void drawPreview();
+        }
+      } catch (err) {
+        b.history.push({ role: "assistant", text: err.message, problem: "couldn't answer" });
+      } finally {
+        send.disabled = !agents.length;
+        if (!stopped) drawMessages();
+        input.focus();
+      }
+    }
+
+    fill(
+      panel,
+      h(
+        "div",
+        { class: "card card-pad section tool-builder" },
+        h(
+          "div",
+          { class: "section-head" },
+          h("h2", { class: "section-title" }, b.id ? `Edit "${b.name}"` : "New tool"),
+          btn("Cancel", () => ((builder = null), fill(panel), renderList()), { kind: "ghost", iconName: "x" }),
+        ),
+        h(
+          "div",
+          { class: "tool-builder-grid" },
+          h(
+            "div",
+            { class: "tool-builder-chat" },
+            agents.length ? null : h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, "Making a tool in a chat needs Claude Code or Codex installed and signed in. You can still write its definition by hand.")),
+            messages,
+            chatForm,
+          ),
+          h(
+            "div",
+            { class: "tool-builder-preview" },
+            h("label", { class: "field", for: "tool-name" }, h("span", { class: "field-label" }, "Name"), nameInput),
+            h("div", { class: "section-head" }, h("strong", null, "Preview"), b.tool && b.tool.kind !== "operation" ? btn("Run again", () => void drawPreview(), { small: true, kind: "ghost", iconName: "refresh" }) : null),
+            preview,
+            h("details", { class: "tool-raw" }, h("summary", null, "Definition"), h("p", { class: "dim" }, "The tool itself: data in dx's format, never code. Edit it by hand if you like, then Use this."), json, h("div", { class: "toolbar" }, useJson, copyButton(() => json.value, "Copy"))),
+            h("div", { class: "form-actions" }, save),
+          ),
+        ),
+      ),
+    );
+    void drawPreview();
+    input.focus();
+  }
+
+  // ---- export and import
+
+  async function exportAll(button) {
+    const data = await busy(button, "Exporting…", () => api(`/api/tools/export?dir=${encodeURIComponent(dir)}`));
+    if (!data) return;
+    if (!data.tools.length) return toast("This project has no tools to export yet.", "error");
+    downloadJson(`${(projectName() || "project").replace(/[^\w.-]+/g, "-")}.dxtools.json`, data);
+    toast(`Exported ${plural(data.tools.length, "tool")}`);
+  }
+
+  async function importFile(f) {
+    if (f.size > 2 * 1024 * 1024) return toast("A tools file can be at most 2 MB.", "error");
+    const text = await f.text();
+    let check;
+    try {
+      check = await api("/api/tools/import/check", { method: "POST", body: { dir, file: text } });
+    } catch (err) {
+      return toast(err.message, "error");
+    }
+    const boxes = check.tools.map((t) => ({ t, el: h("input", { type: "checkbox", id: `tool-imp-${t.index}`, checked: true }) }));
+    const replace = h("input", { type: "radio", name: "tool-imp-taken", id: "tool-imp-replace", checked: true });
+    const keep = h("input", { type: "radio", name: "tool-imp-taken", id: "tool-imp-keep" });
+    const taken = check.tools.some((t) => t.conflict);
+    const go = btn("Import", null, { kind: "primary", iconName: "check", type: "button" });
+    go.addEventListener("click", async (ev) => {
+      const button = ev.currentTarget;
+      const pick = boxes.filter((x) => x.el.checked).map((x) => x.t.index);
+      if (!pick.length) return toast("Pick at least one tool.", "error");
+      const r = await busy(button, "Importing…", () => api("/api/tools/import", { method: "POST", body: { dir, file: text, pick, replace: replace.checked } }));
+      if (!r) return;
+      toast(`Imported ${plural(r.added + r.replaced, "tool")}${r.replaced ? `, ${r.replaced} replaced` : ""}`);
+      fill(importPanel);
+      await load();
+    });
+    fill(
+      importPanel,
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("h2", { class: "section-title" }, `Import from ${f.name}`), h("span", { class: "dim" }, check.project ? `exported from ${check.project}` : "")),
+        h("ul", { class: "tool-import-list" }, boxes.map(({ t, el }) => h("li", null, h("label", { class: "check", for: el.id }, el, h("strong", null, t.name), h("span", { class: "badge" }, TOOL_KINDS[t.kind]), t.conflict ? h("span", { class: "badge badge-warn" }, "name taken") : null, t.description ? h("span", { class: "dim" }, ` ${t.description}`) : null)))),
+        taken ? h("div", { class: "toolbar", role: "radiogroup", "aria-label": "When a name is taken" }, h("span", { class: "field-label" }, "When a name is taken:"), h("label", { class: "check", for: "tool-imp-replace" }, replace, "Replace mine"), h("label", { class: "check", for: "tool-imp-keep" }, keep, "Keep both")) : null,
+        h("div", { class: "form-actions" }, go, btn("Cancel", () => fill(importPanel), { kind: "ghost" })),
+      ),
+    );
+  }
+
+  void load();
+  return () => {
+    stopped = true;
+    clearTimeout(watchTimer);
+  };
+}
+
 // ------------------------------------------------------------------ Health & settings
 
 function healthPage(root) {
@@ -10020,6 +10788,7 @@ function healthPage(root) {
     const activityOn = h("input", { type: "checkbox", id: "cfg-activity", checked: config.activity !== false });
     const localhostOn = h("input", { type: "checkbox", id: "cfg-localhost", checked: config.localhostRecording !== false });
     const visualOn = h("input", { type: "checkbox", id: "cfg-visual", checked: config.visualDiff !== false });
+    const envAlertsOn = h("input", { type: "checkbox", id: "cfg-env-alerts", checked: config.envAlerts !== false });
     const activityDays = h("select", { id: "cfg-activity-days" }, [1, 3, 7, 14, 30, 90].map((d) => h("option", { value: d, selected: d === (config.activityDays ?? 7) }, plural(d, "day"))));
     const activityMax = h("select", { id: "cfg-activity-max" }, [100, 250, 500, 1000, 2000, 5000].map((mb) => h("option", { value: mb, selected: mb === (config.activityMaxMB ?? 500) }, mb >= 1000 ? `${mb / 1000} GB` : `${mb} MB`)));
     const activityUse = h("span", { class: "field-hint" });
@@ -10039,7 +10808,7 @@ function healthPage(root) {
         class: "card card-pad section",
         onsubmit: async (e) => {
           e.preventDefault();
-          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
+          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, envAlerts: envAlertsOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
           const r = await busy(save, "Saving…", () => api("/api/config", { method: "POST", body }));
           if (r) toast("Settings saved");
         },
@@ -10083,6 +10852,13 @@ function healthPage(root) {
           h("label", { class: "check", for: "cfg-visual" }, visualOn, "After each commit, screenshot the pages you use most and compare them with the commit before"),
           h("span", { class: "field-hint" }, "Only while dx runs the project's dev server, with Chrome, Edge, Chromium or Brave. The last 30 commits are kept per project."),
         ),
+        h(
+          "div",
+          { class: "field" },
+          h("span", { class: "field-label" }, "Alerts"),
+          h("label", { class: "check", for: "cfg-env-alerts" }, envAlertsOn, "Warn me, with a sound and a system notification, when a project's .env file changes, is staged or is committed"),
+          h("span", { class: "field-hint" }, "Each project can turn its own alerts, or just the system notifications, off on its Env & secrets page."),
+        ),
       ),
       h("div", { class: "form-actions" }, save),
     );
@@ -10116,7 +10892,152 @@ function healthPage(root) {
         aiTools,
       ),
       settings,
+      stateCard(),
       h("section", { class: "section" }, h("h2", { class: "section-title" }, "Recent runs"), runs),
+    );
+  }
+
+  /**
+   * Your dx on another computer: everything dx keeps that isn't live, in one file (core/state.ts),
+   * with this page's own preferences; an import says what it would change first, and can be undone.
+   */
+  function stateCard() {
+    const panel = h("div");
+    const undoRow = h("div");
+    const fileInput = h("input", {
+      type: "file",
+      accept: ".json,application/json",
+      hidden: true,
+      "aria-label": "dx state file",
+      onchange: () => {
+        const f = fileInput.files?.[0];
+        fileInput.value = "";
+        if (f) void checkFile(f);
+      },
+    });
+    const showUndo = async () => {
+      let last;
+      try {
+        ({ last } = await api("/api/state/last"));
+      } catch {
+        return;
+      }
+      fill(
+        undoRow,
+        last
+          ? h(
+              "p",
+              { class: "field-hint" },
+              `Last import ${relativeTime(Date.parse(last.at))}. `,
+              btn("Undo it", (ev) => undo(ev.currentTarget, last), { small: true, kind: "ghost", iconName: "left", title: "Put back every file that import changed" }),
+            )
+          : null,
+      );
+    };
+    void showUndo();
+
+    async function exportState(button) {
+      const page = Object.fromEntries(STATE_PAGE_PREFS.flatMap((k) => (pref(k) === undefined ? [] : [[k, pref(k)]])));
+      const data = await busy(button, "Exporting…", () => api("/api/state/export", { method: "POST", body: { page } }));
+      if (!data) return;
+      const day = new Date().toISOString().slice(0, 10);
+      downloadJson(`dx-state-${day}.json`, data);
+      toast(`Exported ${plural(data.projects.length, "project")}${data.left?.length ? `; left out: ${data.left.join("; ")}` : ""}`);
+    }
+
+    async function checkFile(f) {
+      if (f.size > 25 * 1024 * 1024) return toast("A dx state file can be at most 25 MB.", "error");
+      const text = await f.text();
+      let plan;
+      try {
+        plan = await api("/api/state/import/check", { method: "POST", body: { file: text } });
+      } catch (err) {
+        return toast(err.message, "error");
+      }
+      const brings = (has) =>
+        Object.entries(has).map(([k, n]) => h("span", { class: "badge" }, { tools: plural(n, "tool"), mocks: plural(n, "mock"), rules: plural(n, "rule"), spec: "API spec", chaos: "chaos settings", scenes: plural(n, "data scene"), note: "note", alerts: "alerts", sites: plural(n, "site") }[k] ?? k));
+      const picks = plan.projects.map((p) => {
+        const el = h(
+          "select",
+          { id: `state-map-${p.index}`, "aria-label": `Where ${p.name} goes on this computer` },
+          h("option", { value: "", selected: !p.match }, "Leave it out"),
+          // The folder only where two projects here share a name.
+          plan.local.map((l) => h("option", { value: l.dir, title: tildify(l.dir), selected: p.match && l.dir === p.match.dir }, plan.local.filter((x) => x.name === l.name).length > 1 ? `${l.name} (${tildify(l.dir)})` : l.name)),
+        );
+        return { p, el };
+      });
+      const withSettings = h("input", { type: "checkbox", id: "state-settings", checked: true });
+      const go = btn("Import", null, { kind: "primary", iconName: "check", type: "button" });
+      go.addEventListener("click", async (ev) => {
+        const button = ev.currentTarget;
+        const map = Object.fromEntries(picks.map(({ p, el }) => [p.index, el.value || null]));
+        const r = await busy(button, "Importing…", () => api("/api/state/import", { method: "POST", body: { file: text, map, settings: withSettings.checked } }));
+        if (!r) return;
+        for (const [k, v] of Object.entries(r.page ?? {})) setPref(k, v);
+        if (r.page?.theme) applyTheme(r.page.theme);
+        const parts = [plural(r.projects.length, "project"), r.settings && plural(r.settings, "setting"), r.journal && plural(r.journal, "journal entry", "journal entries"), r.templates && plural(r.templates, "template")].filter(Boolean);
+        toast(`Imported ${parts.join(", ")}${r.skipped.length ? `. Not on this computer: ${r.skipped.join(", ")}` : ""}`);
+        for (const n of r.notes) toast(n, "error");
+        fill(panel);
+        load();
+      });
+      const lines = [
+        plan.settings.length ? h("li", null, h("strong", null, "Settings: "), plan.settings.map((s) => `${s.name}: ${s.from} → ${s.to}`).join("; ")) : null,
+        plan.roots.length ? h("li", null, h("strong", null, "Projects folders added: "), plan.roots.map(tildify).join(", ")) : null,
+        plan.sites ? h("li", null, h("strong", null, "Recorded sites: "), String(plan.sites)) : null,
+        plan.journal.adds ? h("li", null, h("strong", null, "Journal: "), `${plural(plan.journal.adds, "entry", "entries")} you don't have here`) : null,
+        plan.summaries.adds || plan.summaries.changes ? h("li", null, h("strong", null, "Saved summaries: "), [plan.summaries.adds && `${plan.summaries.adds} new`, plan.summaries.changes && `${plan.summaries.changes} different`].filter(Boolean).join(", ")) : null,
+        plan.templates.some((t) => t.status !== "same") ? h("li", null, h("strong", null, "Templates: "), plan.templates.filter((t) => t.status !== "same").map((t) => `${t.name} (${t.status === "new" ? "new" : "changes"})`).join(", ")) : null,
+        plan.page ? h("li", null, h("strong", null, "Dashboard preferences: "), String(plan.page)) : null,
+      ].filter(Boolean);
+      fill(
+        panel,
+        h(
+          "div",
+          { class: "state-import" },
+          h("div", { class: "section-head" }, h("h3", { class: "section-title" }, `Import from ${f.name}`), plan.exportedAt ? h("span", { class: "dim" }, `exported ${relativeTime(Date.parse(plan.exportedAt))}`) : null),
+          lines.length ? h("ul", { class: "state-lines" }, lines) : h("p", { class: "dim" }, "No settings, journal entries, summaries or templates to bring."),
+          plan.projects.length
+            ? h(
+                "ul",
+                { class: "state-projects" },
+                picks.map(({ p, el }) =>
+                  h(
+                    "li",
+                    null,
+                    h("div", null, h("strong", null, p.name), p.match ? h("span", { class: "dim" }, p.match.by === "remote" ? " · same repository" : " · same name") : h("span", { class: "badge badge-warn" }, "not found here"), h("div", { class: "tool-badges" }, brings(p.has))),
+                    h("label", { class: "toolbar", for: el.id }, h("span", { class: "field-hint" }, "Goes to"), el),
+                  ),
+                ),
+              )
+            : null,
+          plan.left.length ? h("p", { class: "field-hint" }, `Left out when it was exported: ${plan.left.join("; ")}.`) : null,
+          h("label", { class: "check", for: "state-settings" }, withSettings, "Bring the settings and dashboard preferences too"),
+          h("p", { class: "field-hint" }, "Where both have something, the file's wins; nothing here is deleted. Mock mode and Chaos mode stay switched as they are here. Every file is backed up first, so Undo puts it all back."),
+          h("div", { class: "form-actions" }, go, btn("Cancel", () => fill(panel), { kind: "ghost" })),
+        ),
+      );
+    }
+
+    async function undo(button, last) {
+      const ok = await confirmDialog({ title: "Undo the last import?", text: `Every file the import of ${new Date(last.at).toLocaleString()} changed goes back to how it was, and the ones it added are removed. Anything you changed since in those files is lost.`, confirm: "Undo the import" });
+      if (!ok) return;
+      const r = await busy(button, "Undoing…", () => api("/api/state/undo", { method: "POST", body: {} }));
+      if (!r) return;
+      toast(`Put back ${plural(r.files, "file")}`);
+      load();
+    }
+
+    return h(
+      "section",
+      { class: "card card-pad section", "aria-labelledby": "state-title" },
+      h("h2", { class: "section-title", id: "state-title" }, "Your dx on another computer"),
+      h("p", { class: "page-sub" }, "One file with everything you've set up: settings, the journal, saved summaries, templates, and each project's tools, mocks, rules, API spec, chaos settings, data scenes, note and alerts. Projects are found again on the other computer by their repository or folder name. Live things stay here: commits, the activity history, snapshots, sign-ins and .env files."),
+      h("p", { class: "field-hint" }, "The file holds your mocks' answers and saved data scenes, so keep it to yourself."),
+      h("div", { class: "toolbar" }, btn("Export everything", (ev) => exportState(ev.currentTarget), { iconName: "save" }), btn("Import…", () => fileInput.click(), { iconName: "folder", kind: "ghost", title: "Bring in a file exported on another computer" })),
+      undoRow,
+      panel,
+      fileInput,
     );
   }
 
@@ -10376,6 +11297,36 @@ async function runFloppy(button) {
   toast(r.message, r.running ? "ok" : "error");
   void updateFloppyButton();
 }
+
+// The project's watches with `toast` on speak up on every page: what they matched since the last look.
+// And a .env file changed, staged or committed in any project: a warning with a sound.
+let toolAlertsAfter = ""; // the newest activity id the page has seen, as text ("" until the first ask)
+let toolAlertsFor = "";
+let envAlertsSince = new Date().toISOString();
+async function checkToolAlerts() {
+  try {
+    const { alerts: env } = await api(`/api/env/alerts?since=${encodeURIComponent(envAlertsSince)}`);
+    if (env.length) {
+      envAlertsSince = env[env.length - 1].at;
+      for (const a of env.slice(-3)) toast(h("span", null, h("strong", null, a.title), ` ${a.text}`), "warn");
+      warningSound();
+    }
+  } catch {
+    // the dashboard went away; the page says so elsewhere
+  }
+  const dir = currentProject();
+  if (!dir || document.hidden) return;
+  if (!sameDir(dir, toolAlertsFor)) ((toolAlertsFor = dir), (toolAlertsAfter = ""));
+  try {
+    // By the newest event id seen: the first ask only learns where things stand.
+    const { alerts, last } = await api(`/api/tools/alerts?dir=${encodeURIComponent(dir)}&after=${toolAlertsAfter}`);
+    for (const a of alerts.slice(-3)) toast(`${a.tool}: ${a.text}`, "error");
+    if (last > Number(toolAlertsAfter || 0)) toolAlertsAfter = String(last);
+  } catch {
+    // the dashboard went away; the page says so elsewhere
+  }
+}
+setInterval(checkToolAlerts, 5000);
 
 window.addEventListener("hashchange", route);
 setInterval(updateRunningCount, 5000);

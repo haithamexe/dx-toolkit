@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   addJournalEntry,
+  alertSettings,
   auditDependencies,
   buildSummary,
   checkEnv,
@@ -176,6 +177,9 @@ import { removeSnapshotRun, runSnapshot, snapshotViews } from "./snapshots.js";
 import { bugReplayJob, startBugReplay } from "./bugreplay.js";
 import { forgetMocks, mockServerFor } from "./mocks.js";
 import { labRoutes } from "./labapi.js";
+import { toolRoutes } from "./toolsapi.js";
+import { stateRoutes } from "./stateapi.js";
+import { envAlertsSince } from "./envwatch.js";
 import { chaosRoutes } from "./chaosapi.js";
 import { dataRoutes } from "./dataapi.js";
 import { phoneRoutes } from "./phone.js";
@@ -541,6 +545,29 @@ const routes: Record<string, Handler> = {
       const a = auditEnv(p.dir);
       return { name: p.name, ...a };
     }),
+  // A project's alerts: all of them (.env warnings and its tools' watches), and the system's notifications. On unless turned off.
+  "GET /api/alerts/project": (req) => {
+    const project = knownProject(req.query.get("dir"));
+    const config = loadConfig();
+    return { ...alertSettings(project.dir, config), everywhere: config.envAlerts !== false };
+  },
+  "POST /api/alerts/project": (req) => {
+    const project = knownProject(req.body.dir);
+    const config = loadConfig();
+    const key = path.resolve(project.dir).toLowerCase();
+    const all = { ...(config.projectAlerts ?? {}) };
+    const entry = { ...(req.body.on === false ? { off: true } : {}), ...(req.body.os === false ? { osOff: true } : {}) };
+    if (Object.keys(entry).length) all[key] = entry;
+    else delete all[key];
+    saveConfig({ ...config, projectAlerts: Object.keys(all).length ? all : undefined });
+    recordRun("alerts", true, `${project.name}: alerts ${entry.off ? "off" : entry.osOff ? "on, without system notifications" : "on"}`, "web", { project: project.name });
+    return alertSettings(project.dir, loadConfig());
+  },
+  // Warnings about .env files (changed, staged, committed) since a moment, for the page's toast and sound. File names only, never values.
+  "GET /api/env/alerts": (req) => {
+    const since = Date.parse(req.query.get("since") ?? "");
+    return { alerts: envAlertsSince(Number.isNaN(since) ? Date.now() - 60_000 : since).map(({ id, at, project, kind, files, title, text }) => ({ id, at, project, kind, files, title, text })) };
+  },
   "GET /api/env/project": (req) => {
     const project = knownProject(req.query.get("dir"));
     return { name: project.name, ...auditEnv(project.dir, { secrets: true }) };
@@ -1130,6 +1157,7 @@ const routes: Record<string, Handler> = {
       config.terminal = req.body.terminal || undefined;
     }
     if (typeof req.body.activity === "boolean") config.activity = req.body.activity;
+    if (typeof req.body.envAlerts === "boolean") config.envAlerts = req.body.envAlerts;
     if (typeof req.body.localhostRecording === "boolean") config.localhostRecording = req.body.localhostRecording;
     if (typeof req.body.visualDiff === "boolean") config.visualDiff = req.body.visualDiff;
     if (req.body.activityDays !== undefined) config.activityDays = clampInt(req.body.activityDays, 1, 365, config.activityDays ?? 7);
@@ -1154,7 +1182,8 @@ interface DepsJob {
 let depsJob: DepsJob = { running: false, done: 0, total: 0, current: "" };
 
 export async function handleApi(req: ApiRequest): Promise<unknown> {
-  const handler = routes[`${req.method} ${req.path}`] ?? labRoutes[`${req.method} ${req.path}`] ?? chaosRoutes[`${req.method} ${req.path}`] ?? dataRoutes[`${req.method} ${req.path}`] ?? phoneRoutes[`${req.method} ${req.path}`] ?? teamRoutes[`${req.method} ${req.path}`];
+  const key = `${req.method} ${req.path}`;
+  const handler = routes[key] ?? labRoutes[key] ?? chaosRoutes[key] ?? dataRoutes[key] ?? phoneRoutes[key] ?? teamRoutes[key] ?? toolRoutes[key] ?? stateRoutes[key];
   if (!handler) throw new HttpError(404, `No such API: ${req.method} ${req.path}`);
   return handler(req);
 }

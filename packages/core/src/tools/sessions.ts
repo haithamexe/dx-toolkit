@@ -97,6 +97,20 @@ export function rememberSession(dir: string, name: string, patch: Partial<Projec
   return next;
 }
 
+/**
+ * A note brought from another computer (dx state import): kept only when it's newer than the one
+ * here. Branch, commit and the last time worked on stay this computer's own.
+ */
+export function importNote(dir: string, name: string, note: { text: string; by: "you" | "ai"; at: string }): boolean {
+  const store = load();
+  const k = key(dir);
+  const cur = store[k];
+  if (cur?.noteAt && Date.parse(cur.noteAt) >= Date.parse(note.at)) return false;
+  store[k] = { ...(cur ?? { name, at: note.at }), name, note: note.text.trim().slice(0, MAX_NOTE), noteBy: note.by, noteAt: note.at };
+  save(store);
+  return true;
+}
+
 /** Leaves a note on where things stand; an empty note removes it. */
 export function leaveNote(dir: string, name: string, note: string, by: "you" | "ai"): ProjectSession {
   const text = note.trim().slice(0, MAX_NOTE);

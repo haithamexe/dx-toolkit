@@ -1,6 +1,8 @@
 import type { FloppySnapshot } from "@dx/core";
 import { aiLane } from "./ai.js";
 import { devErrors, listDevServers } from "./dev.js";
+import { toolAlert } from "./toolsapi.js";
+import { envAlertsSince } from "./envwatch.js";
 
 /**
  * What Floppy needs to pick its mood, in one small answer: the dev servers dx runs (not
@@ -28,5 +30,11 @@ export function floppySnapshot(): FloppySnapshot {
   }
   const lane = aiLane({ limit: 1 });
   snapshot.ai = { active: lane.active, text: lane.calls[0]?.text, project: lane.calls[0]?.project ?? lane.servers.find((s) => s.status !== "stopped")?.project };
+  // The newest of the last two minutes: a custom tool's watch, or a .env file changed, staged or committed.
+  const alert = toolAlert();
+  const env = envAlertsSince(Date.now() - 120_000).at(-1);
+  const envAsAlert = env ? { key: `env|${env.id}`, project: env.project, tool: ".env", text: env.kind === "changed" ? `${env.files[0]} changed` : env.kind === "staged" ? `${env.files[0]} is staged` : `${env.files[0]} was committed`, at: env.at } : undefined;
+  const newest = [alert, envAsAlert].filter((a) => !!a).sort((a, b) => Date.parse(b!.at) - Date.parse(a!.at))[0];
+  if (newest) snapshot.alert = newest;
   return snapshot;
 }

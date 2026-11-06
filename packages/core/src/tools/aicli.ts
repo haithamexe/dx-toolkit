@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { claudeCli, runClaude } from "./claude.js";
+import { cleanAiEffort, cleanAiModel, claudeCli, runClaude, type AiEffort } from "./claude.js";
 import { commandExists } from "./doctor.js";
 
 /**
@@ -57,17 +57,31 @@ export interface AiResult {
   timedOut: boolean;
 }
 
-/** Asks the agent once and returns its final answer. Nothing it says is run by dx. */
-export async function askAi(cli: AiCli, prompt: string, options: { timeoutMs?: number } = {}): Promise<AiResult> {
+/** Model names to offer for each CLI; any other well-formed name can be typed. */
+export const AI_MODELS: Record<AiTool, string[]> = {
+  claude: ["opus", "sonnet", "haiku", "fable"],
+  codex: ["gpt-5", "gpt-5-codex", "o3"],
+};
+
+/** Codex's reasoning effort for dx's level (it has no xhigh or max). */
+const CODEX_EFFORT: Record<AiEffort, string> = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
+
+/** Asks the agent once and returns its final answer, with the model and effort when given (checked). Nothing it says is run by dx. */
+export async function askAi(cli: AiCli, prompt: string, options: { timeoutMs?: number; model?: string; effort?: AiEffort } = {}): Promise<AiResult> {
   const timeoutMs = options.timeoutMs ?? 120_000;
+  const model = cleanAiModel(options.model);
+  const effort = cleanAiEffort(options.effort);
   if (cli.tool === "claude") {
-    const r = await runClaude(cli.path, prompt, { timeoutMs });
+    const r = await runClaude(cli.path, prompt, { timeoutMs, model, effort });
     return { tool: "claude", code: r.code, text: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
   // Codex: no tools that write, no git checks, no saved session, the answer in a file of dx's own.
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "dx-codex-"));
   const out = path.join(work, "answer.txt");
-  const args = ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never", "-o", out, "-"];
+  const args = ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never", "-o", out];
+  if (model) args.push("-m", model);
+  if (effort) args.push("-c", `model_reasoning_effort=${CODEX_EFFORT[effort]}`);
+  args.push("-");
   try {
     const r = await run(cli.path, args, prompt, work, timeoutMs);
     let text = "";

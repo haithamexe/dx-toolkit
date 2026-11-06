@@ -185,7 +185,8 @@ function queryOf(url: string): string {
  */
 export function mocksFromActivity(events: ActivityEvent[]): MockEndpoint[] {
   const calls = events.filter(
-    (e) => e.type === "request" && (e.from === "proxy" || e.from === "check") && !e.mocked && !e.error && e.status !== undefined && !!e.url && e.url.startsWith("/") && !e.url.startsWith("/__dx/"),
+    // Not mocked answers, nor ones a custom tool changed: neither is what the server said.
+    (e) => e.type === "request" && (e.from === "proxy" || e.from === "check") && !e.mocked && !e.rules?.some((r) => r.startsWith("tool: ")) && !e.error && e.status !== undefined && !!e.url && e.url.startsWith("/") && !e.url.startsWith("/__dx/"),
   );
   const groups = new Map<string, ActivityEvent[]>();
   for (const e of calls) {
@@ -351,6 +352,91 @@ export function updateMock(dir: string, id: string, patch: MockPatch): MockEndpo
   else if (patch.preset === "reset") delete ep.edited;
   ep.updatedAt = new Date().toISOString();
   saveMocks(set);
+  return ep;
+}
+
+const CONTENT_TYPE = /^[\w.+-]+\/[\w.+-]+(\s*;\s*[\w-]+=[^;\r\n]{1,100})*$/;
+const MOCK_SOURCES: MockSource[] = ["recorded", "cache", "spec", "generated", "ai"];
+
+/**
+ * One endpoint read from a file (dx's state export from another computer): every field checked the
+ * way an edit is, and unknown fields left out.
+ */
+export function cleanMockEndpoint(input: unknown): MockEndpoint {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new MockError("A mock is an object.");
+  const o = input as Record<string, unknown>;
+  const text = (v: unknown, max: number, what: string): string => {
+    if (typeof v !== "string" || v.length > max) throw new MockError(`A mock's ${what} isn't right.`);
+    return v;
+  };
+  const opt = (v: unknown, max: number, what: string, pattern?: RegExp): string | undefined => {
+    if (v === undefined || v === null || v === "") return undefined;
+    const s = text(v, max, what);
+    if (pattern && !pattern.test(s)) throw new MockError(`A mock's ${what} isn't right.`);
+    return s;
+  };
+  const status = (v: unknown): number => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 100 || n > 599) throw new MockError("A mock's status is a number from 100 to 599.");
+    return n;
+  };
+  const contentType = (v: unknown): string => {
+    const t = text(v, 200, "content type").trim();
+    if (!CONTENT_TYPE.test(t)) throw new MockError("A mock's content type looks like application/json.");
+    return t;
+  };
+  const body = (v: unknown): string => {
+    if (typeof v !== "string" || Buffer.byteLength(v) > MOCK_BODY_MAX) throw new MockError("A mock's body is text of at most 1 MB.");
+    return v;
+  };
+  const id = text(o.id, 40, "id");
+  if (!/^[a-z0-9]{6,40}$/.test(id)) throw new MockError("A mock's id isn't right.");
+  const method = text(o.method, 10, "method").toUpperCase();
+  if (!/^[A-Z]{3,10}$/.test(method)) throw new MockError("A mock's method isn't right.");
+  const p = text(o.path, 2000, "path");
+  if (!p.startsWith("/") || /[\r\n]/.test(p)) throw new MockError("A mock's path starts with /.");
+  const delay = Number(o.delayMs ?? 0);
+  const rec = o.recorded && typeof o.recorded === "object" ? (o.recorded as Record<string, unknown>) : undefined;
+  const ep: MockEndpoint = {
+    id,
+    method,
+    path: p,
+    status: status(o.status),
+    delayMs: Number.isFinite(delay) && delay > 0 ? Math.min(MOCK_DELAY_MAX, Math.round(delay)) : 0,
+    contentType: contentType(o.contentType),
+    body: body(o.body),
+    enabled: o.enabled !== false,
+    recorded: rec
+      ? { status: status(rec.status), contentType: contentType(rec.contentType), body: body(rec.body), at: text(rec.at ?? "", 40, "date"), eventId: Number.isInteger(rec.eventId) ? (rec.eventId as number) : 0 }
+      : { status: 200, contentType: "application/json", body: "", at: "", eventId: 0 },
+    updatedAt: typeof o.updatedAt === "string" && o.updatedAt.length <= 40 ? o.updatedAt : new Date().toISOString(),
+  };
+  const query = opt(o.query, 2000, "query", /^\?[^\r\n]*$/);
+  const bodyKey = opt(o.bodyKey, 64, "body key", /^[a-f0-9]+$/);
+  const requestBody = opt(o.requestBody, 64 * 1024, "request body");
+  const service = opt(o.service, 60, "service", /^[\w.-]+$/);
+  const pattern = opt(o.pattern, 500, "path template", /^\/[^\r\n]*$/);
+  const operation = opt(o.operation, 200, "name");
+  const example = opt(o.example, 200, "example");
+  Object.assign(ep, {
+    ...(query ? { query } : {}),
+    ...(bodyKey ? { bodyKey } : {}),
+    ...(requestBody ? { requestBody } : {}),
+    ...(service ? { service } : {}),
+    ...(pattern ? { pattern } : {}),
+    ...(operation ? { operation } : {}),
+    ...(example ? { example } : {}),
+    ...(o.offline === true ? { offline: true } : {}),
+    ...(o.edited === true ? { edited: true } : {}),
+    ...(MOCK_SOURCES.includes(o.source as MockSource) ? { source: o.source as MockSource } : {}),
+  });
+  if (/json/i.test(ep.contentType) && ep.body.trim()) {
+    try {
+      JSON.parse(ep.body);
+    } catch {
+      throw new MockError("A mock's body isn't valid JSON, and its content type says it is.");
+    }
+  }
   return ep;
 }
 

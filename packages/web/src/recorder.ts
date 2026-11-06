@@ -5,6 +5,7 @@ import { maskText, PSEUDO_SCRIPT, type ActivityEvent } from "@dx/core";
 import { activitySettings, recordActivity, type NewActivity } from "./activity.js";
 import { chaosConfig } from "./chaos.js";
 import type { LocalRoute } from "./dev.js";
+import { pageToolData, pageToolsFor } from "./toolsapi.js";
 import { maskBody, type TrafficEntry } from "./traffic.js";
 
 /**
@@ -37,12 +38,17 @@ function withPageSettings(script: Buffer, route: LocalRoute): Buffer {
   const config = chaosConfig(route.dir);
   const clock = config?.clock;
   const locale = config?.locale;
-  if (!clock && !locale) return script;
-  // Served as a script, not HTML, and every value is checked (a date, a flag, a zone name).
+  // The project's page tools that are on: their checked changes (selectors, titles, keys), never their sources.
+  const pageTools = pageToolsFor(route);
+  if (!clock && !locale && !pageTools.length) return script;
+  // Served as a script, not HTML, and every value is checked (a date, a flag, a zone name, a tool's checked fields).
   const parts = [Buffer.from(`window.__dxSettings = ${JSON.stringify(clock ? { clock } : {})};\n`)];
   if (locale) parts.push(Buffer.from(`window.__dxLocale = ${JSON.stringify({ pseudo: locale.pseudo === true, rtl: locale.rtl === true })};\n${PSEUDO_SCRIPT}\n`));
+  if (pageTools.length) parts.push(Buffer.from(`window.__dxPageTools = ${JSON.stringify(pageTools).replace(/</g, "\\u003c")};\n`));
   return Buffer.concat([...parts, script]);
 }
+
+const TOOL_DATA = /^\/__dx\/tools\/([a-f0-9]{12})\/(\d{1,2})$/;
 
 /** Handles the proxy's own paths. True when it answered the request. */
 export function handleRecorderRequest(req: http.IncomingMessage, res: http.ServerResponse, route: LocalRoute, origin: string): boolean {
@@ -50,6 +56,19 @@ export function handleRecorderRequest(req: http.IncomingMessage, res: http.Serve
   if (pathname === RECORDER_PATH && (req.method === "GET" || req.method === "HEAD")) {
     res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     res.end(req.method === "HEAD" ? undefined : withPageSettings(recorderScript(), route));
+    return true;
+  }
+  // A page tool's data: the page asks its own origin, dx runs the tool's view on the dev server it runs. Never for another site.
+  const tool = TOOL_DATA.exec(pathname);
+  if (tool) {
+    if (req.method !== "GET" || req.headers["sec-fetch-site"] === "cross-site" || (req.headers.origin && req.headers.origin !== origin)) {
+      res.writeHead(403, { "Content-Type": "text/plain" }).end("Not allowed");
+      return true;
+    }
+    pageToolData(route, tool[1], Number(tool[2])).then(
+      (data) => res.writeHead(data === undefined ? 404 : 200, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }).end(JSON.stringify(data ?? { error: "no such tool" })),
+      (err: Error) => res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ meta: { error: err.message } })),
+    );
     return true;
   }
   if (pathname !== EVENTS_PATH) return false;

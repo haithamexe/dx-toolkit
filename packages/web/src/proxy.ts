@@ -6,6 +6,7 @@ import { localRoutes, type LocalRoute } from "./dev.js";
 import { answerFromMocks, cacheAnswer, handleMockServer, mockServerByHost } from "./mocks.js";
 import { relayWithRules, rulePlanFor } from "./apilab.js";
 import { answered, callKey, chaosConfig, chaosFor, withChaos } from "./chaos.js";
+import { answerToolsFor, withAnswerTools } from "./toolsapi.js";
 import { handleRecorderRequest, injector, requestActivity, shouldInject } from "./recorder.js";
 import { recordExchange } from "./traffic.js";
 
@@ -209,6 +210,9 @@ export function relay(req: http.IncomingMessage, res: http.ServerResponse, o: Re
   // Chaos mode: some API calls slowed, failed, dropped or answered out of order, on purpose.
   const chaos = route ? chaosFor(req, route) : undefined;
   if (chaos) plan = withChaos(plan, chaos);
+  // Custom tools of kind answer: fields added to or taken out of JSON answers on their way back.
+  const answers = route ? answerToolsFor(req, route) : [];
+  if (answers.length) plan = withAnswerTools(plan, answers);
   if (plan && route) return void relayWithRules(req, res, { ...o, route }, plan);
   const chaosOn = !!route && !!chaosConfig(route.dir)?.on;
   const rec = route ? recordExchange(req, route, o.label) : undefined;

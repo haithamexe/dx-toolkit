@@ -304,6 +304,8 @@ export interface FloppySnapshot {
   servers: FloppyServer[];
   error?: { project: string; dir: string; id: string; message: string; file?: string; line?: number };
   ai?: { active: boolean; text?: string; project?: string };
+  /** A custom tool's watch (with `floppy` on) matched something in the last two minutes. */
+  alert?: { key: string; project: string; tool: string; text: string; at: string };
 }
 
 export interface FloppyTip {
@@ -315,7 +317,7 @@ export interface FloppyTip {
 /** The line always shown beside Floppy: what's happening, and in which project. */
 export interface FloppyStatus {
   text: string;
-  icon: "info" | "error" | "ok" | "ai" | "quiet";
+  icon: "info" | "error" | "ok" | "ai" | "quiet" | "warn";
 }
 
 export interface FloppyView {
@@ -341,6 +343,8 @@ export interface FloppyMemory {
   /** The mood shown last, so a change is announced once. */
   lastMood?: FloppyMood;
   lastError?: string;
+  /** The watch match said last, so a new one is announced once. */
+  lastAlert?: string;
 }
 
 export const FLOPPY_SLEEP_MS = 30 * 60_000;
@@ -412,6 +416,15 @@ export function floppyView(snapshot: FloppySnapshot, memory: FloppyMemory, now =
     const s = justReady[0];
     const at = s.url?.replace(/^https?:\/\//, "").replace(/\/$/, "");
     return done({ mood: base, play: "good", tip: { title: `${s.project} is up`, text: at ? `It's at ${at}.` : "It's running.", icon: "ok" }, status: { text: at ? `${s.project} is up at ${at}` : `${s.project} is up`, icon: "ok" }, announce: true });
+  }
+  // A tool's watch or a .env file said something: on the line for two minutes, announced once,
+  // waking Floppy from a nap but not from Quiet (only errors do that).
+  const alert = snapshot.alert;
+  if (alert && now - Date.parse(alert.at) <= 120_000) {
+    const fresh = mem.lastAlert !== alert.key;
+    mem.lastAlert = alert.key;
+    const quiet = !!mem.quietUntil;
+    return done({ mood: quiet ? "sleep" : base === "sleep" ? "idle" : base, tip: { title: `${alert.project}: ${alert.tool}`, text: alert.text, icon: "info" }, status: { text: `${alert.tool}: ${alert.text}`, icon: "warn" }, announce: fresh && !quiet });
   }
   if (base === "ai") {
     const text = snapshot.ai?.text ? firstLine(snapshot.ai.text) : undefined;

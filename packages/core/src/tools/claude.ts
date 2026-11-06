@@ -23,10 +23,31 @@ export interface ClaudeResult {
   timedOut: boolean;
 }
 
-/** Runs `claude -p --max-turns 1` with the prompt on stdin. A .cmd shim (npm on Windows) needs cmd.exe; the arguments are fixed either way. */
-export function runClaude(cli: string, input: string, options: { timeoutMs?: number } = {}): Promise<ClaudeResult> {
+/** Effort levels Claude Code takes (`--effort`); Codex gets the nearest it has. */
+export const AI_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type AiEffort = (typeof AI_EFFORTS)[number];
+
+/** A model name as the CLIs take it ("opus", "sonnet", a full id): letters, digits, dots and dashes only, so it can't be more than one argument. */
+export function cleanAiModel(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(raw)) throw new Error("A model is a name like opus, sonnet or a model's full id (letters, digits, dots and dashes).");
+  return raw;
+}
+
+export function cleanAiEffort(raw: unknown): AiEffort | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (!AI_EFFORTS.includes(raw as AiEffort)) throw new Error(`Effort is one of ${AI_EFFORTS.join(", ")}.`);
+  return raw as AiEffort;
+}
+
+/** Runs `claude -p --max-turns 1` with the prompt on stdin (and a checked model and effort when given). A .cmd shim (npm on Windows) needs cmd.exe; the arguments are fixed either way. */
+export function runClaude(cli: string, input: string, options: { timeoutMs?: number; model?: string; effort?: AiEffort } = {}): Promise<ClaudeResult> {
   return new Promise((resolve) => {
     const args = ["-p", "--max-turns", "1"];
+    const model = cleanAiModel(options.model);
+    const effort = cleanAiEffort(options.effort);
+    if (model) args.push("--model", model);
+    if (effort) args.push("--effort", effort);
     const shim = process.platform === "win32" && /\.(cmd|bat)$/i.test(cli);
     const child = shim
       ? // cmd /s takes off the outermost quotes, so the whole line is quoted once more.

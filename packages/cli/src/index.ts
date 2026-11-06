@@ -35,6 +35,8 @@ import { visualCommand } from "./commands/visual.js";
 import { configCommand, doctorCommand, runsCommand } from "./commands/system.js";
 import { uiCommand } from "./commands/ui.js";
 import { floppyCommand } from "./commands/floppy.js";
+import { stateCommand } from "./commands/state.js";
+import { toolsCommand } from "./commands/tools.js";
 import { c, UsageError } from "./ui.js";
 
 // To add a tool: write packages/cli/src/commands/<tool>.ts and add it to this list.
@@ -66,6 +68,7 @@ const commands: Command[] = [
   activityCommand,
   bugCommand,
   mockCommand,
+  toolsCommand,
   browserCommand,
   sitesCommand,
   terminalCommand,
@@ -85,6 +88,7 @@ const commands: Command[] = [
   setupCommand,
   httpsCommand,
   configCommand,
+  stateCommand,
   runsCommand,
   doctorCommand,
 ];

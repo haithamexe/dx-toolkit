@@ -4,6 +4,16 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **Your own tools**, on each project's new **Tools** page: describe a helper in a chat with Claude Code or Codex (the model and the effort are yours to pick) and it's made from dx's building blocks, then run by dx the same way every time, with no AI. Views of an API's answers or the recorded calls (table, cards, bars, number, tree, with highlights), pinned to Overview if you like; watches that speak up with a toast, a sound and Floppy's line; operations that send requests in order with inputs and carried values; changes to your app's API answers and to its own pages (a panel, a section, a table column, a highlight, something hidden) while it's used through dx; and columns in Activity's API list. Each can be previewed, edited, turned off and deleted; **Export** and **Import** carry a project's tools in one file. `dx tools` lists, exports and imports them.
+- **Alerts when a .env file changes**, is staged or is committed: a warning toast with a sound in dx and a notification from the system, on by default. Settings turns them off everywhere; a project's Env & secrets page turns off its alerts, or only the system's notifications.
+- **Your dx on another computer**: **Export everything** in Settings (or `dx state export`) puts your settings, journal, saved summaries, templates and every project's tools, mocks, rules, API spec, chaos settings, data scenes, note and alert choices into one file; **Import…** on the other computer (or `dx state import`) shows what would change and where each project goes (found by its repository or folder name), then brings it in. Every file is backed up first, and **Undo** (`dx state undo`) puts it all back. Commits, the activity history, snapshots, sign-ins and `.env` files stay where they are.
+
+### Fixed
+
+- Activity's API list lays itself out by its own width, so it no longer squeezes the endpoint to one letter beside the projects column in a narrow window.
+
 ## 1.6.0 (2026-11-06)
 
 The dashboard is arranged by what you came to do: pick a project, and its pages follow. Also new: releases on the Code page, an API spec found for every project, and a line beside Floppy that says what's happening. Update with `npm install -g dx-devkit@latest`.
