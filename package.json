@@ -1,6 +1,6 @@
 {
   "name": "dx-toolkit",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "license": "MIT",
   "private": true,
   "description": "Personal developer toolkit: one tools library, reachable from the dx dashboard, the dx command, Raycast and MCP.",

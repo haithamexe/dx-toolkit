@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.7.0 (2026-11-08)
+
+Each project can have tools of its own, made in a chat and run without AI; dx warns you when a .env file changes or heads for git; and your whole setup moves to another computer in one file. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **Your own tools**, on each project's new **Tools** page: describe a helper in a chat with Claude Code or Codex (the model and the effort are yours to pick) and it's made from dx's building blocks, then run by dx the same way every time, with no AI. Views of an API's answers or the recorded calls (table, cards, bars, number, tree, with highlights), pinned to Overview if you like; watches that speak up with a toast, a sound and Floppy's line; operations that send requests in order with inputs and carried values; changes to your app's API answers and to its own pages (a panel, a section, a table column, a highlight, something hidden) while it's used through dx; and columns in Activity's API list. Each can be previewed, edited, turned off and deleted; **Export** and **Import** carry a project's tools in one file. `dx tools` lists, exports and imports them.
