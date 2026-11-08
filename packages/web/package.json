@@ -13,6 +13,11 @@
       "import": "./dist/server.js",
       "default": "./dist/server.js"
     },
+    "./actions": {
+      "types": "./dist/actions.d.ts",
+      "import": "./dist/actions.js",
+      "default": "./dist/actions.js"
+    },
     "./link": {
       "types": "./dist/link.d.ts",
       "import": "./dist/link.js",

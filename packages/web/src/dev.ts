@@ -613,7 +613,40 @@ async function closeDoor(p: Proc): Promise<void> {
   await door?.close();
 }
 
+/**
+ * Another dev server dx runs that has, or is about to have, this port: its own, the one it was
+ * given, or its localhost door and hidden port. Two projects started close together can both
+ * guess the same usual port before either listens; only the first may have it.
+ */
+function portOwner(port: number, self: Proc): Proc | undefined {
+  for (const o of procs.values()) {
+    if (o === self || o.status === "stopped" || o.status === "failed") continue;
+    if (o.port === port || o.portHint === port || o.front?.port === port || o.front?.hidden === port) return o;
+  }
+  return undefined;
+}
+
 function launch(p: Proc, spec: Spec): void {
+  // Its usual port belongs to another dev server dx runs (started just before, perhaps not yet
+  // listening): it's given a free port instead (PORT, which most servers read), and the address it
+  // prints wins as always. Otherwise both would be sent to the first.
+  const taken = spec.port !== undefined && spec.portHint === undefined ? portOwner(spec.port, p) : undefined;
+  if (!taken) return launchNow(p, spec);
+  push(p, "dx", `Port ${spec.port} is ${taken.project}'s, so this one is given another (PORT); the address it prints is used.`);
+  // Held for the moment it takes to find a port, so a third one started now waits its turn too.
+  Object.assign(p, { url: undefined, port: undefined, portHint: -1 });
+  void freePort()
+    .catch(() => undefined)
+    .then((port) => {
+      if (p.stopping) {
+        p.status = "stopped";
+        return;
+      }
+      launchNow(p, port ? { ...spec, url: undefined, port: undefined, portHint: port, env: { ...spec.env, PORT: String(port) } } : { ...spec, url: undefined, port: undefined });
+    });
+}
+
+function launchNow(p: Proc, spec: Spec): void {
   Object.assign(p, { command: spec.command, url: spec.url, port: spec.port, portHint: spec.portHint });
   push(p, "dx", `$ ${spec.command}`);
 
@@ -691,6 +724,13 @@ function launch(p: Proc, spec: Spec): void {
 async function watchReady(p: Proc): Promise<void> {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline && p.status === "starting" && p.child) {
+    // A port another dev server dx runs owns isn't this one's, even if it opened: wait for the address it prints.
+    const other = p.port !== undefined ? portOwner(p.port, p) : undefined;
+    if (other) {
+      push(p, "dx", `Port ${p.port} is ${other.project}'s; waiting for this one to say where it runs.`);
+      p.port = undefined;
+      p.url = undefined;
+    }
     if (p.port !== undefined && (await isPortOpen(p.port))) {
       if (p.status === "starting") {
         p.status = "ready";
@@ -700,7 +740,7 @@ async function watchReady(p: Proc): Promise<void> {
       return;
     }
     // Given PORT and said nothing about where it listens: that port opening is its address.
-    if (p.port === undefined && p.portHint !== undefined && (await isPortOpen(p.portHint)) && p.status === "starting" && p.port === undefined) {
+    if (p.port === undefined && p.portHint !== undefined && p.portHint > 0 && (await isPortOpen(p.portHint)) && p.status === "starting" && p.port === undefined) {
       p.url = `http://localhost:${p.portHint}`;
       p.port = p.portHint;
       continue;

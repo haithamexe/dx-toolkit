@@ -14,7 +14,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - the core tools;
   - Floppy, the desktop assistant on the Windows taskbar (`dx floppy`), and the dx app: the dashboard in its own Electron window, installed on first use, opening at sign-in on Windows (`dx ui`);
   - the `dx` command: `ui, floppy, go, run, resume, up, down, new, clone, projects, status, port, kill, log, summary, clean, deps, test, env, db, logs, errors, fix, traffic, activity, bug, mock, tools, terminal, git, chaos, attack, data, queries, phone, tour, proof, try, prepare, visual, machine, browser, sites, setup, https, config, state, runs, doctor`;
-  - the MCP server with 46 tools, 25 of them for running, checking and breaking apps;
+  - the MCP server with 49 tools, 25 of them for running, checking and breaking apps, and three (`dx_actions`, `dx_do`, `dx_do_risky`) for every dashboard action;
   - stacks and local domains (`shop.localhost`), with opt-in https;
   - the dashboard, arranged by intent: a project switcher, then that project's Overview (with its tour), Code, API, Activity, Tools, Data, Break it and Env & secrets; under Everything, All projects (and New project), This computer (Machine, Ports, Cleanup, Dependencies) and Look back (Summary, Journal); Settings;
   - the activity history (requests, routes, clicks, console, errors, kept 7 days), for deployed sites too through the dx browser, and opening projects in a terminal you pick;
@@ -22,7 +22,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.7.4. Nothing under *Unreleased* yet.
+- **Latest release**: 1.7.4. *Unreleased*: every dashboard action for AI agents (`dx_do`), and two projects with the same usual port each get their own.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -305,6 +305,12 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Where the change is, in words**: the element at the box's centre in the live page, walked up to a button, link, heading, field, image, nav and so on, named by its aria-label, alt or short text ("the Checkout button"); otherwise the region ("near the top left", "across most of the page").
 - **Retention**: the newest 30 commits per project, by capture time; folders the index doesn't list are removed, and a capture is written to `<hash>.tmp-...` and renamed in, so a failed one never replaces a good one.
 - **Images reach the page as data URLs** in JSON (`GET /api/visual/image`), since every `/api/*` call needs the token header, which an `<img src>` can't send; the CSP already allowed `img-src 'self' data:`, so nothing was widened. The file is found by `visualImageFile` from a known git project, a hex commit the index has (a unique prefix of 7+ works), a capture name that commit lists, and a kind (shot, diff, thumb).
+
+### Every dashboard action for AI agents (`web/src/actions.ts`, `dx_actions`, `dx_do`, `dx_do_risky` in `mcp/src/index.ts`)
+
+- **The maintainer wanted Claude to use dx fully, "like a full MCP"**, not only the 46 tools written one by one. So: a catalog of the dashboard's actions (`DX_ACTIONS`: an id like `git.commit`, a group like the sidebar's, a line, the inputs, and whether it's risky), one tool to read it and two to do them, all through the dashboard's own API (`ensureDashboard`, the token, every check the page gets). New dashboard features reach agents by a line in the catalog; `actions.test.ts` fails when a catalog entry names a route or git action the dashboard doesn't have.
+- **Risky actions have a tool of their own**, `dx_do_risky` (`destructiveHint`), because AI tools ask permission per tool, not per argument: allowing `dx_do` must not allow a push. `dx_do` refuses a risky id and `dx_do_risky` a safe one, each naming the other. Risky: deleting, what can't be undone, what leaves the computer, changing the project, packages or database, stopping processes, `.env` values in either direction, settings; and, by the maintainer's choice, commits, merges, rebases, reverts, cherry-picks and switching branch, mock mode and chaos, stopping or restarting dev servers, and saving tools, rules or mocks.
+- **Inputs are checked before anything is sent**: required ones, and unknown ones refused by name (so a git action's fixed `action` can't be swapped). Left out of the catalog: what only the page needs (polling, images) and the buttons that ask an AI themselves. Results over 120,000 characters are cut, with a note to ask for less. Calls are recorded like every MCP call; `input` is only counted, and a failure of `dx_do`/`dx_do_risky` is recorded without its text.
 
 ### The AI lane (`mcp/src/calls.ts`, `web/src/ai.ts`, the lane in `web/public/app.js`)
 
@@ -604,6 +610,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **Order comes from roles**, guessed from the name or command: data, then backend, then other, then frontend. Each tier waits for the one before to be *ready*:
   - its port opens;
   - or, for something that never prints a URL, it's still running and its output has gone quiet (5s up, 2.5s quiet).
+- **A port another dev server dx runs has, or was given, isn't this one's** (`portOwner` in `dev.ts`): the maintainer started two projects with the same usual port and both `name.localhost` names opened the first. The "already busy" check runs once at launch, so two started before either listened both kept the guessed port, the second quietly moved, and dx saw the port open and took it as the second's. Now the second is given a free port (`PORT`, as snapshots are) and a port owned by another is never taken as ready; `twoservers.test.ts` reproduces it.
 - **A URL another dx-run server owns isn't taken as this server's address.** A front end that prints "API at http://localhost:4000" would otherwise be mistaken for the API.
 - **`DX_<SERVICE>_URL` is the direct `localhost:port` address**, because server code on some Linux systems can't resolve `*.localhost`. `DX_<SERVICE>_PUBLIC_URL` is the `.localhost` one.
 - **Docker services** run `docker compose up -d <svc>`, are ready when their published port opens, and are stopped with `docker compose stop` when the stack stops.

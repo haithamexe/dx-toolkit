@@ -775,6 +775,18 @@ The servers run in the dx dashboard, not inside the AI tool, so they keep runnin
 
 **Watch what the agent does.** Every tool call the MCP server handles is written to `~/.dx/runs.jsonl` as `mcp.<tool>`: a sentence saying what it did, the project, a short summary of its arguments, whether it worked and how long it took. The dashboard's **AI lane** follows it live and `dx runs` lists it. Nothing secret is kept: only arguments on a fixed list are summarised (never a request body, headers, a note, a journal entry or a database query; those are counted, not kept), addresses are masked, and from a result only numbers are kept (a status code, how many errors), never `.env` values or query results. **Take over** on a server the agent started makes it yours; **Interrupt** stops the servers it started.
 
+### Everything the dashboard does
+
+Your agent can also use dx the way you do on the dashboard, every page of it: run and check apps, git (status, staging, commits, branches, tags, releases, undo), the API spec, mocks, rules and the Repeater, the activity history, the project's own tools, realistic data, chaos and the security pass, `.env` files, this computer (processes, Docker, ports, cleanup, dependencies), the summary and journal, and dx's settings. Ask it things like *"commit what's staged on shop-website with a good message and push"* or *"turn chaos on for todo-app, click through checkout, and tell me what broke"*.
+
+| Tool | What the agent gets |
+|---|---|
+| `dx_actions` | What dx can do: the groups, then each group's actions with what they do and the inputs they take |
+| `dx_do` | Does an action that isn't risky (reading, listing, starting a server, checking a page, staging…), through the dashboard's own API and checks |
+| `dx_do_risky` | Does a risky one. **Your AI tool asks you before each call**: anything that deletes, can't be undone, leaves this computer (push, release), changes the project, its packages or its database, stops a process or a dev server, reads or writes `.env` values, commits, merges, rebases or switches branches, turns mock mode or chaos on, saves tools, rules or mocks, or changes dx's settings |
+
+Allowing `dx_do` once in your AI tool doesn't allow `dx_do_risky`. Every call shows in the dashboard's AI panel and in `dx runs`.
+
 ### Your projects, ports, journal and week
 
 - `list_projects`, `open_project`

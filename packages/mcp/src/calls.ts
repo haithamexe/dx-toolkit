@@ -77,11 +77,11 @@ const SAFE_KEYS = new Set([
   "paths",
 ]);
 /** Arguments whose size is worth knowing but whose content isn't kept. */
-const COUNTED_KEYS = new Set(["steps", "files", "services", "query", "note", "text", "body", "headers", "search", "match"]);
+const COUNTED_KEYS = new Set(["steps", "files", "services", "query", "note", "text", "body", "headers", "search", "match", "input"]);
 /** `query` is a project-name search in these tools; elsewhere (db_query) it's what's never kept. */
 const NAME_QUERY_TOOLS = new Set(["list_projects", "audit_dependencies"]);
 /** Tools whose error messages can echo data: their failures are recorded as "failed", nothing more. */
-const QUIET_FAILURES = new Set(["db_query", "check_env", "set_stack", "add_log_entry", "leave_note"]);
+const QUIET_FAILURES = new Set(["db_query", "check_env", "set_stack", "add_log_entry", "leave_note", "dx_do", "dx_do_risky"]);
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -237,6 +237,11 @@ export function describeCall(tool: string, args: Args, ok: boolean, result?: Cal
         return args.action === "on" ? `Switched on query logging for ${p ?? "a project"}` : args.action === "off" ? `Switched off query logging for ${p ?? "a project"}` : `Read ${of("database queries")}`;
       case "translation_check":
         return `Checked ${p ? `${p}'s` : "the app's"} pages for other languages`;
+      case "dx_actions":
+        return `Looked up what dx can do${typeof args.group === "string" ? ` (${args.group})` : ""}`;
+      case "dx_do":
+      case "dx_do_risky":
+        return `${ok ? "Did" : "Tried"} ${typeof args.action === "string" ? args.action : "an action"}${tool === "dx_do_risky" ? " (asked first)" : ""}${p ? ` on ${p}` : ""}`;
       default:
         if (tool.startsWith("git_")) return `Git: ${tool.slice(4).replace(/_/g, " ")}${p ? ` in ${p}` : ""}`;
         return `Called ${tool}${p ? ` on ${p}` : ""}`;

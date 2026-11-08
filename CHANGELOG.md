@@ -4,6 +4,14 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **Your AI agent can use all of dx**, every dashboard page, through dx's MCP server: `dx_actions` lists what dx can do (grouped like the sidebar, with each action's inputs), `dx_do` does the ones that aren't risky, and `dx_do_risky` the risky ones, so your AI tool asks you before each: pushing and releases, deleting, `.env` values, the database, stopping things, commits, merges and rebases, mock mode and chaos, saving tools, rules and mocks, and dx's settings. Same API and checks as the dashboard; every call shows in its AI panel.
+
+### Fixed
+
+- **Two projects with the same usual port** (two Next.js or Express apps on 3000, say) started close together both got that port in dx, so both `name.localhost` addresses opened the first project. A port one dev server has, or is about to have, is never another's: the second is given a free port (`PORT`), and the address it prints still wins.
+
 ## 1.7.4 (2026-11-08)
 
 The Tools chat is like talking to Claude Code yourself, and the other AI buttons no longer stop at "Reached max turns". Update with `npm install -g dx-devkit@latest`.

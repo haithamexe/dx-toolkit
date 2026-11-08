@@ -69,6 +69,7 @@ import {
 import { dataTarget, listScenes, loadData, loadScene, makeScene, readDataSchema, saveScene, sceneSlug, type AttackReport, describeHealth, CHAOS_LEVELS, chaosReport, findGraveyard, loadChaos, probeEnv, setChaos, type BehaviourDiff, type GremlinRun } from "@dx/core";
 import { describeLocaleProblem, prProof, projectTour, queryLogState, queryReport, readActivity as readActivityLog, setQueryLog, tourMarkdown, type LocaleReport, type UpgradeReport } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
+import { ACTION_GROUPS, DX_ACTIONS, actionRequest, dxAction } from "@dx/web/actions";
 import { callRecord, recordCall, type CallResult } from "./calls.js";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
@@ -1891,6 +1892,91 @@ server.registerTool(
       return failure((err as Error).message);
     }
   },
+);
+
+// ------------------------------------------------------------------ everything the dashboard does
+
+// Every dashboard action, through the same API and checks as the page (web/src/actions.ts). Risky
+// ones go only through dx_do_risky, a tool of its own, so the AI tool asks the user before each
+// call (allowing dx_do once doesn't allow them).
+const RESULT_MAX = 120_000;
+
+async function doAction(id: string, input: Record<string, unknown> | undefined, risky: boolean) {
+  const action = dxAction(id);
+  if (!action) return failure(`dx has no action "${id}". dx_actions lists them.`);
+  if (action.risky && !risky) return failure(`${id} is risky (${action.title.toLowerCase()}): call dx_do_risky, which asks the user first.`);
+  if (!action.risky && risky) return failure(`${id} isn't risky: call dx_do.`);
+  let req: ReturnType<typeof actionRequest>;
+  try {
+    req = actionRequest(action, input ?? {});
+  } catch (err) {
+    return failure((err as Error).message);
+  }
+  const client = await ensureDashboard();
+  try {
+    const result = await client.call(req.method, req.path, req.body, 600_000);
+    const out = JSON.stringify(result, null, 2) ?? "ok";
+    return text(out.length > RESULT_MAX ? `${out.slice(0, RESULT_MAX)}\n… (cut at ${RESULT_MAX} characters; ask for less, with limit or a narrower input)` : out);
+  } catch (err) {
+    return failure((err as Error).message);
+  }
+}
+
+server.registerTool(
+  "dx_actions",
+  {
+    title: "What dx can do",
+    description:
+      "Everything the dx dashboard can do, as actions to call with dx_do (or dx_do_risky for risky ones): run and check apps, " +
+      "git (status, staging, commits, branches, tags, releases, undo), API specs, mocks, rules, the activity history, the project's own tools, " +
+      "realistic data, chaos and security checks, .env files, this computer (processes, Docker, ports, cleanup, dependencies), " +
+      "the summary and journal, and dx's settings. Without a group, the groups; with one, its actions with their inputs.",
+    inputSchema: {
+      group: z.string().optional().describe(`One of: ${Object.keys(ACTION_GROUPS).join(", ")}`),
+      search: z.string().optional().describe("Words to find actions by, across groups"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ group, search }) => {
+    if (!group && !search) return text({ groups: ACTION_GROUPS, next: "Call dx_actions with a group (or search) for its actions and their inputs." });
+    const words = (search ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+    const list = DX_ACTIONS.filter((a) => (!group || a.group === group) && words.every((w) => `${a.id} ${a.title}`.toLowerCase().includes(w)));
+    if (!list.length) return failure(group && !ACTION_GROUPS[group] ? `No group "${group}". Groups: ${Object.keys(ACTION_GROUPS).join(", ")}.` : "No action matches.");
+    return text(list.map((a) => ({ action: a.id, does: a.title, inputs: a.params, ...(a.risky ? { risky: "use dx_do_risky (the user is asked first)" } : {}) })));
+  },
+);
+
+server.registerTool(
+  "dx_do",
+  {
+    title: "Do something in dx",
+    description:
+      "Do one dx action (from dx_actions) that isn't risky: through the dashboard's own API, with its checks. " +
+      "Inputs are the action's (dir is a project's folder from list_projects). The answer is the dashboard's, as JSON.",
+    inputSchema: {
+      action: z.string().describe("An action from dx_actions, e.g. git.status or run.start"),
+      input: z.record(z.string(), z.unknown()).optional().describe("The action's inputs"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ action, input }) => doAction(action, input, false),
+);
+
+server.registerTool(
+  "dx_do_risky",
+  {
+    title: "Do something risky in dx",
+    description:
+      "Do one risky dx action (marked risky in dx_actions): it deletes something, can't be undone, leaves this computer (push, release), " +
+      "changes the project, its packages or its database, stops a process, or reads secrets. The user is asked before each call. " +
+      "Say plainly what it will do before calling it.",
+    inputSchema: {
+      action: z.string().describe("A risky action from dx_actions, e.g. git.push or env.read"),
+      input: z.record(z.string(), z.unknown()).optional().describe("The action's inputs"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+  },
+  async ({ action, input }) => doAction(action, input, true),
 );
 
 await server.connect(new StdioServerTransport());

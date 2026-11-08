@@ -220,3 +220,32 @@ test("machine_info: an agent sees what a project needs from this computer", asyn
   assert.ok(out.projects[0].needs.some((n: { tool: string; ok: boolean }) => n.tool === "node" && n.ok));
   assert.equal((await call("machine_info", { project: "no-such-project" })).isError, true);
 });
+
+test("the whole dashboard through dx_actions, dx_do and dx_do_risky: risky actions only through the tool that asks", async () => {
+  const { tools } = await client.listTools();
+  const risky = tools.find((t) => t.name === "dx_do_risky");
+  assert.equal(risky?.annotations?.destructiveHint, true, "the client asks the user before each risky call");
+  assert.equal(tools.find((t) => t.name === "dx_do")?.annotations?.destructiveHint, false);
+
+  const groups = JSON.parse((await call("dx_actions")).text);
+  assert.ok(groups.groups.git && groups.groups.chaos);
+  const gitActions = JSON.parse((await call("dx_actions", { group: "git" })).text) as { action: string; risky?: string }[];
+  assert.ok(gitActions.some((a) => a.action === "git.commit"));
+  assert.ok(gitActions.find((a) => a.action === "git.push")?.risky);
+
+  const list = JSON.parse((await call("dx_do", { action: "run.list" })).text);
+  assert.ok(Array.isArray(list));
+  const project = await call("dx_do", { action: "env.project", input: { dir: app } });
+  assert.ok(!project.isError, project.text);
+
+  const refused = await call("dx_do", { action: "env.read", input: { dir: app, name: ".env" } });
+  assert.ok(refused.isError && /dx_do_risky/.test(refused.text), "a risky action isn't done by dx_do");
+  const notRisky = await call("dx_do_risky", { action: "git.status", input: { dir: app } });
+  assert.ok(notRisky.isError && /call dx_do/.test(notRisky.text));
+  const missing = await call("dx_do", { action: "git.status", input: {} });
+  assert.ok(missing.isError && /needs dir/.test(missing.text));
+  const unknown = await call("dx_do", { action: "rm.everything" });
+  assert.ok(unknown.isError && /no action/.test(unknown.text));
+  const outside = await call("dx_do", { action: "env.project", input: { dir: os.tmpdir() } });
+  assert.ok(outside.isError, "only projects dx knows, as on the page");
+});
