@@ -22,7 +22,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.7.1. *Unreleased*: npm's claude and codex found as their .cmd shims on Windows.
+- **Latest release**: 1.7.2. Nothing under *Unreleased* yet.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -48,6 +48,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
+  - **1.7.2** finds npm's `claude` and `codex` as their `.cmd` shims on Windows.
   - **1.7.1** takes the length limit off the tool chat.
   - **1.7.0** adds a project's own tools (the Tools page and `dx tools`), .env alerts, and your dx on another computer (`dx state`).
   - **1.6.0** arranges the dashboard by intent (a project switcher, then that project's pages), splits Code into Save, Share, Release and History with GitHub releases through gh, finds an API spec for every project, and adds the line beside Floppy and Run Floppy.

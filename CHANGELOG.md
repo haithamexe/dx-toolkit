@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.7.2 (2026-11-08)
+
+Claude Code and Codex installed with npm on Windows work again from dx. Update with `npm install -g dx-devkit@latest`.
+
 ### Fixed
 
 - **Claude Code and Codex installed with npm on Windows** start again from the Tools chat, Write message, Ask Claude to fix and AI mock data: dx picked npm's extensionless script (`npm\claude`, for Git Bash) over `claude.cmd`, and Windows can't start it (`spawn … ENOENT`).
