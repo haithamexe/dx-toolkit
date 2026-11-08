@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.8.0 (2026-11-08)
+
+Your AI agent can use all of dx, asking you before anything risky; and two projects on the same usual port each get their own. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **Your AI agent can use all of dx**, every dashboard page, through dx's MCP server: `dx_actions` lists what dx can do (grouped like the sidebar, with each action's inputs), `dx_do` does the ones that aren't risky, and `dx_do_risky` the risky ones, so your AI tool asks you before each: pushing and releases, deleting, `.env` values, the database, stopping things, commits, merges and rebases, mock mode and chaos, saving tools, rules and mocks, and dx's settings. Same API and checks as the dashboard; every call shows in its AI panel.
