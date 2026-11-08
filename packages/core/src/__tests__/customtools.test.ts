@@ -220,3 +220,21 @@ test("in a chat, a tool's credential headers are hidden from the agent and put b
   const answer = cleanTool({ ...shown, name: "Mine, renamed" });
   assert.equal(h(restoreToolSecrets(answer, kept)).authorization, "Bearer real-token-123");
 });
+
+test("on Windows, a CLI npm installed is found as its .cmd shim, not the extensionless script beside it", async () => {
+  const { runnableFirst, commandExists } = core;
+  const npm = ["C:/npm/claude", "C:/npm/claude.cmd", "C:/tools/claude.exe"];
+  assert.deepEqual(runnableFirst(npm, "win32"), ["C:/npm/claude.cmd", "C:/tools/claude.exe", "C:/npm/claude"]);
+  assert.deepEqual(runnableFirst(npm, "linux"), npm, "elsewhere, which's answer as it is");
+  if (process.platform !== "win32") return;
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "dx-npm-bin-"));
+  fs.writeFileSync(path.join(bin, "dx-fake-agent"), "#!/bin/sh\n");
+  fs.writeFileSync(path.join(bin, "dx-fake-agent.cmd"), "@echo off\r\n");
+  const before = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${before}`;
+  try {
+    assert.equal(await commandExists("dx-fake-agent"), path.join(bin, "dx-fake-agent.cmd"));
+  } finally {
+    process.env.PATH = before;
+  }
+});

@@ -22,7 +22,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.7.1. Nothing under *Unreleased* yet.
+- **Latest release**: 1.7.1. *Unreleased*: npm's claude and codex found as their .cmd shims on Windows.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -679,6 +679,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Gotchas met along the way
 
+- **`where` on Windows also lists a file with no extension**: npm installs a Git Bash script (`npm\claude`) next to each `claude.cmd`, and `where claude` lists it first; spawning it fails with ENOENT. `commandExists` puts PATHEXT matches first (`runnableFirst`). Seen on the maintainer's other computer, where Claude Code came from npm.
 - **Clipboard on Windows**: `clip.exe` pastes a UTF-8 BOM as a visible character. Write UTF-16LE without a BOM.
 - **Shell-mangled regexes**: tests built through a shell lost their backslashes; prefer `includes` checks in tests over regexes that pass through a shell.
 - **Editing code through a shell breaks escapes**: `\n`, `\r` and `\\` in a python/sed/heredoc edit came out as real line breaks or lost backslashes, several times. Edit `.ts` and `.js` files with an editor tool, not a shell script.

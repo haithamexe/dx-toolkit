@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Fixed
+
+- **Claude Code and Codex installed with npm on Windows** start again from the Tools chat, Write message, Ask Claude to fix and AI mock data: dx picked npm's extensionless script (`npm\claude`, for Git Bash) over `claude.cmd`, and Windows can't start it (`spawn … ENOENT`).
+
 ## 1.7.1 (2026-11-08)
 
 The tool chat takes text of any length. Update with `npm install -g dx-devkit@latest`.

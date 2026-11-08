@@ -263,6 +263,18 @@ function lsofFix(): string | undefined {
 }
 
 /** Returns the resolved path of a command, or undefined if it can't be found. */
+/**
+ * On Windows, `where` also lists a file with no extension (npm puts a script for Git Bash next to
+ * each `.cmd` shim: `npm\claude` beside `npm\claude.cmd`), which Windows can't start. Those with an
+ * extension it runs (PATHEXT) come first, keeping where's order otherwise.
+ */
+export function runnableFirst(paths: string[], platform: NodeJS.Platform, pathext = ".COM;.EXE;.BAT;.CMD"): string[] {
+  if (platform !== "win32") return paths;
+  const exts = pathext.toLowerCase().split(";").filter(Boolean);
+  const runs = (p: string) => exts.includes(path.extname(p).toLowerCase());
+  return [...paths.filter(runs), ...paths.filter((p) => !runs(p))];
+}
+
 export async function commandExists(command: string): Promise<string | undefined> {
   // `"C:\Program Files\X\x.exe" --flag` → the quoted part; `code -n` → `code`
   const trimmed = command.trim();
@@ -270,7 +282,8 @@ export async function commandExists(command: string): Promise<string | undefined
   if (/[\\/]/.test(unquoted)) return fs.existsSync(unquoted) ? unquoted : undefined;
   try {
     const { stdout } = await run(process.platform === "win32" ? "where" : "which", [unquoted], { windowsHide: true });
-    return stdout.split(/\r?\n/).find(Boolean)?.trim();
+    const found = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    return runnableFirst(found, process.platform, process.env.PATHEXT)[0];
   } catch {
     return undefined;
   }
