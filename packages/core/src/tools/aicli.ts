@@ -67,23 +67,25 @@ export const AI_MODELS: Record<AiTool, string[]> = {
 const CODEX_EFFORT: Record<AiEffort, string> = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
 
 /** Asks the agent once and returns its final answer, with the model and effort when given (checked). Nothing it says is run by dx. */
-export async function askAi(cli: AiCli, prompt: string, options: { timeoutMs?: number; model?: string; effort?: AiEffort } = {}): Promise<AiResult> {
-  const timeoutMs = options.timeoutMs ?? 120_000;
+export async function askAi(cli: AiCli, prompt: string, options: { timeoutMs?: number; model?: string; effort?: AiEffort; free?: { cwd: string } } = {}): Promise<AiResult> {
+  const timeoutMs = options.timeoutMs ?? (options.free ? Infinity : 120_000);
   const model = cleanAiModel(options.model);
   const effort = cleanAiEffort(options.effort);
   if (cli.tool === "claude") {
-    const r = await runClaude(cli.path, prompt, { timeoutMs, model, effort });
+    const r = await runClaude(cli.path, prompt, { timeoutMs, model, effort, free: options.free });
     return { tool: "claude", code: r.code, text: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
   // Codex: no tools that write, no git checks, no saved session, the answer in a file of dx's own.
+  // Free (the Tools chat): in the project's folder with Codex's own default sandbox and no time
+  // limit; otherwise read-only in an empty folder. The answer always goes to a file of dx's own.
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "dx-codex-"));
   const out = path.join(work, "answer.txt");
-  const args = ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never", "-o", out];
+  const args = options.free ? ["exec", "--skip-git-repo-check", "--color", "never", "-o", out] : ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never", "-o", out];
   if (model) args.push("-m", model);
   if (effort) args.push("-c", `model_reasoning_effort=${CODEX_EFFORT[effort]}`);
   args.push("-");
   try {
-    const r = await run(cli.path, args, prompt, work, timeoutMs);
+    const r = await run(cli.path, args, prompt, options.free?.cwd ?? work, timeoutMs);
     let text = "";
     try {
       text = fs.readFileSync(out, "utf8");
@@ -106,10 +108,12 @@ function run(file: string, args: string[], input: string, cwd: string, timeoutMs
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutMs);
+    const timer = Number.isFinite(timeoutMs)
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill();
+        }, timeoutMs)
+      : undefined;
     child.stdout.on("data", (b: Buffer) => (stdout += b.toString("utf8")));
     child.stderr.on("data", (b: Buffer) => (stderr += b.toString("utf8")));
     child.once("error", (e) => {

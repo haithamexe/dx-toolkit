@@ -128,7 +128,7 @@ test("proposes a checked patch from the error and the code around it, and change
   assert.equal(read(path.join(dir, "src", "cart.js")), CART, "nothing changed on disk");
 
   const input = fake.input();
-  assert.equal(fs.readFileSync(path.join(fake.dir, "args.txt"), "utf8"), "-p --max-turns 1", "fixed arguments only");
+  assert.equal(fs.readFileSync(path.join(fake.dir, "args.txt"), "utf8"), "-p --max-turns 1 --tools  --strict-mcp-config", "fixed arguments only");
   assert.ok(input.includes("TypeError: Cannot read properties of undefined"), "the error");
   assert.ok(input.includes("The file src/cart.js (all 3 lines)"), "the file it happened in");
   assert.ok(input.includes("return cart.items.reduce"), "its code");

@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { commandExists } from "./doctor.js";
 
 /**
@@ -40,26 +43,52 @@ export function cleanAiEffort(raw: unknown): AiEffort | undefined {
   return raw as AiEffort;
 }
 
-/** Runs `claude -p --max-turns 1` with the prompt on stdin (and a checked model and effort when given). A .cmd shim (npm on Windows) needs cmd.exe; the arguments are fixed either way. */
-export function runClaude(cli: string, input: string, options: { timeoutMs?: number; model?: string; effort?: AiEffort } = {}): Promise<ClaudeResult> {
+/**
+ * Runs `claude -p --max-turns 1` with the prompt on stdin (and a checked model and effort when
+ * given). dx only wants text back, so Claude Code gets none of its built-in tools (`--tools ""`)
+ * and none of the user's MCP servers (`--strict-mcp-config`): with them it might reach for one
+ * (read a file, call dx) and stop at "Reached max turns". It runs in an empty folder, so no
+ * project's CLAUDE.md comes along. A Claude Code too old for those flags is asked again without
+ * them. A .cmd shim (npm on Windows) needs cmd.exe; the arguments are fixed either way.
+ */
+export async function runClaude(cli: string, input: string, options: { timeoutMs?: number; model?: string; effort?: AiEffort; free?: { cwd: string } } = {}): Promise<ClaudeResult> {
+  const model = cleanAiModel(options.model);
+  const effort = cleanAiEffort(options.effort);
+  const chosen = [...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : [])];
+  // Free: like talking to Claude Code yourself (the Tools chat). No turn limit, its own tools and
+  // the user's MCP servers, in the project's folder, no time limit. Its own permission rules still
+  // apply: with nobody to ask in -p, anything that needs an OK (an edit, a command) is refused.
+  if (options.free) return spawnClaude(cli, ["-p", ...chosen], input, options.free.cwd, options.timeoutMs);
+  const args = ["-p", "--max-turns", "1", ...chosen];
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "dx-claude-"));
+  try {
+    const r = await spawnClaude(cli, [...args, "--tools", "", "--strict-mcp-config"], input, work, options.timeoutMs);
+    if (r.code !== 0 && /unknown option|unrecognized|unexpected argument/i.test(r.stderr) && /--tools|--strict-mcp-config/.test(r.stderr)) return await spawnClaude(cli, args, input, work, options.timeoutMs);
+    return r;
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
+function spawnClaude(cli: string, args: string[], input: string, cwd: string, timeoutMs = 60_000): Promise<ClaudeResult> {
   return new Promise((resolve) => {
-    const args = ["-p", "--max-turns", "1"];
-    const model = cleanAiModel(options.model);
-    const effort = cleanAiEffort(options.effort);
-    if (model) args.push("--model", model);
-    if (effort) args.push("--effort", effort);
     const shim = process.platform === "win32" && /\.(cmd|bat)$/i.test(cli);
+    // An empty argument is written "" on the command line, as cmd.exe passes it on.
+    const line = args.map((a) => (a === "" ? '""' : a)).join(" ");
     const child = shim
       ? // cmd /s takes off the outermost quotes, so the whole line is quoted once more.
-        spawn("cmd.exe", ["/d", "/s", "/c", `""${cli}" ${args.join(" ")}"`], { windowsHide: true, windowsVerbatimArguments: true })
-      : spawn(cli, args, { windowsHide: true });
+        spawn("cmd.exe", ["/d", "/s", "/c", `""${cli}" ${line}"`], { cwd, windowsHide: true, windowsVerbatimArguments: true })
+      : spawn(cli, args, { cwd, windowsHide: true });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, options.timeoutMs ?? 60_000);
+    // No timer at all for an unlimited run (setTimeout takes Infinity as at once).
+    const timer = Number.isFinite(timeoutMs)
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill();
+        }, timeoutMs)
+      : undefined;
     child.stdout.on("data", (b: Buffer) => (stdout += b.toString("utf8")));
     child.stderr.on("data", (b: Buffer) => (stderr += b.toString("utf8")));
     child.once("error", (e) => {

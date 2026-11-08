@@ -70,7 +70,7 @@ test("writes a message from the staged diff and the repository's own style, neve
   assert.ok(input.includes("fix: start the shop"), "the recent subjects, for the style");
   assert.ok(input.includes("+buy milk"), "the staged diff");
   assert.match(input, /No Co-Authored-By lines/);
-  assert.equal(fs.readFileSync(path.join(fake.dir, "args.txt"), "utf8"), "-p --max-turns 1", "fixed arguments only");
+  assert.equal(fs.readFileSync(path.join(fake.dir, "args.txt"), "utf8"), "-p --max-turns 1 --tools  --strict-mcp-config", "fixed arguments only");
   assert.equal(git("log", "--format=%s").trim(), "fix: start the shop", "nothing was committed");
 
   // A big diff is cut, with the whole list of files kept.

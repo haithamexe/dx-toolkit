@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Fixed
+
+- **"Reached max turns (1)"** from Claude Code in the Tools chat, often after editing a tool. The Tools chat is now like talking to Claude Code (or Codex) yourself: no turn or time limit, its own tools and your MCP servers, in the project's folder, so it can read your code to understand the API. Its own permission rules still apply, so with nobody there to approve, it changes nothing. Write message, Ask Claude to fix and AI mock data, which only need text, run Claude Code without its tools or MCP servers, in an empty folder, so they answer in one turn.
+
 ## 1.7.3 (2026-11-08)
 
 Updating dx takes effect the next time you open it. Update with `npm install -g dx-devkit@latest`.

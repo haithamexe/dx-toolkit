@@ -191,7 +191,7 @@ test("the model and effort reach Claude Code as fixed arguments, checked first",
   assert.throws(() => cleanAiModel("opus&calc"), /letters, digits/);
   assert.throws(() => cleanAiEffort("extreme"), /Effort is one of/);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dx-fake-claude-"));
-  fs.writeFileSync(path.join(dir, "fake.cjs"), `const fs = require("fs"); const path = require("path"); let i = ""; process.stdin.on("data", (d) => (i += d)); process.stdin.on("end", () => { fs.writeFileSync(path.join(__dirname, "args.txt"), process.argv.slice(2).join(" ")); process.stdout.write('{"reply":"ok"}'); });`);
+  fs.writeFileSync(path.join(dir, "fake.cjs"), `const fs = require("fs"); const path = require("path"); let i = ""; process.stdin.on("data", (d) => (i += d)); process.stdin.on("end", () => { const args = process.argv.slice(2); fs.writeFileSync(path.join(__dirname, "args.txt"), args.join(" ")); fs.writeFileSync(path.join(__dirname, "cwd.txt"), process.cwd()); if (args.includes("--tools") && fs.existsSync(path.join(__dirname, "old"))) { process.stderr.write("error: unknown option '--tools'"); process.exit(1); } process.stdout.write('{"reply":"ok"}'); });`);
   let cli: string;
   if (process.platform === "win32") {
     cli = path.join(dir, "claude.cmd");
@@ -202,9 +202,18 @@ test("the model and effort reach Claude Code as fixed arguments, checked first",
   }
   const r = await askAi({ tool: "claude", name: "Claude Code", path: cli }, "hello", { model: "opus", effort: "high" });
   assert.equal(r.text, '{"reply":"ok"}');
-  assert.equal(fs.readFileSync(path.join(dir, "args.txt"), "utf8"), "-p --max-turns 1 --model opus --effort high");
+  // No built-in tools and no MCP servers, so it answers in one turn instead of reaching for a file.
+  assert.equal(fs.readFileSync(path.join(dir, "args.txt"), "utf8"), "-p --max-turns 1 --model opus --effort high --tools  --strict-mcp-config");
+  const cwd = fs.readFileSync(path.join(dir, "cwd.txt"), "utf8");
+  assert.match(path.basename(cwd), /^dx-claude-/, "in an empty folder of its own");
+  assert.ok(!fs.existsSync(cwd), "removed afterwards");
   await askAi({ tool: "claude", name: "Claude Code", path: cli }, "hello");
-  assert.equal(fs.readFileSync(path.join(dir, "args.txt"), "utf8"), "-p --max-turns 1", "nothing added when nothing was chosen");
+  assert.equal(fs.readFileSync(path.join(dir, "args.txt"), "utf8"), "-p --max-turns 1 --tools  --strict-mcp-config", "nothing added when nothing was chosen");
+  // A Claude Code too old for those flags is asked again without them.
+  fs.writeFileSync(path.join(dir, "old"), "");
+  const old = await askAi({ tool: "claude", name: "Claude Code", path: cli }, "hello");
+  assert.equal(old.text, '{"reply":"ok"}');
+  assert.equal(fs.readFileSync(path.join(dir, "args.txt"), "utf8"), "-p --max-turns 1");
 });
 
 test("in a chat, a tool's credential headers are hidden from the agent and put back in its answer", () => {

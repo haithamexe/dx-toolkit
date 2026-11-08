@@ -20,6 +20,7 @@ fs.writeFileSync(
    process.stdin.on("data", (d) => (input += d)); process.stdin.on("end", () => {
      fs.writeFileSync(path.join(__dirname, "input.txt"), input);
      fs.writeFileSync(path.join(__dirname, "args.txt"), process.argv.slice(2).join(" "));
+     fs.writeFileSync(path.join(__dirname, "cwd.txt"), process.cwd());
      const bad = fs.existsSync(path.join(__dirname, "bad-once"));
      if (bad) { fs.unlinkSync(path.join(__dirname, "bad-once")); return process.stdout.write('{"reply":"here","tool":{"name":"Oops","kind":"view","source":{"request":{"method":"GET","path":"/api/orders"}},"steps":[{"eval":"x"}]}}'); }
      process.stdout.write("Sure.\\n\`\`\`json\\n" + JSON.stringify({ reply: "A table of the orders.", tool: { name: "Orders table", kind: "view", source: { request: { method: "GET", path: "/api/orders" } }, steps: [{ get: "orders" }], display: { as: "table" } } }) + "\\n\`\`\`\\n");
@@ -150,7 +151,9 @@ test("the chat: dx builds the prompt, passes the model and effort, and keeps onl
   const r = await api("/api/tools/chat", { dir: app, message: "a table of the orders", model: "sonnet", effort: "low" });
   assert.equal(r.reply, "A table of the orders.");
   assert.equal(r.tool.name, "Orders table");
-  assert.equal(fs.readFileSync(path.join(fake, "args.txt"), "utf8"), "-p --max-turns 1 --model sonnet --effort low");
+  // Like talking to Claude Code: no turn limit, its own tools and MCP servers, in the project's folder.
+  assert.equal(fs.readFileSync(path.join(fake, "args.txt"), "utf8"), "-p --model sonnet --effort low");
+  assert.equal(fs.realpathSync.native(fs.readFileSync(path.join(fake, "cwd.txt"), "utf8")).toLowerCase(), fs.realpathSync.native(app).toLowerCase());
   const prompt = fs.readFileSync(path.join(fake, "input.txt"), "utf8");
   assert.ok(prompt.includes("GET /api/orders"), "the recorded calls are in the prompt");
   assert.ok(prompt.includes("User: a table of the orders"));

@@ -1150,7 +1150,7 @@ export function toolPrompt(o: { project: string; context: string; current?: Cust
   const history = o.history.slice(-12).map((t) => `${t.role === "user" ? "User" : "You"}: ${t.text}`).join("\n");
   return [
     `You help a developer make a small tool in dx, their local developer dashboard, for the project "${o.project}".`,
-    "You don't write code and you don't touch files. You answer with one JSON object, nothing else:",
+    "You're in the project's folder: look at its code and files as much as you need to understand its API, but don't change anything. A tool isn't code: your final answer is one JSON object, nothing else:",
     '{"reply": "one or two sentences for the user", "tool": { ...the whole tool... }}',
     'Leave "tool" out only when you need to ask something first. Always give the whole tool, not a change.',
     "",

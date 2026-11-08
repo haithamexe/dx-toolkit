@@ -344,7 +344,7 @@ async function chat(project: Project, body: Record<string, unknown>) {
   let problem: string | undefined;
   let reply = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await askAi(cli, toolPrompt({ project: project.name, context, current: hidden?.shown, history, message, problem }), { timeoutMs: 180_000, model, effort });
+    const r = await askAi(cli, toolPrompt({ project: project.name, context, current: hidden?.shown, history, message, problem }), { model, effort, free: { cwd: project.dir } });
     if (r.code !== 0 || r.timedOut) throw new HttpError(502, aiFailure(r, `${cli.name} didn't answer`));
     let answer: Record<string, unknown>;
     try {
