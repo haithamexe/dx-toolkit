@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Changed
+
+- **Updating dx takes effect at once**: a dashboard left running in the background by the older version is replaced by the new one the next time you open dx (`dx ui`, the app, or an AI tool using dx), and the dev servers it ran are started again. Before, it kept serving the old version until it stopped by itself.
+
 ## 1.7.2 (2026-11-08)
 
 Claude Code and Codex installed with npm on Windows work again from dx. Update with `npm install -g dx-devkit@latest`.

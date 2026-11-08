@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { appStartsAtSignIn, autoConnectAiTools, ELECTRON_VERSION, findElectron, installElectron, loadConfig, openUrl, recordRun, removeApp, saveConfig, setAppStartup } from "@dx/core";
 import { startDashboard } from "@dx/web";
 import { appLauncher, canWriteShortcuts, openDxApp, settleAppStartup, settleElectron } from "@dx/web/app";
-import { ensureDashboard, findDashboard } from "@dx/web/link";
+import { dxVersion, ensureDashboard, findDashboard, olderVersion, type DashboardClient } from "@dx/web/link";
 import type { Command } from "../command.js";
 import { c, info, ok, UsageError, warn } from "../ui.js";
 
@@ -79,8 +79,17 @@ export const uiCommand: Command = {
       await openApp(url);
     };
 
+    // One left in the background by an older dx (after an update) is replaced by this version's.
+    const old = running && olderVersion(running.info.version, dxVersion());
+    if (running && old && running.info.background) {
+      const client = await ensureDashboard();
+      saidReplaced(client);
+      if (values.open) await open(client.url);
+      return;
+    }
     if (running) {
       ok(`The dx dashboard is running at ${c.cyan(running.url)}${running.info.background ? c.dim(" (in the background)") : ""}`);
+      if (old) info(c.dim(`It runs dx ${running.info.version ?? "from before 1.7.3"}, and this is ${dxVersion()}. Stop it (Ctrl+C where it runs) and run dx ui again to use this one.`));
       if (values.open) await open(running.url);
       return;
     }
@@ -88,7 +97,8 @@ export const uiCommand: Command = {
     // The app is the window; the dashboard behind it runs in the background, so the terminal is free.
     if (values.background || (wantApp && values.open && port === undefined)) {
       const client = await ensureDashboard();
-      ok(`dx dashboard running in the background at ${c.cyan(client.url)}`);
+      if (client.replaced) saidReplaced(client);
+      else ok(`dx dashboard running in the background at ${c.cyan(client.url)}`);
       info(c.dim("It stops itself after 30 minutes with no dev servers and no window open. dx ui --stop stops it now."));
       if (values.open) await open(client.url);
       return;
@@ -176,4 +186,11 @@ async function setStartup(on: boolean): Promise<number | void> {
   }
   saveConfig({ ...loadConfig(), dashboard: { ...(loadConfig().dashboard ?? {}), startup: on && appStartsAtSignIn() } });
   ok(r.message);
+}
+
+/** After an update: the old dashboard was replaced, and which dev servers were started again. */
+function saidReplaced(client: DashboardClient): void {
+  const r = client.replaced;
+  ok(`dx ${dxVersion()} is running at ${c.cyan(client.url)}${r ? c.dim(` (it replaced the dashboard from dx ${r.from})`) : ""}`);
+  if (r?.servers.length) info(`Started again on the new version: ${r.servers.join(", ")}.`);
 }

@@ -11,7 +11,7 @@ import { prunePhones, stopAllPhones } from "./phone.js";
 import { startEnvWatch } from "./envwatch.js";
 import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
 import { DOMAIN_PORTS, startLocalDomains, type LocalDomains, type TlsOptions } from "./proxy.js";
-import { clearDashboardInfo, writeDashboardInfo } from "./link.js";
+import { clearDashboardInfo, dxVersion, writeDashboardInfo } from "./link.js";
 import { closeDxBrowser, dxBrowserOpen, setDxBrowserDashboardPort } from "./dxbrowser.js";
 import { startHeadWatch } from "./visual.js";
 
@@ -175,7 +175,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   // Mock servers that were running when the dashboard last stopped start again, on the same port when it's free.
   await restoreMockServers();
 
-  writeDashboardInfo({ url, port, token, pid: process.pid, startedAt: new Date().toISOString(), background: !!options.background, localDomainsPort: domains?.port, httpsPort: domains?.httpsPort });
+  writeDashboardInfo({ url, port, token, pid: process.pid, startedAt: new Date().toISOString(), background: !!options.background, localDomainsPort: domains?.port, httpsPort: domains?.httpsPort, version: dxVersion() });
 
   const idleMs = (options.idleMinutes ?? 30) * 60_000;
   const idleTimer = setInterval(() => {

@@ -22,7 +22,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.7.2. Nothing under *Unreleased* yet.
+- **Latest release**: 1.7.2. *Unreleased*: an older background dashboard is replaced after an update.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -627,6 +627,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **`~/.dx/dashboard.json`** holds the running dashboard's URL, token and pid, written with mode 0600.
   - `link.ts`'s `ensureDashboard()` reads it, pings `/api/ping`, and if nothing answers starts `web/dist/background.js` detached.
   - A `dashboard.lock` file keeps two callers from starting two dashboards.
+- **After an update, an older background dashboard is replaced** (`ensureDashboard` in `link.ts`): the maintainer updated dx and still saw the old version, since the dashboard kept running. `dashboard.json` and `/api/ping` carry the version; one from an older dx (or with none, from before 1.7.3) is stopped, this version's started, and the dev servers it ran (starting or ready, by project, an AI's still labelled AI) started again. Never a newer one: an AI tool's MCP server can still be the old dx after an update, and must not downgrade the dashboard. Never one running in a terminal (`dx ui --no-open`): `dx ui` says how to switch instead. A linked build has the same version on every rebuild, so rebuilding doesn't restart it.
 - **A background dashboard stops itself** after 30 minutes with no running dev servers and no API requests (the open page polls, so it counts). `POST /api/shutdown` stops any dashboard (`dx ui --stop`).
 - **Error detection** (`core/src/tools/devErrors.ts`):
   - It reads output line by line.

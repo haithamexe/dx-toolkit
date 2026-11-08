@@ -20,6 +20,26 @@ export interface DashboardInfo {
   /** The port *.localhost addresses are served on (80 means no port in the address). */
   localDomainsPort?: number;
   httpsPort?: number;
+  /** The dx version it runs; missing in dashboards from before 1.7.3. */
+  version?: string;
+}
+
+/** This dx's version (the web package's, which every release bumps with the others). */
+export function dxVersion(): string {
+  try {
+    return (JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string }).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/** Whether version `a` comes before `b` (x.y.z; a missing one counts as the oldest). */
+export function olderVersion(a: string | undefined, b: string): boolean {
+  if (!a) return true;
+  const n = (v: string) => v.split(/[.+-]/).slice(0, 3).map((x) => Number.parseInt(x, 10) || 0);
+  const [x, y] = [n(a), n(b)];
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i];
+  return false;
 }
 
 export function dashboardInfoPath(): string {
@@ -68,6 +88,8 @@ export class DashboardError extends Error {
 
 /** Calls the dashboard's API with its token. */
 export class DashboardClient {
+  /** Set when `ensureDashboard` replaced a dashboard from an older dx: its version, and the dev servers started again. */
+  replaced?: { from: string; servers: string[] };
   constructor(public info: DashboardInfo) {}
 
   get url(): string {
@@ -119,7 +141,53 @@ export function backgroundScript(): string {
  */
 export async function ensureDashboard(timeoutMs = 20_000): Promise<DashboardClient> {
   const existing = await findDashboard();
-  if (existing) return existing;
+  if (existing && !outdated(existing)) return existing;
+  // A background dashboard left from an older dx (after an update) is replaced by this version's,
+  // and the dev servers it ran are started again on the new one. Never a newer one (an AI tool's
+  // MCP server can still be the old dx), nor one running in someone's terminal.
+  const carried = existing ? await stopOutdated(existing) : undefined;
+  const client = await startOrWait(timeoutMs);
+  if (carried) {
+    const servers: string[] = [];
+    for (const s of carried.servers) {
+      try {
+        await client.post("/api/dev/start", { dir: s.dir, ...(s.startedBy === "ai" ? { by: "ai" } : {}) });
+        servers.push(s.project);
+      } catch {
+        // a project that's gone, or won't start: it shows on the page as usual
+      }
+    }
+    client.replaced = { from: carried.from, servers };
+  }
+  return client;
+}
+
+function outdated(client: DashboardClient): boolean {
+  return client.info.background && olderVersion(client.info.version, dxVersion());
+}
+
+/** Stops an outdated dashboard, remembering the dev servers it ran (one entry per project). */
+async function stopOutdated(client: DashboardClient): Promise<{ from: string; servers: { dir: string; project: string; startedBy?: string }[] }> {
+  let list: { dir: string; project: string; status: string; startedBy?: string }[] = [];
+  try {
+    list = await client.get("/api/dev");
+  } catch {
+    // it answers ping but not this: nothing to carry over
+  }
+  const servers = new Map<string, { dir: string; project: string; startedBy?: string }>();
+  for (const s of list) if (s.status === "starting" || s.status === "ready") servers.set(s.dir.toLowerCase(), { dir: s.dir, project: s.project, startedBy: s.startedBy });
+  try {
+    await client.post("/api/shutdown");
+  } catch {
+    // already going
+  }
+  for (let i = 0; i < 40 && (await findDashboard())?.info.pid === client.info.pid; i++) await new Promise((r) => setTimeout(r, 250));
+  return { from: client.info.version ?? "an older dx", servers: [...servers.values()] };
+}
+
+async function startOrWait(timeoutMs: number): Promise<DashboardClient> {
+  const running = await findDashboard();
+  if (running && !outdated(running)) return running;
 
   ensureDxHome();
   const lock = dxPath("dashboard.lock");

@@ -68,7 +68,7 @@ function rawGet(p: string, host: string): Promise<number> {
 }
 
 test("writes its address and token to dashboard.json, for this user only, so the MCP server can find it", async () => {
-  const { readDashboardInfo, findDashboard } = await import("../link.js");
+  const { readDashboardInfo, findDashboard, dxVersion } = await import("../link.js");
   const info = readDashboardInfo();
   assert.equal(info?.port, dashboard.port);
   assert.equal(info?.token, dashboard.token);
@@ -76,7 +76,8 @@ test("writes its address and token to dashboard.json, for this user only, so the
   if (process.platform !== "win32") assert.equal(fs.statSync(path.join(home, "dashboard.json")).mode & 0o077, 0, "no access for group or others");
   const client = await findDashboard();
   assert.ok(client, "found and answering");
-  assert.deepEqual(await client.get("/api/ping"), { ok: true, pid: process.pid });
+  assert.deepEqual(await client.get("/api/ping"), { ok: true, pid: process.pid, version: dxVersion() });
+  assert.equal(info?.version, dxVersion(), "the version, so a newer dx replaces this dashboard after an update");
 });
 
 test("serves the page with its token and a strict content security policy", async () => {

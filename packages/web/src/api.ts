@@ -178,6 +178,7 @@ import { bugReplayJob, startBugReplay } from "./bugreplay.js";
 import { forgetMocks, mockServerFor } from "./mocks.js";
 import { labRoutes } from "./labapi.js";
 import { toolRoutes } from "./toolsapi.js";
+import { dxVersion } from "./link.js";
 import { stateRoutes } from "./stateapi.js";
 import { envAlertsSince } from "./envwatch.js";
 import { chaosRoutes } from "./chaosapi.js";
@@ -222,7 +223,7 @@ export class HttpError extends Error {
 type Handler = (req: ApiRequest) => Promise<unknown> | unknown;
 
 const routes: Record<string, Handler> = {
-  "GET /api/ping": () => ({ ok: true, pid: process.pid }),
+  "GET /api/ping": () => ({ ok: true, pid: process.pid, version: dxVersion() }),
 
   // ------------------------------------------------------------ projects
   "GET /api/projects": () => {
