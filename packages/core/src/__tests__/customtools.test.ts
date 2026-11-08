@@ -233,7 +233,10 @@ test("on Windows, a CLI npm installed is found as its .cmd shim, not the extensi
   const before = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${before}`;
   try {
-    assert.equal(await commandExists("dx-fake-agent"), path.join(bin, "dx-fake-agent.cmd"));
+    // The same file however it's spelt (a temp folder can come as C:\Users\RUNNER~1\…).
+    const found = await commandExists("dx-fake-agent");
+    assert.ok(found, "found");
+    assert.equal(fs.realpathSync.native(found).toLowerCase(), fs.realpathSync.native(path.join(bin, "dx-fake-agent.cmd")).toLowerCase());
   } finally {
     process.env.PATH = before;
   }
