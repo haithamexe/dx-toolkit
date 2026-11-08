@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.7.3 (2026-11-08)
+
+Updating dx takes effect the next time you open it. Update with `npm install -g dx-devkit@latest`.
+
 ### Changed
 
 - **Updating dx takes effect at once**: a dashboard left running in the background by the older version is replaced by the new one the next time you open dx (`dx ui`, the app, or an AI tool using dx), and the dev servers it ran are started again. Before, it kept serving the old version until it stopped by itself.
