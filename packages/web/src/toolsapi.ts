@@ -316,7 +316,7 @@ function historyOf(raw: unknown): ToolChatTurn[] {
   return raw.map((t) => {
     const o = (t && typeof t === "object" ? t : {}) as Record<string, unknown>;
     if ((o.role !== "user" && o.role !== "assistant") || typeof o.text !== "string") throw new HttpError(400, "Each turn has a role and a text.");
-    return { role: o.role, text: o.text.slice(0, 4000) };
+    return { role: o.role, text: o.text };
   });
 }
 
@@ -324,7 +324,6 @@ function historyOf(raw: unknown): ToolChatTurn[] {
 async function chat(project: Project, body: Record<string, unknown>) {
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (!message) throw new HttpError(400, "Say what the tool should do.");
-  if (message.length > 4000) throw new HttpError(400, "Keep a message under 4000 characters.");
   const history = historyOf(body.history);
   const current = body.tool === undefined || body.tool === null ? undefined : call(() => cleanTool(body.tool));
   // Which agent, model and effort: chosen on the page, checked here; each goes to the CLI as one fixed argument.

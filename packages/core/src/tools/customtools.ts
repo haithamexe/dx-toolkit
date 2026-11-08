@@ -1147,7 +1147,7 @@ export function restoreToolSecrets(tool: CustomTool, kept: Map<string, string> |
 }
 
 export function toolPrompt(o: { project: string; context: string; current?: CustomTool; history: ToolChatTurn[]; message: string; problem?: string }): string {
-  const history = o.history.slice(-12).map((t) => `${t.role === "user" ? "User" : "You"}: ${t.text.slice(0, 4000)}`).join("\n");
+  const history = o.history.slice(-12).map((t) => `${t.role === "user" ? "User" : "You"}: ${t.text}`).join("\n");
   return [
     `You help a developer make a small tool in dx, their local developer dashboard, for the project "${o.project}".`,
     "You don't write code and you don't touch files. You answer with one JSON object, nothing else:",
@@ -1163,6 +1163,6 @@ export function toolPrompt(o: { project: string; context: string; current?: Cust
     history ? `\nThe conversation so far:\n${history}` : "",
     o.problem ? `\nYour last answer couldn't be used: ${o.problem}. Answer again with a tool that fits the format.` : "",
     "",
-    `User: ${o.message.slice(0, 4000)}`,
+    `User: ${o.message}`,
   ].join("\n");
 }

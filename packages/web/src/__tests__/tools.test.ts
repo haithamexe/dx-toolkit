@@ -160,6 +160,11 @@ test("the chat: dx builds the prompt, passes the model and effort, and keeps onl
   const again = await api("/api/tools/chat", { dir: app, message: "try" });
   assert.equal(again.tool.name, "Orders table");
   assert.match(fs.readFileSync(path.join(fake, "input.txt"), "utf8"), /Your last answer couldn't be used: step 1: a step is one of/);
+  // Long pasted text goes to the agent whole, with the history that repeats it: no limit (over 4 MB here).
+  const long = "order line ".repeat(200_000) + "the end";
+  await api("/api/tools/chat", { dir: app, message: long, history: [{ role: "user", text: long }, { role: "assistant", text: "ok" }] });
+  const sent = fs.readFileSync(path.join(fake, "input.txt"), "utf8");
+  assert.ok(sent.includes(`User: ${long}`) && sent.includes(`\nUser: ${long}\nYou: ok`), "nothing is cut");
 });
 
 test("export and import: one file of definitions, checked before anything is kept", async () => {

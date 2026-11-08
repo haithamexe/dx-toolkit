@@ -76,6 +76,9 @@ const MAX_BODY = 1024 * 1024;
 // A bug bundle (at most 2 MB), a mock's body (at most 1 MB, larger once escaped as JSON) and a tools file (at most 2 MB) come in whole.
 const LARGE_BODY = 3 * 1024 * 1024;
 const LARGE_PATHS = new Set(["/api/activity/bundle/replay", "/api/mocks/update", "/api/tools/import/check", "/api/tools/import"]);
+// A tool chat has no limit: the maintainer pastes long texts, sent again with each turn's history.
+// It's read only after the token, Host and Origin checks, so only dx's own page and CLI can send one.
+const UNLIMITED_PATHS = new Set(["/api/tools/chat"]);
 // A dx state file (at most 25 MB, core's STATE_MAX), checked and then imported whole.
 const STATE_BODY = 26 * 1024 * 1024;
 const STATE_PATHS = new Set(["/api/state/import/check", "/api/state/import"]);
@@ -126,7 +129,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       let body: Record<string, unknown> = {};
       if (req.method === "POST") {
         try {
-          body = await readJson(req, STATE_PATHS.has(url.pathname) ? STATE_BODY : LARGE_PATHS.has(url.pathname) ? LARGE_BODY : MAX_BODY);
+          body = await readJson(req, UNLIMITED_PATHS.has(url.pathname) ? Infinity : STATE_PATHS.has(url.pathname) ? STATE_BODY : LARGE_PATHS.has(url.pathname) ? LARGE_BODY : MAX_BODY);
         } catch (err) {
           return send(res, 400, { error: (err as Error).message });
         }
@@ -269,7 +272,13 @@ function readJson(req: http.IncomingMessage, max = MAX_BODY): Promise<Record<str
       } else chunks.push(c);
     });
     req.on("end", () => {
-      const text = Buffer.concat(chunks).toString("utf8").trim();
+      let text: string;
+      try {
+        text = Buffer.concat(chunks).toString("utf8").trim();
+      } catch {
+        // past what Node can hold as one string
+        return reject(new Error("Request too large."));
+      }
       if (!text) return resolve({});
       try {
         const json = JSON.parse(text) as unknown;

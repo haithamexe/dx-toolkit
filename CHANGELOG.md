@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Changed
+
+- **The tool chat takes long messages**: the 4000-character limit on what you type, and on earlier turns sent back to the agent, is gone; paste a long text or a big JSON sample whole, with no limit on its length.
+
 ## 1.7.0 (2026-11-08)
 
 Each project can have tools of its own, made in a chat and run without AI; dx warns you when a .env file changes or heads for git; and your whole setup moves to another computer in one file. Update with `npm install -g dx-devkit@latest`.
