@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.9.0 (2026-11-09)
+
+Several APIs per project, an Agents page that shows what your AI agents are doing, and dx's MCP server with resources and prompts, so Claude can develop dx too. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **Several API specs per project**: add as many as the project has (**Add another API** on the API page, or `dx mock spec <project> <file> --name payments`). Each API has a name; its endpoints and its mocks know which API they're from, so the same path in two APIs keeps both, and **Make mocks**, purging and removing work per API. Say which stack service each API is (`--service`) or where it's served (`--mount /payments`) and calls and mocks go to the right one; when two APIs can't be told apart, dx names the endpoints they share. Overview, Activity (an API badge on each call), the tour, `api_map` for AI agents and the state export all list every API. A project's single spec from before is read as one API.

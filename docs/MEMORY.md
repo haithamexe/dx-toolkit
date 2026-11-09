@@ -22,7 +22,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.8.0. *Unreleased*: several API specs per project, the Agents page, MCP resources and prompts, and developing dx through an AI agent.
+- **Latest release**: 1.9.0.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -48,6 +48,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **yarn Plug'n'Play** projects have no node_modules, so `dx deps` can't read installed versions there.
 - **Releases**:
   - **1.0.0** was a GitHub-only release; its tag is `1.0.0` on the same commit as `v0.1.0`.
+  - **1.9.0** adds several API specs per project, the Agents page (a node graph of sessions and subagents), MCP resources, prompts and structured results, and `dev.*` actions so an AI agent can develop dx.
   - **1.8.0** gives AI agents every dashboard action (`dx_actions`, `dx_do`, `dx_do_risky`), and two projects on one usual port each get their own.
   - **1.7.4** runs the Tools chat like a normal Claude Code or Codex session, and the other AI buttons without tools in one turn.
   - **1.7.3** replaces a background dashboard from an older dx after an update, starting its dev servers again.
