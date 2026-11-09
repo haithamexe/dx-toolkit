@@ -32,6 +32,9 @@ export interface SpecEndpoint {
   parameters: Array<{ name: string; in: string; required: boolean; schema?: Schema }>;
   requestBody?: { contentType: string; schema?: Schema; required: boolean };
   responses: SpecResponse[];
+  /** Which of the project's APIs it's from (the spec's id and name), once there can be several. */
+  api?: string;
+  apiName?: string;
 }
 
 export interface ApiSpec {
@@ -41,6 +44,10 @@ export interface ApiSpec {
   kind: string;
   basePath: string;
   endpoints: SpecEndpoint[];
+  /** The project's API this is: its id, name and (in a stack) the service it is. */
+  api?: string;
+  apiName?: string;
+  service?: string;
 }
 
 export type Schema = Record<string, unknown>;
@@ -112,13 +119,33 @@ export function parseSpecText(text: string): Record<string, unknown> {
 export interface StoredSpec {
   format: "dx-spec";
   dir: string;
+  /** Names it among the project's APIs, and its mocks: letters, digits and dashes, unique in the project. */
+  id: string;
+  /** Shown instead of its title when you gave one. */
+  name: string;
   /** Where it came from: "file:docs/openapi.yaml", "url:/openapi.json", or "pasted". */
   source: string;
   savedAt: string;
   doc: Record<string, unknown>;
   /** dx found it by itself (a spec file in the project, or the running app's usual address). */
   found?: boolean;
+  /** For a stack: the service this API is, so calls to it (and mocks of it) are told apart from the others'. */
+  service?: string;
+  /** Where the API is served when that isn't the spec's own base path, e.g. /payments. */
+  mount?: string;
 }
+
+/** What's kept for a project: its specs, and whether they were all removed on purpose. */
+interface SpecStore {
+  format: "dx-specs";
+  version: 2;
+  dir: string;
+  /** Removed on purpose: dx doesn't look for one by itself until you give it one. */
+  off?: boolean;
+  specs: Omit<StoredSpec, "format" | "dir">[];
+}
+
+export const SPECS_MAX = 20;
 
 export function specFile(dir: string): string {
   const r = path.resolve(dir);
@@ -127,48 +154,148 @@ export function specFile(dir: string): string {
   return dxPath("specs", `${name}-${crypto.createHash("sha1").update(n).digest("hex").slice(0, 8)}.json`);
 }
 
-/** Keeps the spec dx uses for a project (readable by this user only). */
-export function saveSpec(dir: string, source: string, doc: Record<string, unknown>, options: { found?: boolean } = {}): StoredSpec {
-  const stored: StoredSpec = { format: "dx-spec", dir: path.resolve(dir), source, savedAt: new Date().toISOString(), doc, ...(options.found ? { found: true } : {}) };
+const slug = (v: string): string => v.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+
+/** The kept specs of a project. The first versions kept one spec (or a marker that it was removed): read as one. */
+function readStore(dir: string): SpecStore {
+  const empty: SpecStore = { format: "dx-specs", version: 2, dir: path.resolve(dir), specs: [] };
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(fs.readFileSync(specFile(dir), "utf8")) as Record<string, unknown>;
+  } catch {
+    return empty;
+  }
+  if (raw.format === "dx-spec-off") return { ...empty, off: true };
+  if (raw.format === "dx-spec" && typeof raw.source === "string" && raw.doc && typeof raw.doc === "object") {
+    const doc = raw.doc as Record<string, unknown>;
+    const title = String(((doc.info ?? {}) as Record<string, unknown>).title ?? "");
+    const name = title || sourceName(raw.source);
+    return { ...empty, specs: [{ id: slug(name) || "api", name, source: raw.source, savedAt: String(raw.savedAt ?? ""), doc, ...(raw.found ? { found: true } : {}) }] };
+  }
+  if (raw.format !== "dx-specs" || !Array.isArray(raw.specs)) return empty;
+  const specs = (raw.specs as SpecStore["specs"]).filter((x) => x && typeof x.id === "string" && typeof x.source === "string" && x.doc && typeof x.doc === "object");
+  return { ...empty, ...(raw.off === true ? { off: true } : {}), specs };
+}
+
+function writeStore(dir: string, store: SpecStore): void {
   const file = specFile(dir);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(stored), { mode: 0o600 });
+  fs.writeFileSync(tmp, JSON.stringify(store), { mode: 0o600 });
   fs.renameSync(tmp, file);
-  return stored;
 }
 
-/** The kept spec; a spec file in the project is read fresh each time, so edits to it show. */
-export function loadSpec(dir: string): StoredSpec | undefined {
-  let stored: StoredSpec;
-  try {
-    stored = JSON.parse(fs.readFileSync(specFile(dir), "utf8")) as StoredSpec;
-    if (stored.format !== "dx-spec") return undefined;
-  } catch {
-    return undefined;
+/** A name from where a spec came from: "docs/orders.yaml" → "orders". */
+function sourceName(source: string): string {
+  if (source.startsWith("file:")) return path.basename(source.slice(5)).replace(/\.(json|ya?ml)$/i, "").replace(/[.-]?(openapi|swagger)$/i, "") || path.basename(source.slice(5));
+  if (source.startsWith("url:")) return source.slice(4).replace(/^\/+/, "").replace(/\.(json|ya?ml)$/i, "") || "api";
+  return "api";
+}
+
+export interface SpecOptions {
+  found?: boolean;
+  /** Replace this one (by id) instead of looking for the same source. */
+  id?: string;
+  name?: string;
+  service?: string;
+  mount?: string;
+}
+
+const SERVICE = /^[\w.-]{1,60}$/;
+const MOUNT = /^\/[\w./{}~-]{0,200}$/;
+
+/**
+ * Adds a spec to the project's APIs, or replaces one: the one with `id`, else the one that came
+ * from the same file or address. Any number can be kept, each with its own id, so their endpoints
+ * and mocks stay apart. Giving one again also ends "removed on purpose".
+ */
+export function saveSpec(dir: string, source: string, doc: Record<string, unknown>, options: SpecOptions = {}): StoredSpec {
+  const store = readStore(dir);
+  const title = String(((doc.info ?? {}) as Record<string, unknown>).title ?? "");
+  const i = store.specs.findIndex((x) => (options.id ? x.id === options.id : x.source === source && source !== "pasted"));
+  if (options.service !== undefined && options.service !== "" && !SERVICE.test(options.service)) throw new SpecError("A service is a name like api or orders.");
+  if (options.mount !== undefined && options.mount !== "" && !MOUNT.test(options.mount)) throw new SpecError("Where it's served starts with / (like /payments).");
+  if (i < 0 && store.specs.length >= SPECS_MAX) throw new SpecError(`A project can have at most ${SPECS_MAX} APIs.`);
+  const name = (options.name ?? "").trim().slice(0, 60) || (i >= 0 ? store.specs[i].name : title || sourceName(source));
+  let id = i >= 0 ? store.specs[i].id : slug(name) || "api";
+  if (i < 0) for (let n = 2; store.specs.some((x) => x.id === id); n++) id = `${slug(name) || "api"}-${n}`;
+  const old = i >= 0 ? store.specs[i] : undefined;
+  const entry: Omit<StoredSpec, "format" | "dir"> = {
+    id,
+    name,
+    source,
+    savedAt: new Date().toISOString(),
+    doc,
+    ...(options.found ? { found: true } : {}),
+    ...((options.service ?? old?.service) ? { service: options.service === "" ? undefined : (options.service ?? old?.service) } : {}),
+    ...((options.mount ?? old?.mount) ? { mount: options.mount === "" ? undefined : (options.mount ?? old?.mount) } : {}),
+  };
+  if (!entry.service) delete entry.service;
+  if (!entry.mount) delete entry.mount;
+  if (i >= 0) store.specs[i] = entry;
+  else store.specs.push(entry);
+  delete store.off;
+  writeStore(dir, store);
+  return { format: "dx-spec", dir: path.resolve(dir), ...entry };
+}
+
+/** Renames an API or changes its service or mount, keeping its id (so its mocks keep theirs). */
+export function updateSpec(dir: string, id: string, patch: { name?: unknown; service?: unknown; mount?: unknown }): StoredSpec {
+  const store = readStore(dir);
+  const x = store.specs.find((s) => s.id === id);
+  if (!x) throw new SpecError("That API isn't there any more. Refresh the page.", 404);
+  if (patch.name !== undefined) {
+    if (typeof patch.name !== "string" || !patch.name.trim() || patch.name.length > 60) throw new SpecError("A name is up to 60 characters.");
+    x.name = patch.name.trim();
   }
-  if (stored.source.startsWith("file:")) {
-    const rel = stored.source.slice(5);
-    const full = path.resolve(dir, rel);
-    if (full.startsWith(path.resolve(dir) + path.sep)) {
-      try {
-        stored.doc = parseSpecText(fs.readFileSync(full, "utf8"));
-      } catch {
-        // the file went or broke: the last copy is used
+  if (patch.service !== undefined) {
+    if (typeof patch.service !== "string" || (patch.service !== "" && !SERVICE.test(patch.service))) throw new SpecError("A service is a name like api or orders.");
+    if (patch.service) x.service = patch.service;
+    else delete x.service;
+  }
+  if (patch.mount !== undefined) {
+    if (typeof patch.mount !== "string" || (patch.mount !== "" && !MOUNT.test(patch.mount))) throw new SpecError("Where it's served starts with / (like /payments).");
+    if (patch.mount) x.mount = patch.mount;
+    else delete x.mount;
+  }
+  writeStore(dir, store);
+  return { format: "dx-spec", dir: path.resolve(dir), ...x };
+}
+
+/** Each kept spec; one from a file in the project is read fresh, so edits to the file show. */
+export function listSpecs(dir: string): StoredSpec[] {
+  return readStore(dir).specs.map((x) => {
+    const stored: StoredSpec = { format: "dx-spec", dir: path.resolve(dir), ...x };
+    if (stored.source.startsWith("file:")) {
+      const full = path.resolve(dir, stored.source.slice(5));
+      if (full.startsWith(path.resolve(dir) + path.sep)) {
+        try {
+          stored.doc = parseSpecText(fs.readFileSync(full, "utf8"));
+        } catch {
+          // the file went or broke: the last copy is used
+        }
       }
     }
-  }
-  return stored;
+    return stored;
+  });
+}
+
+/** One kept spec by id. */
+export function loadSpec(dir: string, id?: string): StoredSpec | undefined {
+  const all = listSpecs(dir);
+  return id ? all.find((x) => x.id === id) : all[0];
 }
 
 /**
- * Removes the project's spec. Removing it on purpose is remembered (a marker in its place), so dx
- * doesn't pick the same spec file up again by itself; giving it one again replaces the marker.
+ * Removes one API (by id), or all of them. Removing the last on purpose is remembered (a marker),
+ * so dx doesn't pick the same spec file up again by itself; giving one again ends it.
  */
-export function forgetSpec(dir: string): void {
-  const file = specFile(dir);
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, JSON.stringify({ format: "dx-spec-off", dir: path.resolve(dir) }), { mode: 0o600 });
+export function forgetSpec(dir: string, id?: string): void {
+  const store = readStore(dir);
+  if (id && !store.specs.some((x) => x.id === id)) throw new SpecError("That API isn't there any more. Refresh the page.", 404);
+  store.specs = id ? store.specs.filter((x) => x.id !== id) : [];
+  if (!store.specs.length) store.off = true;
+  writeStore(dir, store);
 }
 
 /** Where a spec came from, in words: "from docs/openapi.yaml", "from the running app at /openapi.json", "pasted in". */
@@ -178,31 +305,40 @@ export function specSource(source: string): string {
   return "pasted in";
 }
 
-/** Whether the project's spec was removed on purpose. */
+/** The specs a state file carries (the ones given by hand, not found by dx) and whether all were removed on purpose. */
+export function exportableSpecs(dir: string): { off: boolean; specs: Omit<StoredSpec, "format" | "dir" | "savedAt" | "found">[] } {
+  const store = readStore(dir);
+  return { off: store.off === true, specs: store.specs.filter((x) => !x.found).map(({ savedAt: _s, found: _f, ...x }) => x) };
+}
+
+/** Whether the project's specs were removed on purpose. */
 export function specTurnedOff(dir: string): boolean {
-  try {
-    return (JSON.parse(fs.readFileSync(specFile(dir), "utf8")) as { format?: string }).format === "dx-spec-off";
-  } catch {
-    return false;
-  }
+  return readStore(dir).off === true;
 }
 
 /**
- * The project's API spec, with nothing to set up: the one it was given, else the most likely spec
- * file in the project (openapi/swagger, three levels down), kept from then on and read fresh each
- * time. Not after you removed it. The running app's usual addresses are tried by the dashboard.
+ * The project's API specs, with nothing to set up: the ones it was given, else the most likely
+ * spec file in the project (openapi/swagger, three levels down), kept from then on and read fresh
+ * each time. Not after you removed them all. The running app's usual addresses are tried by the
+ * dashboard; other spec files in the project are offered, not added.
  */
-export function projectSpec(dir: string): StoredSpec | undefined {
-  const kept = loadSpec(dir);
-  if (kept || specTurnedOff(dir)) return kept;
+export function projectSpecs(dir: string): StoredSpec[] {
+  const kept = listSpecs(dir);
+  if (kept.length || specTurnedOff(dir)) return kept;
   for (const rel of findSpecFiles(dir)) {
     try {
-      return saveSpec(dir, `file:${rel}`, readProjectSpec(dir, rel), { found: true });
+      saveSpec(dir, `file:${rel}`, readProjectSpec(dir, rel), { found: true });
+      return listSpecs(dir);
     } catch {
       // not a spec dx can read: the next one
     }
   }
-  return undefined;
+  return [];
+}
+
+/** The first of the project's specs, for callers that want one. */
+export function projectSpec(dir: string): StoredSpec | undefined {
+  return projectSpecs(dir)[0];
 }
 
 /** Reads a spec file inside the project (and only there). */
@@ -223,7 +359,7 @@ export function readProjectSpec(dir: string, rel: string): Record<string, unknow
 // ------------------------------------------------------------------ reading
 
 /** The spec as one list of endpoints, whether it's OpenAPI 3 or Swagger 2. `$ref`s inside it are followed. */
-export function readSpec(doc: Record<string, unknown>): ApiSpec {
+export function readSpec(doc: Record<string, unknown>, options: { mount?: string; api?: { id: string; name: string; service?: string } } = {}): ApiSpec {
   const info = (doc.info ?? {}) as Record<string, unknown>;
   const swagger2 = typeof doc.swagger === "string";
   let basePath = "";
@@ -234,6 +370,8 @@ export function readSpec(doc: Record<string, unknown>): ApiSpec {
     // Only its path matters here: the mock answers on dx's own address.
     basePath = url.replace(/^[a-z]+:\/\/[^/]*/i, "").replace(/\{[^}]+\}/g, "");
   }
+  // Where the API is served, when that isn't what the spec says.
+  if (options.mount) basePath = options.mount;
   basePath = basePath.replace(/\/+$/, "");
   const resolve = makeResolver(doc);
   const endpoints: SpecEndpoint[] = [];
@@ -289,6 +427,10 @@ export function readSpec(doc: Record<string, unknown>): ApiSpec {
         }
         ep.responses.push(res);
       }
+      if (options.api) {
+        ep.api = options.api.id;
+        ep.apiName = options.api.name;
+      }
       endpoints.push(ep);
     }
   }
@@ -298,7 +440,24 @@ export function readSpec(doc: Record<string, unknown>): ApiSpec {
     kind: swagger2 ? `swagger ${doc.swagger}` : `openapi ${doc.openapi}`,
     basePath,
     endpoints,
+    ...(options.api ? { api: options.api.id, apiName: options.api.name, ...(options.api.service ? { service: options.api.service } : {}) } : {}),
   };
+}
+
+/** A kept spec read into endpoints that know which API they're from, where it's served and (in a stack) which service. */
+export function readStored(stored: StoredSpec): ApiSpec {
+  return readSpec(stored.doc, { mount: stored.mount, api: { id: stored.id, name: stored.name, service: stored.service } });
+}
+
+/** Every one of the project's APIs, read. A spec that can't be read is left out, not thrown. */
+export function projectApis(dir: string): { stored: StoredSpec; spec: ApiSpec }[] {
+  return projectSpecs(dir).flatMap((stored) => {
+    try {
+      return [{ stored, spec: readStored(stored) }];
+    } catch {
+      return [];
+    }
+  });
 }
 
 function pickContent(content: Record<string, Record<string, unknown>>): [string | undefined, Record<string, unknown> | undefined] {
@@ -480,7 +639,10 @@ export function mocksFromSpec(spec: ApiSpec): MockEndpoint[] {
         const body = s.value === undefined ? "" : json ? JSON.stringify(s.value, null, 2) : String(s.value);
         const contentType = r.contentType ?? (body ? "application/json" : "text/plain");
         out.push({
-          id: `spec${crypto.createHash("sha1").update(`${ep.method} ${ep.path} ${status} ${s.name}`).digest("hex").slice(0, 12)}`,
+          // The API is part of the id: two APIs with the same method, path and status keep both.
+          id: `spec${crypto.createHash("sha1").update(`${spec.api ?? ""} ${ep.method} ${ep.path} ${status} ${s.name}`).digest("hex").slice(0, 12)}`,
+          ...(spec.api ? { api: spec.api, apiName: spec.apiName } : {}),
+          ...(spec.service ? { service: spec.service } : {}),
           method: ep.method,
           path: foldTemplate(ep.path),
           pattern: ep.path.includes("{") ? ep.path : undefined,
@@ -511,6 +673,9 @@ export function foldTemplate(p: string): string {
 export interface MapEntry {
   method: string;
   path: string;
+  /** Which API it's in (id and name). */
+  api?: string;
+  apiName?: string;
   summary?: string;
   operationId?: string;
   tags: string[];
@@ -523,6 +688,10 @@ export interface MapEntry {
 }
 
 export interface ApiMap {
+  /** The API's id and name, when it's one of a project's (not a spec read on its own). */
+  api?: string;
+  apiName?: string;
+  service?: string;
   title: string;
   version: string;
   kind: string;
@@ -534,7 +703,7 @@ export interface ApiMap {
 /** The spec next to what the app really called (its activity history). */
 export function mapApi(spec: ApiSpec, events: ActivityEvent[]): ApiMap {
   const calls = events.filter((e) => e.type === "request" && e.url?.startsWith("/") && !e.url.startsWith("/__dx/") && !e.mocked);
-  const entries: MapEntry[] = spec.endpoints.map((ep) => ({ method: ep.method, path: ep.path, summary: ep.summary, operationId: ep.operationId, tags: ep.tags, calls: 0, statuses: [], issues: [] }));
+  const entries: MapEntry[] = spec.endpoints.map((ep) => ({ method: ep.method, path: ep.path, ...(ep.api ? { api: ep.api, apiName: ep.apiName } : {}), summary: ep.summary, operationId: ep.operationId, tags: ep.tags, calls: 0, statuses: [], issues: [] }));
   const undocumented = new Map<string, { method: string; path: string; calls: number; lastStatus?: number }>();
   const order = [...calls].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   for (const e of order) {
@@ -560,7 +729,72 @@ export function mapApi(spec: ApiSpec, events: ActivityEvent[]): ApiMap {
       for (const issue of checkAnswer(spec.endpoints[idx], e)) if (!m.issues.includes(issue) && m.issues.length < 5) m.issues.push(issue);
     }
   }
-  return { title: spec.title, version: spec.version, kind: spec.kind, endpoints: entries, undocumented: [...undocumented.values()].sort((a, b) => b.calls - a.calls) };
+  return { ...(spec.api ? { api: spec.api, apiName: spec.apiName, ...(spec.service ? { service: spec.service } : {}) } : {}), title: spec.title, version: spec.version, kind: spec.kind, endpoints: entries, undocumented: [...undocumented.values()].sort((a, b) => b.calls - a.calls) };
+}
+
+/** Several APIs next to what the app called: each call goes to the API that has it, and the same endpoint in two APIs is named. */
+export interface ApisMap {
+  apis: ApiMap[];
+  /** Calls no API has: method and folded path, with a count. */
+  undocumented: ApiMap["undocumented"];
+  /** The same method and path in more than one API: which of them a call or mock belongs to is a guess until each is told apart. */
+  overlaps: Array<{ method: string; path: string; apis: string[] }>;
+}
+
+export function mapApis(specs: ApiSpec[], events: ActivityEvent[]): ApisMap {
+  const calls = events.filter((e) => e.type === "request" && e.url?.startsWith("/") && !e.url.startsWith("/__dx/") && !e.mocked);
+  const entries = specs.map((spec) => spec.endpoints.map((ep) => ({ method: ep.method, path: ep.path, ...(ep.api ? { api: ep.api, apiName: ep.apiName } : {}), summary: ep.summary, operationId: ep.operationId, tags: ep.tags, calls: 0, statuses: [] as number[], issues: [] as string[] }) as MapEntry));
+  const undocumented = new Map<string, { method: string; path: string; calls: number; lastStatus?: number }>();
+  for (const e of [...calls].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+    const method = (e.method ?? "GET").toUpperCase();
+    // The API with the best endpoint for it; a stack's call only goes to the API that is that service.
+    let best: { s: number; i: number; score: number } | undefined;
+    specs.forEach((spec, s) => {
+      if (spec.service && e.service && spec.service !== e.service) return;
+      const i = bestEndpoint(spec.endpoints, method, e.url!);
+      if (i < 0) return;
+      // A match through the call's own service beats one that only fits by path.
+      const score = spec.endpoints[i].path.split("/").filter((x) => !x.includes("{")).length * 2 + (spec.service && spec.service === e.service ? 1 : 0);
+      if (!best || score > best.score) best = { s, i, score };
+    });
+    if (!best) {
+      if (method === "GET" && !/json|xml/i.test(e.responseHeaders?.["content-type"] ?? "") && !/\/api\/|graphql/.test(e.url!)) continue;
+      const key = `${method} ${foldPath(e.url!)}`;
+      const u = undocumented.get(key) ?? { method, path: foldPath(e.url!), calls: 0 };
+      u.calls++;
+      u.lastStatus = e.status;
+      undocumented.set(key, u);
+      continue;
+    }
+    const m = entries[best.s][best.i];
+    m.calls++;
+    m.lastAt = e.at;
+    if (e.status !== undefined) {
+      m.lastStatus = e.status;
+      if (!m.statuses.includes(e.status)) m.statuses.push(e.status);
+      for (const issue of checkAnswer(specs[best.s].endpoints[best.i], e)) if (!m.issues.includes(issue) && m.issues.length < 5) m.issues.push(issue);
+    }
+  }
+  const seen = new Map<string, Set<string>>();
+  specs.forEach((spec) => {
+    for (const ep of spec.endpoints) {
+      // Two APIs that are different services don't compete for a call: only ones of the same service (or none) overlap.
+      const key = `${spec.service ?? ""} ${ep.method} ${foldTemplate(ep.path)}`;
+      const set = seen.get(key) ?? seen.set(key, new Set()).get(key)!;
+      set.add(spec.apiName ?? spec.title);
+    }
+  });
+  const overlaps = [...seen.entries()].flatMap(([key, set]) => {
+    const apis = [...set];
+    if (apis.length < 2) return [];
+    const [method, ...rest] = key.split(" ")[1].split(" ");
+    return [{ method, path: rest.join(" "), apis }];
+  });
+  return {
+    apis: specs.map((spec, i) => ({ ...(spec.api ? { api: spec.api, apiName: spec.apiName, ...(spec.service ? { service: spec.service } : {}) } : {}), title: spec.title, version: spec.version, kind: spec.kind, endpoints: entries[i], undocumented: [] })),
+    undocumented: [...undocumented.values()].sort((a, b) => b.calls - a.calls),
+    overlaps,
+  };
 }
 
 function bestEndpoint(endpoints: SpecEndpoint[], method: string, url: string): number {

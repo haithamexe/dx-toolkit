@@ -47,6 +47,9 @@ export interface MockEndpoint {
   pattern?: string;
   /** The spec's name for it (operationId or summary). */
   operation?: string;
+  /** For a mock made from one of the project's several API specs: which (its id and name). */
+  api?: string;
+  apiName?: string;
   /** The example's name in the spec, for x-mock-response-name. */
   example?: string;
 }
@@ -239,9 +242,14 @@ export function addMocks(dir: string, project: string, events: ActivityEvent[], 
  * Adds endpoints (made from history, an API spec, or by Claude) to the project's set: one with
  * the same id replaces the old one, unless that was edited by hand.
  */
-export function putMocks(dir: string, project: string, made: MockEndpoint[]): { set: MockSet; added: number; replaced: number; kept: number } {
+export function putMocks(dir: string, project: string, made: MockEndpoint[], options: { replaceApis?: string[]; legacy?: boolean } = {}): { set: MockSet; added: number; replaced: number; kept: number } {
   const set = loadMocks(dir, project);
   set.project = project;
+  // Made again from an API's spec: its mocks that nobody edited are replaced, so one the spec dropped goes
+  // (and, for the first API, the ones made before specs were told apart, which have no API).
+  if (options.replaceApis?.length) {
+    set.endpoints = set.endpoints.filter((e) => e.edited || (e.source !== "spec" && e.source !== "generated") || (e.api === undefined ? !options.legacy : !options.replaceApis!.includes(e.api)));
+  }
   let added = 0;
   let replaced = 0;
   let kept = 0;
@@ -275,10 +283,11 @@ export function setMockMode(dir: string, project: string, mode: { on?: boolean; 
 }
 
 /** Removes the mocks from one source (the cache, say), or all of them; edited ones go too. */
-export function purgeMocks(dir: string, source?: MockSource): { set: MockSet; removed: number } {
+export function purgeMocks(dir: string, source?: MockSource, api?: string): { set: MockSet; removed: number } {
   const set = loadMocks(dir);
   const before = set.endpoints.length;
-  set.endpoints = source ? set.endpoints.filter((e) => (e.source ?? "recorded") !== source) : [];
+  // One API's mocks (of one source, or all of them), or one source's, or everything.
+  set.endpoints = api ? set.endpoints.filter((e) => e.api !== api || (source !== undefined && (e.source ?? "recorded") !== source)) : source ? set.endpoints.filter((e) => (e.source ?? "recorded") !== source) : [];
   if (!set.endpoints.length) set.on = false;
   saveMocks(set);
   return { set, removed: before - set.endpoints.length };
@@ -418,7 +427,11 @@ export function cleanMockEndpoint(input: unknown): MockEndpoint {
   const pattern = opt(o.pattern, 500, "path template", /^\/[^\r\n]*$/);
   const operation = opt(o.operation, 200, "name");
   const example = opt(o.example, 200, "example");
+  const api = opt(o.api, 40, "API", /^[a-z0-9-]+$/);
+  const apiName = opt(o.apiName, 60, "API name");
   Object.assign(ep, {
+    ...(api ? { api } : {}),
+    ...(api && apiName ? { apiName } : {}),
     ...(query ? { query } : {}),
     ...(bodyKey ? { bodyKey } : {}),
     ...(requestBody ? { requestBody } : {}),

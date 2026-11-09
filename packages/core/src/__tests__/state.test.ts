@@ -14,7 +14,7 @@ const rootA = tmp("dx-state-projects-a-");
 const rootB = tmp("dx-state-projects-b-");
 process.env.DX_HOME = homeA;
 const core = await import("../index.js");
-const { remoteKey, mergeJournalText, parseJournal, exportState, readState, planStateImport, importState, undoStateImport, lastStateImport, scanProjects, loadConfig, saveConfig, saveTool, loadTools, saveMocks, loadMocks, putRule, loadRules, saveSpec, loadSpec, setChaos, loadChaos, saveScene, listScenes, leaveNote, readSession, addSite, addJournalEntry, journalPath, summariesDir, StateError } = core;
+const { remoteKey, mergeJournalText, parseJournal, exportState, readState, planStateImport, importState, undoStateImport, lastStateImport, scanProjects, loadConfig, saveConfig, saveTool, loadTools, saveMocks, loadMocks, putRule, loadRules, saveSpec, loadSpec, listSpecs, setChaos, loadChaos, saveScene, listScenes, leaveNote, readSession, addSite, addJournalEntry, journalPath, summariesDir, StateError } = core;
 
 const git = (dir: string, ...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
 function makeProject(root: string, name: string, remote?: string): string {
@@ -75,6 +75,7 @@ test("everything dx keeps goes from one computer to another, matched by remote o
   saveMocks(mocks);
   putRule(shopA, "shop-website", { name: "Slow orders", method: "GET", path: "/api/orders", delayMs: 2000 });
   saveSpec(shopA, "pasted", { openapi: "3.0.0", info: { title: "Shop" }, paths: { "/api/orders": { get: { responses: { 200: { description: "ok" } } } } } });
+  saveSpec(shopA, "pasted", { openapi: "3.0.0", info: { title: "Billing" }, paths: { "/charges": { get: { responses: { 200: { description: "ok" } } } } } }, { name: "Billing", service: "billing", mount: "/billing" });
   setChaos(shopA, "shop-website", { on: true, level: "blackfriday" });
   saveScene(shopA, { format: "dx-scene", version: 1, name: "Big customer", kind: "made", createdAt: "2026-11-01T00:00:00.000Z", order: ["users"], rows: { users: [{ id: 1, email: "ada@example.com" }] } });
   saveScene(shopA, { format: "dx-scene", version: 1, name: "Backup before", kind: "backup", createdAt: "2026-11-01T00:00:00.000Z", order: ["users"], rows: { users: [{ id: 9, email: "real@example.com" }] } });
@@ -128,6 +129,7 @@ test("everything dx keeps goes from one computer to another, matched by remote o
   assert.equal(loadMocks(shopB).on, false, "mock mode stays switched as it was here");
   assert.equal(loadRules(shopB).rules[0].name, "Slow orders");
   assert.equal(loadSpec(shopB)?.source, "pasted");
+  assert.deepEqual(listSpecs(shopB).map((x) => [x.id, x.name, x.service, x.mount]), [["shop", "Shop", undefined, undefined], ["billing", "Billing", "billing", "/billing"]], "both APIs, with where they're served");
   assert.equal(loadChaos(shopB).level, "blackfriday");
   assert.equal(loadChaos(shopB).on, false);
   assert.deepEqual(listScenes(shopB).map((s) => s.name), ["Big customer"]);
@@ -147,7 +149,7 @@ test("everything dx keeps goes from one computer to another, matched by remote o
   undoStateImport();
   assert.deepEqual(loadTools(shopB), []);
   assert.deepEqual(loadMocks(shopB).endpoints, []);
-  assert.equal(loadSpec(shopB), undefined);
+  assert.deepEqual(listSpecs(shopB), []);
   assert.deepEqual(listScenes(shopB), []);
   assert.equal(readSession(todoB)?.note, undefined);
   assert.equal(loadConfig().editor, "code");
@@ -169,6 +171,9 @@ test("a state file is read strictly: unknown fields, code in a tool, odd paths a
   bad({ ...base, projects: [{ name: "shop", remote: "https://octocat:pw@github.com/octocat/shop" }] }, /host\/owner\/repo/);
   bad({ ...base, projects: [{ name: "shop", mocks: { endpoints: [{ id: "abcdef12", method: "GET", path: "/x", status: 900, contentType: "application/json", body: "" }] } }] }, /status/);
   bad({ ...base, projects: [{ name: "shop", spec: { source: "file:../../secret.yaml", doc: { openapi: "3.0.0", paths: {} } } }] }, /source/);
+  bad({ ...base, projects: [{ name: "shop", specs: [{ source: "pasted", doc: { openapi: "3.0.0", paths: {} }, mount: "payments" }] }] }, /where an API is served/);
+  const old = readState(JSON.stringify({ ...base, projects: [{ name: "shop", spec: { source: "pasted", doc: { openapi: "3.0.0", info: { title: "Old" }, paths: {} } } }, { name: "api", spec: { off: true } }] }));
+  assert.deepEqual([old.projects[0].specs?.length, old.projects[1].specsOff], [1, true], "a file from before several APIs is read as one");
   bad({ ...base, templates: [{ name: "starter", files: [{ path: "../../evil.js", data: "" }] }] }, /won't write/);
   bad({ ...base, templates: [{ name: "starter", files: [{ path: ".git/config", data: "" }] }] }, /won't write/);
   bad({ ...base, summaries: [{ name: "../x.md", text: "" }] }, /summary/);

@@ -36,6 +36,8 @@ const GROUPS: Record<string, string> = {
   lookback: "Look back: summary, year, journal",
   settings: "Settings: dx's settings, AI tools, recorded sites, the dx browser, moving dx to another computer",
   team: "Team: tour, proof for the pull request, trying an upgrade, phone, snapshots",
+  agents: "Agents: the AI agents and subagents running on this computer, what each is doing and how",
+  dev: "Develop dx itself: where its source is, build and test it, restart the dashboard onto the new build, read and write files in its repository",
 };
 export const ACTION_GROUPS = GROUPS;
 
@@ -132,16 +134,17 @@ export const DX_ACTIONS: DxAction[] = [
   A("git.snapshot-remove", "Remove a snapshot", "POST", "/api/snapshots/remove", { id: "the snapshot's id" }, RISKY),
 
   // API
-  A("api.spec", "The project's API spec and its endpoints", "GET", "/api/lab/spec", { dir: DIR }),
-  A("api.spec-set", "Give the project an API spec: a file in it, an address on the running app, or pasted text", "POST", "/api/lab/spec", { dir: DIR, "file?": "a file in the project", "url?": "a path on the running app", "text?": "the spec as text" }),
-  A("api.spec-forget", "Remove the project's API spec", "POST", "/api/lab/spec/forget", { dir: DIR }, RISKY),
+  A("api.spec", "The project's API specs (it can have several, each named): their endpoints, which API each is in, what was called, and endpoints two APIs share", "GET", "/api/lab/spec", { dir: DIR }),
+  A("api.spec-set", "Add an API spec to the project (or replace the one from the same file): a file in it, an address on the running app, or pasted text", "POST", "/api/lab/spec", { dir: DIR, "file?": "a file in the project", "url?": "a path on the running app", "text?": "the spec as text", "name?": "the API's name", "service?": "for a stack: which service it is", "mount?": "where it's served, e.g. /payments, when that isn't the spec's own base path", "id?": "an API's id, to replace it" }),
+  A("api.spec-update", "Rename an API, or say which service it is or where it's served (its mocks keep their ids)", "POST", "/api/lab/spec/update", { dir: DIR, id: "the API's id from api.spec", "name?": "a new name", "service?": "a service ('' for none)", "mount?": "where it's served ('' for the spec's own)" }),
+  A("api.spec-forget", "Remove one API of the project (by id), or all of them", "POST", "/api/lab/spec/forget", { dir: DIR, "id?": "an API's id from api.spec (all when left out)" }, RISKY),
   A("api.mocks", "The project's mocks (or one by id)", "GET", "/api/mocks", { dir: DIR, "id?": "a mock's id" }),
   A("api.mocks-make", "Make mocks from recorded calls", "POST", "/api/mocks/make", { dir: DIR, "since?": "how far back (1h, 3h…)", "visit?": "one visit's id" }, RISKY),
-  A("api.mocks-from-spec", "Make mocks from the API spec", "POST", "/api/lab/spec/mocks", { dir: DIR }, RISKY),
+  A("api.mocks-from-spec", "Make mocks from the API specs, each API's mocks kept to it", "POST", "/api/lab/spec/mocks", { dir: DIR, "api?": "one API's id from api.spec (all when left out)" }, RISKY),
   A("api.mock-mode", "Turn mock mode on or off, strict, or the cache", "POST", "/api/mocks/mode", { dir: DIR, "on?": "true or false", "strict?": "true or false", "cache?": "true or false" }, RISKY),
   A("api.mock-update", "Change one mock: status, delay, body, on/off, offline or a preset", "POST", "/api/mocks/update", { dir: DIR, id: "the mock's id", "status?": "100-599", "delayMs?": "ms", "contentType?": "type", "body?": "the body", "enabled?": "true or false", "offline?": "true or false", "preset?": "fail, empty, slow, offline or reset" }, RISKY),
   A("api.mock-remove", "Remove one mock, or all", "POST", "/api/mocks/remove", { dir: DIR, "id?": "a mock's id", "all?": "true for all" }, RISKY),
-  A("api.mock-purge", "Delete mocks of one source (cache, spec, generated, ai, recorded)", "POST", "/api/mocks/purge", { dir: DIR, "source?": "the source" }, RISKY),
+  A("api.mock-purge", "Delete mocks of one source (cache, spec, generated, ai, recorded), or of one API", "POST", "/api/mocks/purge", { dir: DIR, "source?": "the source", "api?": "an API's id: only its mocks" }, RISKY),
   A("api.mock-server", "Start or stop the project's mock server", "POST", "/api/mocks/server", { dir: DIR, on: "true or false" }),
   A("api.rules", "The project's request rules", "GET", "/api/lab/rules", { dir: DIR }),
   A("api.rule-save", "Add or change a rule (change requests or answers, delay, fail, intercept)", "POST", "/api/lab/rules", { dir: DIR, rule: "the rule" }, RISKY),
@@ -241,6 +244,19 @@ export const DX_ACTIONS: DxAction[] = [
   A("settings.state-export", "Everything dx keeps, as one file for another computer", "POST", "/api/state/export", {}, RISKY),
   A("settings.state-last", "The last state import that can be undone", "GET", "/api/state/last"),
   A("settings.state-undo", "Undo the last state import", "POST", "/api/state/undo", {}, RISKY),
+
+  // Agents
+  A("agents.list", "The agents on this computer (Claude Code sessions and the subagents each started, as a tree): status, model, effort, the tool each runs now, its project, and how many calls went through dx. Metadata only, never messages", "GET", "/api/agents", { "hours?": "how far back, 1 to 336 (default 24)" }),
+
+  // Develop dx itself (only when dx's own repository is one of the projects)
+  A("dev.info", "dx's version, whether its own source is one of your projects (where, which branch, how many files changed), what the dashboard runs, and whether the build on disk is newer than it", "GET", "/api/dev-tools"),
+  A("dev.build", "Build dx (npm run build in its repository) as a job; read it with dev.job", "POST", "/api/dev-tools/run", {}, { fixed: { task: "build" } }),
+  A("dev.test", "Run dx's tests (npm test in its repository, a few minutes) as a job; read it with dev.job", "POST", "/api/dev-tools/run", {}, { fixed: { task: "test" } }),
+  A("dev.job", "A build or test job's status and the end of its output", "GET", "/api/dev-tools/job", { id: "the job's id from dev.build or dev.test", "tail?": "how many output lines (default 80)" }),
+  A("dev.restart", "Stop the dashboard (and the dev servers it runs) so the next dx call starts it from the current build", "POST", "/api/dev-tools/restart", {}, RISKY),
+  A("dev.files", "List dx's repository files (by part of a name), or find the lines that mention some text", "GET", "/api/dev-tools/files", { "search?": "part of a file's path", "text?": "text to find in packages, docs, README and CLAUDE.md" }),
+  A("dev.read", "Read a text file of dx's repository, from a line", "GET", "/api/dev-tools/file", { file: "a path in the repository, e.g. packages/core/src/tools/state.ts", "from?": "first line", "lines?": "how many lines (default 400)" }),
+  A("dev.write", "Write a whole text file in dx's repository (creates or replaces; never git's folder, node_modules, builds or .env files). Note: package.json and scripts are writable, so a written file can run on the next dev.build or dev.test: read what you write", "POST", "/api/dev-tools/file", { file: "a path in the repository", content: "the whole text of the file" }, RISKY),
 
   // Team
   A("team.tour", "A map of the project: how to run it, pages, calls, files, data, settings", "GET", "/api/tour", { dir: DIR }),

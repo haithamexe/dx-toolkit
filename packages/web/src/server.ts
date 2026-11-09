@@ -12,6 +12,8 @@ import { startEnvWatch } from "./envwatch.js";
 import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
 import { DOMAIN_PORTS, startLocalDomains, type LocalDomains, type TlsOptions } from "./proxy.js";
 import { clearDashboardInfo, dxVersion, writeDashboardInfo } from "./link.js";
+import { setShutdownHandler } from "./shutdown.js";
+import { stopDevJobs } from "./devtoolsapi.js";
 import { closeDxBrowser, dxBrowserOpen, setDxBrowserDashboardPort } from "./dxbrowser.js";
 import { startHeadWatch } from "./visual.js";
 
@@ -188,9 +190,16 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   // .env files changed, staged or committed in any project: a warning, with a sound and the system's notification.
   const stopEnvWatch = startEnvWatch();
 
+  // A route (the dev tools' restart) can stop this dashboard after answering.
+  const shutdownHere = () => void close();
+  setShutdownHandler(shutdownHere);
+
   function close(): Promise<void> {
     closing ??= (async () => {
       clearInterval(idleTimer);
+      // This dashboard's restart handler goes (not another's), and a build or test it started stops with it.
+      setShutdownHandler(undefined, shutdownHere);
+      stopDevJobs();
       stopHeadWatch();
       stopEnvWatch();
       clearDashboardInfo();

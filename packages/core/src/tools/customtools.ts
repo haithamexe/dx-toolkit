@@ -5,7 +5,7 @@ import { dxPath } from "../config.js";
 import { readActivity, type ActivityEvent } from "./activity.js";
 import { MASK } from "./mask.js";
 import { foldPath } from "./mocks.js";
-import { projectSpec, readSpec } from "./openapi.js";
+import { projectApis } from "./openapi.js";
 
 /**
  * Custom tools: a project's own helpers, made once in a chat with an AI agent and then run by dx
@@ -1084,10 +1084,11 @@ export interface ToolChatTurn {
 export function toolContext(dir: string): string {
   const out: string[] = [];
   try {
-    const spec = projectSpec(dir);
-    if (spec) {
-      const s = readSpec(spec.doc);
-      out.push(`Its API spec (${s.title}): ${s.endpoints.slice(0, 60).map((e) => `${e.method} ${e.path}${e.summary ? ` (${e.summary})` : ""}`).join("; ")}`);
+    // Each of its APIs by name, so a tool for one doesn't take another's endpoint.
+    const apis = projectApis(dir);
+    for (const { spec: s } of apis) {
+      const label = apis.length > 1 ? `Its API "${s.apiName ?? s.title}"${s.service ? ` (service ${s.service})` : ""}` : `Its API spec (${s.title})`;
+      out.push(`${label}: ${s.endpoints.slice(0, 60).map((e) => `${e.method} ${e.path}${e.summary ? ` (${e.summary})` : ""}`).join("; ")}`);
     }
   } catch {
     // no spec it can read

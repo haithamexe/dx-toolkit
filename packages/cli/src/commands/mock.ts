@@ -8,6 +8,7 @@ import {
   loadMocks,
   MockError,
   mocksFromSpec,
+  projectApis,
   parseSince,
   purgeMocks,
   putMocks,
@@ -36,7 +37,11 @@ export const mockCommand: Command = {
     "dx mock on <project> [--strict]       answer matching API calls from the mocks",
     "dx mock off <project>                 pass everything to the dev server again",
     "dx mock list <project>                the mocked endpoints",
-    "dx mock spec <project> [file]         mocks from the project's OpenAPI/Swagger spec (examples, or data made up from its schemas)",
+    "dx mock spec <project> [file]         mocks from an OpenAPI/Swagger spec (examples, or data made up from its schemas). A file adds it as",
+    "                                      one of the project's APIs; without one, every API's mocks are made again",
+    "    --name orders --service api        name the API, and say which stack service it is (so same paths don't mix)",
+    "    --mount /payments                  where it's served, when that isn't the spec's own base path",
+    "dx mock spec <project> --list         the project's APIs",
     "dx mock server <project> [on|off]     the project's mock server: its own address, answering from the first call",
     "dx mock cache <project> on|off        keep the real answers that pass through as mocks, until purged",
     "dx mock purge <project> [source]      delete mocks: cache, spec, generated, ai, recorded (all without a source)",
@@ -49,7 +54,7 @@ export const mockCommand: Command = {
     "Edit status, delay and bodies on the Activity page.",
   ].join("\n"),
   async run(argv) {
-    const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { since: { type: "string", short: "s" }, strict: { type: "boolean" } } });
+    const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { since: { type: "string", short: "s" }, strict: { type: "boolean" }, name: { type: "string" }, service: { type: "string" }, mount: { type: "string" }, list: { type: "boolean" } } });
     const [action, ...rest] = positionals;
     const ACTIONS = ["make", "on", "off", "list", "clear", "spec", "server", "cache", "purge"];
     if (!action || !ACTIONS.includes(action)) throw new UsageError(`dx mock ${ACTIONS.join("|")} <project>`);
@@ -61,14 +66,34 @@ export const mockCommand: Command = {
     const project = resolve(where);
     try {
       if (action === "spec") {
-        const file = arg ?? findSpecFiles(project.dir)[0];
-        if (!file) throw new UsageError(`No openapi or swagger file in ${project.name}. Give its path: dx mock spec ${where} docs/api.yaml (or use the Requests page to read it from the running app).`);
-        const doc = readProjectSpec(project.dir, file);
-        saveSpec(project.dir, `file:${file.replace(/\\/g, "/")}`, doc);
-        const spec = readSpec(doc);
-        const r = putMocks(project.dir, project.name, mocksFromSpec(spec));
-        recordRun("mock", true, `${project.name}: mocks from ${file}, ${r.added} new, ${r.replaced} updated`, "cli", { project: project.name });
-        ok(`${spec.title} ${spec.version}: ${spec.endpoints.length} endpoint(s), ${r.set.endpoints.length} mock(s) (${r.added} new, ${r.replaced} updated${r.kept ? `, ${r.kept} you edited kept` : ""}).`);
+        // A project can have several APIs. A file adds one (or replaces the one from that file); without one,
+        // the project's APIs (found by themselves if need be) get their mocks made again.
+        if (values.list) {
+          const apis = projectApis(project.dir);
+          if (!apis.length) return info(`${project.name} has no API spec yet: dx mock spec ${where} docs/openapi.yaml`);
+          for (const { stored, spec } of apis) console.log(`${c.bold(stored.name)}  ${c.dim(`${stored.id} · ${spec.endpoints.length} endpoints · ${stored.source.replace(/^file:/, "")}${stored.service ? ` · service ${stored.service}` : ""}${stored.mount ? ` · served at ${stored.mount}` : ""}`)}`);
+          return;
+        }
+        const file = arg ?? (projectApis(project.dir).length ? undefined : findSpecFiles(project.dir)[0]);
+        if (file) {
+          const doc = readProjectSpec(project.dir, file);
+          saveSpec(project.dir, `file:${file.replace(/\\/g, "/")}`, doc, { name: values.name, service: values.service, mount: values.mount });
+        } else if (!projectApis(project.dir).length) {
+          throw new UsageError(`No openapi or swagger file in ${project.name}. Give its path: dx mock spec ${where} docs/api.yaml (or use the API page to read it from the running app).`);
+        }
+        const all = projectApis(project.dir);
+        // Only the API just given when a file was, else every one.
+        const chosen = file ? all.filter((a) => a.stored.source === `file:${file.replace(/\\/g, "/")}`) : all;
+        const total = { added: 0, replaced: 0, kept: 0 };
+        for (const { spec } of chosen) {
+          const r = putMocks(project.dir, project.name, mocksFromSpec(spec), { replaceApis: [spec.api!], legacy: all[0].spec.api === spec.api });
+          total.added += r.added;
+          total.replaced += r.replaced;
+          total.kept += r.kept;
+          ok(`${spec.apiName ?? spec.title}${spec.version ? ` ${spec.version}` : ""}: ${spec.endpoints.length} endpoint(s) (${r.added} new mock(s), ${r.replaced} updated${r.kept ? `, ${r.kept} you edited kept` : ""}).`);
+        }
+        recordRun("mock", true, `${project.name}: mocks from ${chosen.length} API(s), ${total.added} new, ${total.replaced} updated`, "cli", { project: project.name });
+        if (all.length > 1) info(c.dim(`${project.name} has ${all.length} APIs: ${all.map((a) => a.spec.apiName).join(", ")}. Say which service or where each is served with --service or --mount when adding it, so same paths don't mix.`));
         info(c.dim(`Serve them with: dx mock server ${where} on`));
         return;
       }

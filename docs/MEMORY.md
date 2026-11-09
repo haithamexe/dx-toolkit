@@ -22,7 +22,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.8.0. Nothing under *Unreleased* yet.
+- **Latest release**: 1.8.0. *Unreleased*: several API specs per project, the Agents page, MCP resources and prompts, and developing dx through an AI agent.
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog
@@ -79,6 +79,15 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - With port 80 taken (another dashboard), the `.localhost` addresses show `:1355`.
 
 ## Decisions
+
+### Agent monitoring, MCP like other MCP servers, developing dx through MCP (`core/src/tools/agents.ts`, `web/src/agentsapi.ts`, `devtoolsapi.ts`, `mcp/src/index.ts`)
+
+- **The maintainer asked to see what running agents are doing and how, with a node view of agents and subagents, and for Claude to be able to change dx and run things through it "like a normal MCP".** Answers to the questions: detect through Claude Code's session files, metadata only; MCP "both" (the standard features, and guarded actions to develop dx).
+- **Agents are read from `~/.claude/projects/<folder>/<session>.jsonl` and `<session>/subagents/agent-<id>.jsonl` with `.meta.json`** (`CLAUDE_CONFIG_DIR` moves it). Files can pass 100 MB, so only the first 256 KB and the last 1 MB are read, cached by mtime and size (93 ms first read, 14 ms cached over 27 sessions and 70 subagents). **Fixed fields only**: tool names, model, effort, permission mode, entrypoint, cwd, branch, titles, times, stop reason, pending tool ids. Never a message, prompt, tool input or result. The answer does carry titles, a subagent's one-line task description (model-written, clipped to 80 characters) and the folder it works in, which the page and the `dx://agents` resource show. A subagent's parent is the transcript whose Agent/Task `tool_use` id matches its `toolUseId`. A cwd inside a known project is that project's.
+- **Status is a guess from times, said as such**: working (written in the last 45 s, or a tool pending under 30 min), waiting (the session ended its turn, under 60 min), idle, done (a subagent that ended its turn, or older than 10 min), stopped (`stoppedByUser`).
+- **The graph is SVG built with DOM nodes** (no `innerHTML`), laid out in tiers by depth, polled every 3 s; edges pulse only while the child works, and not under reduced motion.
+- **MCP's standard features** were added to the existing server (SDK 1.32): resources (read-only, never start the dashboard), prompts with a completable project argument, and `outputSchema` plus `structuredContent` on `dx_do` / `dx_do_risky`. The tool count is unchanged (49); long actions stay jobs the agent polls (`dev.job`, chaos jobs) rather than MCP progress notifications, which need a client that asks for them.
+- **Developing dx is `dev.*` actions in the catalog, not a new tool**, so it follows the existing rule: reads and builds through `dx_do`, `dev.write` and `dev.restart` through `dx_do_risky`. The repository is found, never given (the project whose package.json is `dx-toolkit` with `packages/core`); the commands are `npm run build` and `npm test`, one job at a time; a file is a relative path with no `..`, not under `.git`, `node_modules`, `dist`, `release` or an `.env*` name, a text extension, links never followed, writes at most 512 KB (a request is 1 MB, escaped), through a temp file and rename. Every change is a line in `dx runs`.
 
 ### Your dx on another computer (`core/src/tools/state.ts`, `web/src/stateapi.ts`, the Settings page, `dx state`)
 
@@ -266,12 +275,22 @@ What was decided while building dx, and why, so the next session doesn't relearn
 - **The project's own migrate script first** (`db:migrate`, `migrate`, `migration:run`…), since it knows its setup; then the tool found from its files.
 - **Snapshots aren't prepared here**: they link or install their packages themselves.
 
+### Several API specs per project (`openapi.ts` storage and `mapApis`, `putMocks`' `replaceApis`, the API page)
+
+- **The maintainer has projects with more than one swagger file, for mocks and for API setup, and wanted several added "without anything breaking", each endpoint knowing which API it comes from and the mocks working.** Before, a project had one spec in `~/.dx/specs/<project>.json`.
+- **A list of named specs in the same file** (`dx-specs`, version 2): `id` (a slug of its name, unique in the project, kept when it's renamed so its mocks keep their ids), `name`, `source`, `doc`, and optionally `service` and `mount`. A file from before (`dx-spec`, or the `dx-spec-off` marker) is read as one API named from its title, or as "removed on purpose"; the first write converts it.
+- **Endpoints and mocks carry their API** (`api`, `apiName`): `readStored` reads a stored spec so each endpoint knows it, and `mocksFromSpec` puts the API in the mock's id, so two APIs with the same method, path and status don't overwrite each other (the old id hashed none of that). A mock made from an API with a `service` carries it, and `matchMock` already answers a stack call only from mocks of its service.
+- **Telling APIs apart is the user's to say, not dx's to guess**: calls carry only a path (and a stack service), so two APIs with the same path can't be told apart by dx. `mapApis` gives a call to the API with the best-matching endpoint (a stack call only to an API that is its service or has none) and reports `overlaps` (the same method and path in APIs of the same service); the pages say so and point at `service` and `mount`. `mount` is the base path when it isn't the spec's own, so `/health` of Payments can be `/payments/health`.
+- **Mocks made again replace only their API's** (`putMocks` with `replaceApis`): the unedited spec-made ones of that API, and, for the first API, the ones made before APIs were told apart (no `api`). Edited mocks always stay. Purge takes an API too.
+- **Only the first spec file found is added by itself**; the project's other spec files are offered on the API page, since `openapi.json` and `swagger.json` are often the same API twice. `SPECS_MAX` is 20.
+- **State export** carries every API given by hand (`specs`, with name, service, mount; not ones dx found) and "removed on purpose"; an old file's `spec` is read as one.
+
 ### An API spec on every project (`projectSpec`, `forgetSpec`, `specTurnedOff` in `openapi.ts`; `lookForServedSpec` in `labapi.ts`)
 
 - **The maintainer wanted to add a Swagger spec to a project and have the rest of dx use it.** It was already stored per project, but only from the Requests page, and only that page used it.
 - **Found by itself, so there's nothing to add in the usual case**: `projectSpec` returns the kept spec, else the most likely spec file in the project (`findSpecFiles`), saved with `found: true` and read fresh each time. While dx runs the dev server and there's still none, `GET /api/lab/spec` starts `lookForServedSpec`: the usual `SPEC_URL_PATHS` through dx's own route on this computer, in the background (the page polls), once per 10 minutes per project.
 - **Removing it is remembered**: `forgetSpec` writes a `dx-spec-off` marker in place of the spec, so the same file isn't picked up again; giving one again replaces it.
-- **Who uses it**: Overview's card (source, endpoints called this week, calls it doesn't have, endpoints answering differently), Activity's APIs view (the summary beside each call, "not in the spec" for non-GET or `/api/` calls it lacks, "doesn't match the spec" from `mapApi`'s issues, and the spec's uncalled endpoints), the tour (`ProjectTour.spec`, also in its Markdown), the API page and mocks, the graveyard, and the MCP `api_map` tool, which now uses `projectSpec` too.
+- **Who uses it** (now for every API of the project, see *Several API specs per project*): Overview's card (source, endpoints called this week, calls it doesn't have, endpoints answering differently), Activity's APIs view (the summary beside each call, "not in the spec" for non-GET or `/api/` calls it lacks, "doesn't match the spec" from `mapApi`'s issues, and the spec's uncalled endpoints), the tour (`ProjectTour.spec`, also in its Markdown), the API page and mocks, the graveyard, and the MCP `api_map` tool, which now uses `projectSpec` too.
 - **The API page leads with it**: the Requests page became API, its "Spec & mocks" tab first and the default.
 
 ### The Requests page (`core/src/tools/rules.ts`, `openapi.ts`, `yaml.ts`, `aicli.ts`; `web/src/apilab.ts`, `intercept.ts`, `labapi.ts`, `mocks.ts`)

@@ -180,6 +180,8 @@ import { labRoutes } from "./labapi.js";
 import { toolRoutes } from "./toolsapi.js";
 import { dxVersion } from "./link.js";
 import { stateRoutes } from "./stateapi.js";
+import { agentsRoutes } from "./agentsapi.js";
+import { devToolsRoutes } from "./devtoolsapi.js";
 import { envAlertsSince } from "./envwatch.js";
 import { chaosRoutes } from "./chaosapi.js";
 import { dataRoutes } from "./dataapi.js";
@@ -1184,7 +1186,7 @@ let depsJob: DepsJob = { running: false, done: 0, total: 0, current: "" };
 
 export async function handleApi(req: ApiRequest): Promise<unknown> {
   const key = `${req.method} ${req.path}`;
-  const handler = routes[key] ?? labRoutes[key] ?? chaosRoutes[key] ?? dataRoutes[key] ?? phoneRoutes[key] ?? teamRoutes[key] ?? toolRoutes[key] ?? stateRoutes[key];
+  const handler = routes[key] ?? labRoutes[key] ?? chaosRoutes[key] ?? dataRoutes[key] ?? phoneRoutes[key] ?? teamRoutes[key] ?? toolRoutes[key] ?? stateRoutes[key] ?? agentsRoutes[key] ?? devToolsRoutes[key];
   if (!handler) throw new HttpError(404, `No such API: ${req.method} ${req.path}`);
   return handler(req);
 }

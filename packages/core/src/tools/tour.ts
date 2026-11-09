@@ -5,7 +5,7 @@ import { readActivity, type ActivityEvent } from "./activity.js";
 import { findEnvFiles, isExampleFile } from "./envaudit.js";
 import { declaredRoutes, normalRoute, routeFits } from "./graveyard.js";
 import { foldPath } from "./mocks.js";
-import { mapApi, projectSpec, readSpec, specSource } from "./openapi.js";
+import { mapApis, projectApis, specSource } from "./openapi.js";
 import { planPrepare } from "./prepare.js";
 import type { Project } from "./projects.js";
 import { readDataSchema } from "./seeddata.js";
@@ -78,8 +78,10 @@ export interface ProjectTour {
   env: { name: string; file: string }[];
   pages: TourPage[];
   endpoints: TourEndpoint[];
-  /** The project's API spec, when it has one: what the API is meant to be, next to what was called. */
-  spec?: { title: string; version: string; kind: string; source: string; endpoints: { method: string; path: string; summary?: string; calls: number }[]; undocumented: number };
+  /** The project's API specs, when it has any: what each API is meant to be, next to what was called. */
+  specs?: { id: string; name: string; title: string; version: string; kind: string; source: string; service?: string; endpoints: { method: string; path: string; summary?: string; calls: number }[] }[];
+  /** Calls no API spec has. */
+  undocumented?: number;
   data?: { file: string; tables: { name: string; columns: number; links: string[] }[] };
   tests?: { framework: string; command: string };
   folders: TourFolder[];
@@ -430,12 +432,14 @@ export function projectTour(project: Pick<Project, "name" | "dir"> & Partial<Pro
   }
   const schema = readDataSchema(dir);
   const test = detectTestFramework(dir);
-  let spec: ProjectTour["spec"];
+  let specs: ProjectTour["specs"];
+  let undocumented: number | undefined;
   try {
-    const stored = projectSpec(dir);
-    if (stored) {
-      const map = mapApi(readSpec(stored.doc), events);
-      spec = { title: map.title, version: map.version, kind: map.kind, source: stored.source, endpoints: map.endpoints.slice(0, 300).map((e) => ({ method: e.method, path: e.path, ...(e.summary ? { summary: e.summary } : {}), calls: e.calls })), undocumented: map.undocumented.length };
+    const apis = projectApis(dir);
+    if (apis.length) {
+      const map = mapApis(apis.map((a) => a.spec), events);
+      specs = map.apis.map((m, i) => ({ id: apis[i].stored.id, name: apis[i].stored.name, title: m.title, version: m.version, kind: m.kind, source: apis[i].stored.source, ...(apis[i].stored.service ? { service: apis[i].stored.service } : {}), endpoints: m.endpoints.slice(0, 300).map((e) => ({ method: e.method, path: e.path, ...(e.summary ? { summary: e.summary } : {}), calls: e.calls })) }));
+      undocumented = map.undocumented.length;
     }
   } catch {
     // a spec dx can't read leaves the tour without one
@@ -451,7 +455,7 @@ export function projectTour(project: Pick<Project, "name" | "dir"> & Partial<Pro
     env: envNames(dir),
     pages: pages.slice(0, 200),
     endpoints: endpoints.slice(0, 300),
-    ...(spec ? { spec } : {}),
+    ...(specs ? { specs, undocumented } : {}),
     data: schema
       ? {
           file: schema.file,
@@ -500,9 +504,10 @@ export function tourMarkdown(t: ProjectTour): string {
     for (const e of t.endpoints.slice(0, 80)) out.push(`| \`${e.key}\` | ${e.file ? `\`${e.file}\`` : ""} | ${e.pages.slice(0, 4).map((p) => `\`${p}\``).join(", ")} |`);
     out.push("");
   }
-  if (t.spec) {
-    out.push("## API spec", "", `${t.spec.title}${t.spec.version ? ` ${t.spec.version}` : ""} (${t.spec.kind}, ${specSource(t.spec.source)}):`, "", "| Endpoint | What | Calls |", "|---|---|---|");
-    for (const e of t.spec.endpoints.slice(0, 80)) out.push(`| \`${e.method} ${e.path}\` | ${(e.summary ?? "").replace(/\|/g, "\\|")} | ${e.calls} |`);
+  for (const sp of t.specs ?? []) {
+    const several = (t.specs?.length ?? 0) > 1;
+    out.push(several ? `## API spec: ${sp.name}` : "## API spec", "", `${sp.title}${sp.version ? ` ${sp.version}` : ""} (${sp.kind}, ${specSource(sp.source)}${sp.service ? `, service ${sp.service}` : ""}):`, "", "| Endpoint | What | Calls |", "|---|---|---|");
+    for (const e of sp.endpoints.slice(0, 80)) out.push(`| \`${e.method} ${e.path}\` | ${(e.summary ?? "").replace(/\|/g, "\\|")} | ${e.calls} |`);
     out.push("");
   }
   if (t.data) {

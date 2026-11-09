@@ -2739,6 +2739,139 @@ summary.error-row {
   list-style: none;
 }
 /* The import preview of a dx state file, on the Settings page. */
+/* The Agents page: sessions and the subagents they started, as nodes joined by lines. */
+.agent-graph {
+  overflow: auto;
+  padding: var(--s2);
+  max-height: 70vh;
+}
+.agent-svg {
+  display: block;
+  min-width: 100%;
+}
+.agent-edge {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 2;
+}
+.agent-edge-working {
+  stroke: var(--accent);
+}
+.agent-node {
+  cursor: pointer;
+  outline: none;
+}
+.agent-card {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.agent-sub .agent-card {
+  fill: var(--surface-2);
+}
+.agent-node:hover .agent-card,
+.agent-node:focus-visible .agent-card {
+  stroke: var(--accent);
+}
+.agent-selected .agent-card {
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+.agent-label {
+  fill: var(--text);
+  font: 600 13px var(--font);
+}
+.agent-meta,
+.agent-project {
+  fill: var(--text-dim);
+  font: 11px var(--mono);
+}
+.agent-now {
+  fill: var(--text-dim);
+  font: 12px var(--font);
+}
+.agent-working .agent-now {
+  fill: var(--accent);
+}
+.agent-dot {
+  fill: var(--text-dim);
+}
+.agent-working .agent-dot,
+.agent-working .agent-pulse {
+  fill: var(--accent);
+}
+.agent-waiting .agent-dot {
+  fill: var(--warn);
+}
+.agent-done .agent-dot {
+  fill: var(--ok);
+}
+.agent-stopped .agent-dot {
+  fill: var(--danger);
+}
+.agent-idle .agent-card,
+.agent-done .agent-card,
+.agent-stopped .agent-card {
+  opacity: 0.85;
+}
+.agent-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: agent-pulse 1.6s ease-out infinite;
+}
+@keyframes agent-pulse {
+  0% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-pulse {
+    animation: none;
+    opacity: 0.25;
+  }
+}
+.agent-detail {
+  margin-top: var(--s3);
+}
+.agent-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: var(--s2) var(--s4);
+  margin: 0;
+}
+.agent-fact dt {
+  color: var(--text-dim);
+  font-size: var(--t-xs);
+}
+.agent-fact dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A project's several APIs on the API page and the Overview card. */
+.api-card {
+  margin-top: var(--s3);
+}
+.spec-api + .spec-api {
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+}
+.api-add-more {
+  margin-top: var(--s3);
+}
+.api-add-more > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.api-add {
+  margin-top: var(--s3);
+}
 .state-import {
   display: flex;
   flex-direction: column;

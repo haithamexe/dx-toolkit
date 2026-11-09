@@ -7,19 +7,19 @@ import {
   findSpecFiles,
   forgetSpec,
   jsonFromAnswer,
+  listSpecs,
   loadMocks,
   loadRules,
-  loadSpec,
-  mapApi,
+  mapApis,
   mocksFromSpec,
   parseSpecText,
-  projectSpec,
+  projectApis,
   purgeMocks,
   putMocks,
   putRule,
   readActivity,
   readProjectSpec,
-  readSpec,
+  readStored,
   recordRun,
   removeRule,
   RULE_BODY_MAX,
@@ -32,6 +32,7 @@ import {
   specTurnedOff,
   templateMatches,
   updateMock,
+  updateSpec,
   validate,
   MockError,
   type MockSource,
@@ -123,13 +124,19 @@ function fetchSpec(route: LocalRoute, specPath: string): Promise<string> {
   });
 }
 
-function specSummary(project: Project) {
-  const stored = projectSpec(project.dir);
-  if (!stored) return undefined;
-  const spec = readSpec(stored.doc);
+/** One of the project's APIs as the page shows it. */
+function apiSummary(stored: ReturnType<typeof listSpecs>[number], map: ReturnType<typeof mapApis>["apis"][number]) {
+  return { id: stored.id, name: stored.name, service: stored.service, mount: stored.mount, source: stored.source, found: !!stored.found, savedAt: stored.savedAt, title: map.title, version: map.version, kind: map.kind, basePath: readStored(stored).basePath, endpoints: map.endpoints };
+}
+
+/** Every API of the project next to what the app called: each endpoint knows its API, calls no API has, and the same endpoint in two. */
+function specsSummary(project: Project) {
+  const apis = projectApis(project.dir);
+  if (!apis.length) return undefined;
   flushActivity();
   const events = readActivity({ dir: project.dir, since: new Date(Date.now() - 7 * 86_400_000), limit: 5000 });
-  return { source: stored.source, found: !!stored.found, savedAt: stored.savedAt, title: spec.title, version: spec.version, kind: spec.kind, basePath: spec.basePath, map: mapApi(spec, events) };
+  const map = mapApis(apis.map((a) => a.spec), events);
+  return { apis: apis.map((a, i) => apiSummary(a.stored, map.apis[i])), undocumented: map.undocumented, overlaps: map.overlaps };
 }
 
 /**
@@ -138,7 +145,7 @@ function specSummary(project: Project) {
  */
 const servedSpecTried = new Map<string, { at: number; looking: boolean }>();
 function lookForServedSpec(project: Project): boolean {
-  if (projectSpec(project.dir) || specTurnedOff(project.dir)) return false;
+  if (listSpecs(project.dir).length || specTurnedOff(project.dir)) return false;
   let route: LocalRoute;
   try {
     route = routeOf(project);
@@ -154,7 +161,7 @@ function lookForServedSpec(project: Project): boolean {
     for (const p of SPEC_URL_PATHS) {
       try {
         const doc = parseSpecText(await fetchSpec(route, p));
-        if (!loadSpec(project.dir) && !specTurnedOff(project.dir)) {
+        if (!listSpecs(project.dir).length && !specTurnedOff(project.dir)) {
           saveSpec(project.dir, `url:${p}`, doc, { found: true });
           recordRun("spec", true, `${project.name}: API spec found at ${p}`, "web", { project: project.name });
         }
@@ -168,15 +175,16 @@ function lookForServedSpec(project: Project): boolean {
   return true;
 }
 
-/** The spec's schema for a mock's answer, when there's a spec and it has that endpoint and status. */
-function schemaFor(dir: string, ep: { method: string; path: string; pattern?: string; status: number }): Schema | undefined {
-  const stored = projectSpec(dir);
-  if (!stored) return undefined;
-  const spec = readSpec(stored.doc);
+/** The spec's schema for a mock's answer: in the API the mock was made from, else in any of them that has that endpoint and status. */
+function schemaFor(dir: string, ep: { method: string; path: string; pattern?: string; status: number; api?: string }): Schema | undefined {
+  const apis = projectApis(dir).filter((a) => !ep.api || a.spec.api === ep.api);
   const sample = ep.pattern ?? ep.path.replace(/:id/g, "1");
-  const found = spec.endpoints.find((e) => e.method === ep.method && (e.path === ep.pattern || templateMatches(e.path, sample)));
-  const r = found?.responses.find((x) => x.status === ep.status) ?? found?.responses.find((x) => x.status === "default");
-  return r?.schema;
+  for (const { spec } of apis) {
+    const found = spec.endpoints.find((e) => e.method === ep.method && (e.path === ep.pattern || templateMatches(e.path, sample)));
+    const r = found?.responses.find((x) => x.status === ep.status) ?? found?.responses.find((x) => x.status === "default");
+    if (r?.schema) return r.schema;
+  }
+  return undefined;
 }
 
 const SOURCES: MockSource[] = ["recorded", "cache", "spec", "generated", "ai"];
@@ -252,7 +260,11 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
     const project = knownProject(req.query.get("dir"));
     const running = [...localRoutes().values()].some((r) => r.dir.toLowerCase() === project.dir.toLowerCase());
     const looking = lookForServedSpec(project);
-    return { files: findSpecFiles(project.dir), urls: SPEC_URL_PATHS, running, looking, removed: specTurnedOff(project.dir), spec: call(() => specSummary(project)) };
+    const files = findSpecFiles(project.dir);
+    const summary = call(() => specsSummary(project));
+    // Spec files in the project that aren't one of its APIs yet, offered to add.
+    const have = new Set(listSpecs(project.dir).map((x) => x.source));
+    return { files, more: files.filter((f) => !have.has(`file:${f}`)), urls: SPEC_URL_PATHS, running, looking, removed: specTurnedOff(project.dir), specs: summary?.apis ?? [], undocumented: summary?.undocumented ?? [], overlaps: summary?.overlaps ?? [] };
   },
   "POST /api/lab/spec": async (req) => {
     const project = knownProject(req.body.dir);
@@ -279,23 +291,48 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
       }
       if (!doc) throw new HttpError(404, `${project.name} doesn't serve a spec at the usual addresses (${SPEC_URL_PATHS.slice(0, 4).join(", ")}…). Give its file or paste it.`);
     }
-    saveSpec(project.dir, source, doc);
-    const summary = specSummary(project)!;
-    recordRun("spec", true, `${project.name}: API spec from ${source} (${summary.map.endpoints.length} endpoints)`, "web", { project: project.name });
+    const str = (v: unknown, what: string) => {
+      if (v === undefined || v === null) return undefined;
+      if (typeof v !== "string") throw new HttpError(400, `${what} is text.`);
+      return v;
+    };
+    const saved = call(() => saveSpec(project.dir, source, doc!, { id: str(req.body.id, "An id"), name: str(req.body.name, "A name"), service: str(req.body.service, "A service"), mount: str(req.body.mount, "Where it's served") }));
+    const summary = specsSummary(project)!.apis.find((a) => a.id === saved.id)!;
+    recordRun("spec", true, `${project.name}: API "${saved.name}" from ${source} (${summary.endpoints.length} endpoints)`, "web", { project: project.name });
     return summary;
   },
+  // Renames an API, or says which service it is or where it's served; its mocks keep their ids.
+  "POST /api/lab/spec/update": (req) => {
+    const project = knownProject(req.body.dir);
+    const saved = call(() => updateSpec(project.dir, String(req.body.id ?? ""), { name: req.body.name, service: req.body.service, mount: req.body.mount }));
+    recordRun("spec", true, `${project.name}: API "${saved.name}" changed`, "web", { project: project.name });
+    return specsSummary(project)!.apis.find((a) => a.id === saved.id);
+  },
   "POST /api/lab/spec/forget": (req) => {
-    forgetSpec(knownProject(req.body.dir).dir);
+    const project = knownProject(req.body.dir);
+    const id = typeof req.body.id === "string" && req.body.id ? req.body.id : undefined;
+    call(() => forgetSpec(project.dir, id));
+    recordRun("spec", true, `${project.name}: ${id ? `API ${id}` : "every API"} removed`, "web", { project: project.name });
     return { ok: true };
   },
   "POST /api/lab/spec/mocks": (req) => {
     const project = knownProject(req.body.dir);
-    const stored = projectSpec(project.dir);
-    if (!stored) throw new HttpError(404, `${project.name} has no API spec yet.`);
-    const r = putMocks(project.dir, project.name, mocksFromSpec(readSpec(stored.doc)));
+    const all = projectApis(project.dir);
+    if (!all.length) throw new HttpError(404, `${project.name} has no API spec yet.`);
+    // One API (by id) or every one; each API's mocks keep to it, so two with the same path don't overwrite each other.
+    const only = typeof req.body.api === "string" && req.body.api ? req.body.api : undefined;
+    const chosen = only ? all.filter((a) => a.stored.id === only) : all;
+    if (!chosen.length) throw new HttpError(404, "That API isn't there any more. Refresh the page.");
+    const total = { added: 0, replaced: 0, kept: 0 };
+    for (const { spec } of chosen) {
+      const r = putMocks(project.dir, project.name, mocksFromSpec(spec), { replaceApis: [spec.api!], legacy: all[0].spec.api === spec.api });
+      total.added += r.added;
+      total.replaced += r.replaced;
+      total.kept += r.kept;
+    }
     forgetMocks();
-    recordRun("mock", true, `${project.name}: mocks from the API spec, ${r.added} new, ${r.replaced} updated`, "web", { project: project.name });
-    return { added: r.added, replaced: r.replaced, kept: r.kept, endpoints: r.set.endpoints.length };
+    recordRun("mock", true, `${project.name}: mocks from ${only ? `the API ${only}` : `${chosen.length} API(s)`}, ${total.added} new, ${total.replaced} updated`, "web", { project: project.name });
+    return { ...total, apis: chosen.length, endpoints: loadMocks(project.dir, project.name).endpoints.length };
   },
 
   // ------------------------------------------------------------ the mock server, the cache, AI data
@@ -314,9 +351,10 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
     const project = knownProject(req.body.dir, { snapshots: true });
     const source = req.body.source === undefined ? undefined : (String(req.body.source) as MockSource);
     if (source !== undefined && !SOURCES.includes(source)) throw new HttpError(400, `Sources: ${SOURCES.join(", ")}.`);
-    const r = purgeMocks(project.dir, source);
+    const api = typeof req.body.api === "string" && /^[a-z0-9-]{1,40}$/.test(req.body.api) ? req.body.api : undefined;
+    const r = purgeMocks(project.dir, source, api);
     forgetMocks();
-    recordRun("mock", true, `${project.name}: purged ${r.removed} mock(s)${source ? ` from ${source}` : ""}`, "web", { project: project.name });
+    recordRun("mock", true, `${project.name}: purged ${r.removed} mock(s)${api ? ` of the API ${api}` : ""}${source ? ` from ${source}` : ""}`, "web", { project: project.name });
     return { removed: r.removed, endpoints: r.set.endpoints.length, server: mockServerFor(project.dir) };
   },
   "GET /api/lab/ai": async () => (await aiClis()).map((c) => ({ tool: c.tool, name: c.name })),

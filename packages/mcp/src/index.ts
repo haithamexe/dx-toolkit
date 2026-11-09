@@ -3,7 +3,8 @@
 // It talks over stdin/stdout, so nothing here may print to stdout except the protocol.
 
 import { readFileSync } from "node:fs";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { completable } from "@modelcontextprotocol/sdk/server/completable.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
@@ -34,8 +35,10 @@ import {
   cloneProject,
   fixDependencies,
   checkProjectNeeds,
-  mapApi,
-  projectSpec,
+  agentSummary,
+  mapApis,
+  projectApis,
+  readAgents,
   readSpec,
   checkTools,
   dockerInfo,
@@ -266,24 +269,28 @@ server.registerTool(
   {
     title: "A project's API, from its OpenAPI spec",
     description:
-      "The project's API spec (OpenAPI or Swagger, the one dx keeps for it, else a spec file found in the project) next to what the app really called in the last 7 days: " +
+      "The project's API specs (OpenAPI or Swagger; a project can have several APIs, each named, with its endpoints knowing which API they're in; else a spec file found in the project) next to what the app really called in the last 7 days: " +
       "each endpoint with its calls and statuses, answers that don't fit the spec (wrong types, missing fields, undeclared statuses), and calls the spec doesn't have. " +
       "Use it to see an API's shape before writing code against it, or to check a backend change against the spec.",
-    inputSchema: { project: z.string().describe("Project name") },
+    inputSchema: { project: z.string().describe("Project name"), api: z.string().optional().describe("One of the project's APIs, by name or id (default: all of them)") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
-  async ({ project }) => {
+  async ({ project, api }) => {
     try {
       const found = findProjects(project, scanProjects(loadConfig()));
       const p = found.match ?? (found.candidates.length === 1 ? found.candidates[0] : undefined);
       if (!p) return failure(found.candidates.length ? `Several projects match "${project}": ${found.candidates.map((x) => x.name).join(", ")}` : `No project matches "${project}".`);
-      // The project's spec: the one it was given, else a spec file in it, found by itself.
-      const stored = projectSpec(p.dir);
-      if (!stored) return text(`${p.name} has no API spec dx knows of: no openapi or swagger file in it, and none was given. The user can add one on dx's API page (from a file, the running app, or pasted).`);
-      const { doc, source } = stored;
-      const spec = readSpec(doc);
-      const map = mapApi(spec, readActivity({ dir: p.dir, since: new Date(Date.now() - 7 * 86_400_000), limit: 5000 }));
-      return text({ title: spec.title, version: spec.version, kind: spec.kind, source, basePath: spec.basePath, endpoints: map.endpoints, undocumented: map.undocumented });
+      // The project's APIs: the ones it was given, else a spec file in it, found by itself. Each endpoint says which API it's in.
+      const all = projectApis(p.dir);
+      const apis = all.filter((a) => !api || a.stored.id === api || a.stored.name.toLowerCase() === api.toLowerCase());
+      if (!apis.length) return text(api ? `${p.name} has no API "${api}". Its APIs: ${projectApis(p.dir).map((a) => a.stored.name).join(", ") || "none"}.` : `${p.name} has no API spec dx knows of: no openapi or swagger file in it, and none was given. The user can add one on dx's API page (from a file, the running app, or pasted).`);
+      // Every API takes part in the mapping, so a call another API owns is not reported as missing from this one.
+      const map = mapApis(all.map((a) => a.spec), readActivity({ dir: p.dir, since: new Date(Date.now() - 7 * 86_400_000), limit: 5000 }));
+      return text({
+        apis: apis.map((a) => ({ id: a.stored.id, name: a.stored.name, title: a.spec.title, version: a.spec.version, kind: a.spec.kind, source: a.stored.source, basePath: a.spec.basePath, ...(a.stored.service ? { service: a.stored.service } : {}), endpoints: map.apis[all.indexOf(a)].endpoints })),
+        undocumented: map.undocumented,
+        ...(map.overlaps.length ? { overlaps: map.overlaps } : {}),
+      });
     } catch (err) {
       return failure((err as Error).message);
     }
@@ -1916,7 +1923,9 @@ async function doAction(id: string, input: Record<string, unknown> | undefined, 
   try {
     const result = await client.call(req.method, req.path, req.body, 600_000);
     const out = JSON.stringify(result, null, 2) ?? "ok";
-    return text(out.length > RESULT_MAX ? `${out.slice(0, RESULT_MAX)}\n… (cut at ${RESULT_MAX} characters; ask for less, with limit or a narrower input)` : out);
+    const cut = out.length > RESULT_MAX;
+    // The text for readers, and the same result as structured content for clients that use it.
+    return { ...text(cut ? `${out.slice(0, RESULT_MAX)}\n… (cut at ${RESULT_MAX} characters; ask for less, with limit or a narrower input)` : out), structuredContent: cut ? { action: id, truncated: true } : { action: id, result: result ?? null } };
   } catch (err) {
     return failure((err as Error).message);
   }
@@ -1957,6 +1966,7 @@ server.registerTool(
       action: z.string().describe("An action from dx_actions, e.g. git.status or run.start"),
       input: z.record(z.string(), z.unknown()).optional().describe("The action's inputs"),
     },
+    outputSchema: { action: z.string().describe("The action that ran"), result: z.unknown().optional().describe("What the dashboard answered"), truncated: z.boolean().optional().describe("The answer was too long to return; ask for less") },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
   async ({ action, input }) => doAction(action, input, false),
@@ -1974,9 +1984,93 @@ server.registerTool(
       action: z.string().describe("A risky action from dx_actions, e.g. git.push or env.read"),
       input: z.record(z.string(), z.unknown()).optional().describe("The action's inputs"),
     },
+    outputSchema: { action: z.string().describe("The action that ran"), result: z.unknown().optional().describe("What the dashboard answered"), truncated: z.boolean().optional().describe("The answer was too long to return; ask for less") },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },
   async ({ action, input }) => doAction(action, input, true),
 );
+
+// ------------------------------------------------------------------ resources and prompts
+
+// What an AI tool can read without calling a tool, and prompts it can offer as commands. Resources
+// are read-only; reading one never starts the dashboard. (Reads aren't in the AI lane: only tool calls are.)
+const JSON_TYPE = "application/json";
+const asJson = (uri: URL, value: unknown) => ({ contents: [{ uri: uri.href, mimeType: JSON_TYPE, text: JSON.stringify(value, null, 2) }] });
+const knownProjects = () => scanProjects(loadConfig());
+const projectNames = () => knownProjects().map((p) => p.name);
+
+server.registerResource(
+  "projects",
+  "dx://projects",
+  { title: "Your projects", description: "Every project dx found: folder, kind, package manager, dev command and address.", mimeType: JSON_TYPE },
+  async (uri) => asJson(uri, knownProjects().map((p) => ({ name: p.name, dir: p.dir, kind: p.kind, packageManager: p.packageManager, devCommand: p.devCommand, url: p.url }))),
+);
+
+server.registerResource(
+  "actions",
+  "dx://actions",
+  { title: "Everything dx can do", description: "The catalog behind dx_actions, dx_do and dx_do_risky: every group and action with its inputs, risky ones marked.", mimeType: JSON_TYPE },
+  async (uri) => asJson(uri, { groups: ACTION_GROUPS, actions: DX_ACTIONS.map((a) => ({ action: a.id, group: a.group, does: a.title, inputs: a.params, ...(a.risky ? { risky: true } : {}) })) }),
+);
+
+server.registerResource(
+  "agents",
+  "dx://agents",
+  { title: "Agents on this computer", description: "Claude Code sessions and the subagents each started, with status, model, effort and the tool each runs now. Metadata only.", mimeType: JSON_TYPE },
+  async (uri) => {
+    const agents = readAgents({ sinceHours: 24, projects: knownProjects().map((p) => ({ name: p.name, dir: p.dir })) });
+    return asJson(uri, { summary: agentSummary(agents), agents });
+  },
+);
+
+server.registerResource(
+  "project",
+  new ResourceTemplate("dx://project/{project}", {
+    list: async () => ({ resources: knownProjects().map((p) => ({ uri: `dx://project/${encodeURIComponent(p.name)}`, name: p.name, title: p.name, description: `${p.kind} project in ${p.dir}`, mimeType: JSON_TYPE })) }),
+    complete: { project: (value) => projectNames().filter((n) => n.toLowerCase().startsWith(String(value).toLowerCase())).slice(0, 50) },
+  }),
+  { title: "A project", description: "One project: where it is, how it runs, and its dev server if dx runs it.", mimeType: JSON_TYPE },
+  async (uri, variables) => {
+    let name = String(variables.project);
+    try {
+      name = decodeURIComponent(name);
+    } catch {
+      // not percent-encoded text: use it as typed
+    }
+    const found = findProjects(name, knownProjects());
+    const p = found.match ?? (found.candidates.length === 1 ? found.candidates[0] : undefined);
+    if (!p) throw new Error(found.candidates.length ? `Several projects match "${name}": ${found.candidates.map((x) => x.name).join(", ")}` : `No project matches "${name}".`);
+    let server_: unknown = null;
+    const dash = await findDashboard();
+    if (dash) {
+      try {
+        server_ = ((await dash.get("/api/dev")) as { dir: string }[]).find((d) => d.dir.toLowerCase() === p.dir.toLowerCase()) ?? null;
+      } catch {
+        // the dashboard didn't answer: no dev server shown
+      }
+    }
+    return asJson(uri, { name: p.name, dir: p.dir, kind: p.kind, packageManager: p.packageManager, devCommand: p.devCommand, url: p.url, scripts: p.scripts, hasGit: p.hasGit, devServer: server_, dashboardRunning: !!dash });
+  },
+);
+
+// Prompts: a request written once, with the project filled in (and completed as you type it).
+const projectArg = completable(z.string().describe("A project's name"), (value) => projectNames().filter((n) => n.toLowerCase().startsWith(String(value ?? "").toLowerCase())).slice(0, 50));
+const prompt = (title: string, description: string, build: (project: string) => string) => ({
+  config: { title, description, argsSchema: { project: projectArg } },
+  run: ({ project }: { project: string }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: build(project) } }] }),
+});
+const PROMPTS: Record<string, ReturnType<typeof prompt>> = {
+  fix_errors: prompt("Fix a project's errors", "Start it, read its errors, fix them, and check the pages.", (p) =>
+    `Use dx to get ${p} working. Start its dev server (start_dev_server), read its errors (dev_errors), fix each one in the code, and after each edit wait for the rebuild (wait_for_rebuild) and confirm the error is gone. Then check its main pages with check_url using browser: true, and tell me what you changed and what still fails.`),
+  ship_check: prompt("Check a project before shipping", "Unsaved work, tests, secrets, security and dependencies, then a verdict.", (p) =>
+    `Before I ship ${p}, check it with dx: what isn't backed up (unsaved_work), its tests (run_tests), committed secrets and .env values that matter (check_env), a security pass (security_check), and its dependencies (audit_dependencies). Don't change anything. Tell me what's safe, what isn't, and what to do first.`),
+  understand_project: prompt("Understand a project", "Its pages, API and how it runs, from dx's own records.", (p) =>
+    `Explain ${p} to me using dx: read its project_tour and api_map, and its recent activity (activity_log). Say what it is, how to run it, its pages and the API calls each makes, which calls its API spec doesn't have, and where I'd start reading the code.`),
+  break_it: prompt("Break a project on purpose", "Chaos mode and gremlins, then a report of what broke.", (p) =>
+    `Find out how ${p} behaves when things go wrong, using dx: make sure its dev server runs, turn chaos mode on (chaos_mode), run gremlins (run_gremlins), read what broke, then turn chaos off. List each problem with the steps that cause it and the file to look at.`),
+  whats_running: prompt("What's running", "The agents and dev servers on this computer.", (p) =>
+    `Using dx, tell me what is running on this computer around ${p}: the agents and subagents working (dx_do with agents.list), the dev servers dx runs (dev_servers), and what any agent is doing there. Keep it short.`),
+};
+for (const [name, def] of Object.entries(PROMPTS)) server.registerPrompt(name, def.config, def.run);
 
 await server.connect(new StdioServerTransport());

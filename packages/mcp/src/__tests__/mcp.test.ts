@@ -41,6 +41,8 @@ fs.writeFileSync(
    }).listen(0, "127.0.0.1", () => console.log("  Local:   http://localhost:" + s.address().port + "/"));`,
 );
 
+// Claude Code's folder for the agents resource: made up, so no real session is read.
+const claudeHome = fs.mkdtempSync(path.join(os.tmpdir(), "dx-mcp-claude-"));
 const { findDashboard } = await import("@dx/web/link");
 const { findBrowser } = await import("@dx/core");
 const serverScript = fileURLToPath(new URL("../index.js", import.meta.url));
@@ -48,7 +50,7 @@ const client = new Client({ name: "dx-test", version: "1.0.0" });
 
 before(async () => {
   const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === "string"));
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: [serverScript], env: { ...env, DX_HOME: home } }));
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [serverScript], env: { ...env, DX_HOME: home, CLAUDE_CONFIG_DIR: claudeHome } }));
 });
 
 after(async () => {
@@ -248,4 +250,46 @@ test("the whole dashboard through dx_actions, dx_do and dx_do_risky: risky actio
   assert.ok(unknown.isError && /no action/.test(unknown.text));
   const outside = await call("dx_do", { action: "env.project", input: { dir: os.tmpdir() } });
   assert.ok(outside.isError, "only projects dx knows, as on the page");
+});
+
+test("resources: projects, the catalog, agents and one project, readable without a tool call", async () => {
+  const { resources } = await client.listResources();
+  const uris = resources.map((r) => r.uri);
+  for (const uri of ["dx://projects", "dx://actions", "dx://agents"]) assert.ok(uris.includes(uri), uri);
+  assert.ok(uris.includes("dx://project/tiny-shop"), "each project is listed through the template");
+  const read = async (uri: string) => JSON.parse(((await client.readResource({ uri })).contents[0] as { text: string }).text);
+  assert.ok((await read("dx://projects")).some((p: { name: string }) => p.name === "tiny-shop"));
+  const catalog = await read("dx://actions");
+  assert.ok(catalog.actions.length > 150 && catalog.groups.agents && catalog.groups.dev);
+  assert.ok(catalog.actions.find((a: { action: string }) => a.action === "git.push").risky);
+  assert.deepEqual((await read("dx://agents")).agents, [], "none in a Claude folder with no sessions");
+  const one = await read("dx://project/tiny-shop");
+  assert.deepEqual([one.name, one.devCommand, one.dashboardRunning === true || one.dashboardRunning === false], ["tiny-shop", "npm run dev", true]);
+  const { resourceTemplates } = await client.listResourceTemplates();
+  assert.ok(resourceTemplates.some((t) => t.uriTemplate === "dx://project/{project}"));
+  await assert.rejects(client.readResource({ uri: "dx://project/no-such-project" }), /No project matches/);
+});
+
+test("prompts: ready-made requests with the project filled in, and its name completed as you type", async () => {
+  const { prompts } = await client.listPrompts();
+  for (const name of ["fix_errors", "ship_check", "understand_project", "break_it", "whats_running"]) assert.ok(prompts.some((p) => p.name === name), name);
+  const got = await client.getPrompt({ name: "ship_check", arguments: { project: "tiny-shop" } });
+  const text = (got.messages[0].content as { text: string }).text;
+  assert.ok(text.includes("tiny-shop") && text.includes("unsaved_work") && text.includes("run_tests"));
+  const done = await client.complete({ ref: { type: "ref/prompt", name: "fix_errors" }, argument: { name: "project", value: "tin" } });
+  assert.deepEqual(done.completion.values, ["tiny-shop"]);
+});
+
+test("dx_do answers with structured content as well as text; the dev tools are there, and say so when dx's source isn't a project", async () => {
+  const raw = (await client.callTool({ name: "dx_do", arguments: { action: "run.list" } })) as { structuredContent?: { action: string; result: unknown }; content: { text: string }[] };
+  assert.deepEqual([raw.structuredContent?.action, Array.isArray(raw.structuredContent?.result)], ["run.list", true]);
+  assert.deepEqual(JSON.parse(raw.content[0].text), raw.structuredContent?.result, "the same result");
+  const info = JSON.parse((await call("dx_do", { action: "dev.info" })).text);
+  assert.equal(info.repository, null);
+  assert.match(info.hint, /isn't one of your projects/);
+  assert.ok((await call("dx_do", { action: "dev.build" })).isError, "no source, no build");
+  const write = await call("dx_do", { action: "dev.write", input: { file: "x.ts", content: "" } });
+  assert.ok(write.isError && /dx_do_risky/.test(write.text), "writing is risky: only through the tool that asks");
+  const agents = JSON.parse((await call("dx_do", { action: "agents.list" })).text);
+  assert.deepEqual(agents.agents, []);
 });

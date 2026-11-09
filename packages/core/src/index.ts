@@ -55,6 +55,7 @@ export * from "./tools/openapi.js";
 export * from "./tools/customtools.js";
 export * from "./tools/envwatch.js";
 export * from "./tools/state.js";
+export * from "./tools/agents.js";
 export * from "./tools/aicli.js";
 export * from "./tools/prepare.js";
 export * from "./tools/chaos.js";

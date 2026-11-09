@@ -8,7 +8,7 @@ import { cleanTool, importTools, loadTools, toolsFile, type CustomTool } from ".
 import { gitRun } from "./git.js";
 import { journalPath, mergeJournalText, parseJournal, type JournalEntry } from "./journal.js";
 import { cleanMockEndpoint, loadMocks, mockFile, MOCK_ENDPOINTS_MAX, saveMocks, type MockEndpoint } from "./mocks.js";
-import { forgetSpec, readSpec, saveSpec, specFile } from "./openapi.js";
+import { exportableSpecs, forgetSpec, readSpec, saveSpec, specFile } from "./openapi.js";
 import type { Project } from "./projects.js";
 import { cleanRule, loadRules, rulesFile, RULES_MAX, saveRules, type TrafficRule } from "./rules.js";
 import { isValidProjectName, templatesDir } from "./scaffold.js";
@@ -54,7 +54,9 @@ export interface StateProject {
   tools?: Omit<CustomTool, "createdAt" | "updatedAt">[];
   mocks?: { endpoints: MockEndpoint[] };
   rules?: TrafficRule[];
-  spec?: { source: string; doc: Record<string, unknown> } | { off: true };
+  /** The project's API specs (several can be kept), and that they were all removed on purpose. */
+  specs?: { id?: string; name?: string; source: string; doc: Record<string, unknown>; service?: string; mount?: string }[];
+  specsOff?: true;
   chaos?: Partial<Pick<ChaosConfig, "level" | "faults" | "seed" | "paths" | "clock" | "phone" | "locale">>;
   scenes?: Scene[];
   note?: { text: string; by: "you" | "ai"; at: string };
@@ -206,9 +208,9 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
       const rules = loadRules(p.dir, p.name).rules.map(({ updatedAt: _u, ...r }) => r);
       if (rules.length) sp.rules = rules;
     }
-    const spec = readJsonFile(specFile(p.dir));
-    if (spec?.format === "dx-spec-off") sp.spec = { off: true };
-    else if (spec?.format === "dx-spec" && !spec.found && typeof spec.source === "string" && spec.doc && typeof spec.doc === "object") sp.spec = { source: spec.source, doc: spec.doc as Record<string, unknown> };
+    const kept = exportableSpecs(p.dir);
+    if (kept.specs.length) sp.specs = kept.specs;
+    else if (kept.off) sp.specsOff = true;
     if (fs.existsSync(chaosFile(p.dir))) {
       const c = loadChaos(p.dir, p.name);
       sp.chaos = { level: c.level, faults: c.faults, seed: c.seed, ...(c.paths ? { paths: c.paths } : {}), ...(c.clock ? { clock: c.clock } : {}), ...(c.phone ? { phone: c.phone } : {}), ...(c.locale ? { locale: c.locale } : {}) };
@@ -293,7 +295,7 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
 
 const SUMMARY_NAME = /^[\w-][\w.-]{0,99}\.md$/;
 const TOP = new Set(["format", "version", "exportedAt", "settings", "sites", "journal", "summaries", "templates", "page", "projects", "left"]);
-const PROJECT_FIELDS = new Set(["name", "remote", "tools", "mocks", "rules", "spec", "chaos", "scenes", "note", "alerts", "sites"]);
+const PROJECT_FIELDS = new Set(["name", "remote", "tools", "mocks", "rules", "spec", "specs", "specsOff", "chaos", "scenes", "note", "alerts", "sites"]);
 
 function obj(v: unknown, where: string): Record<string, unknown> {
   if (!v || typeof v !== "object" || Array.isArray(v)) throw new StateError(`${where} isn't an object.`);
@@ -384,18 +386,41 @@ function cleanProject(input: unknown, i: number): StateProject {
         return rule;
       }),
     );
+  // One spec (`spec`, from files made before there could be several) or a list of them (`specs`).
+  const oneSpec = (raw: unknown, n: number): NonNullable<StateProject["specs"]>[number] => {
+    const s = obj(raw, `${at} API ${n + 1}`);
+    only(s, new Set(["id", "name", "source", "doc", "service", "mount"]), `${at} API ${n + 1}`);
+    if (typeof s.source !== "string" || !/^(file:[^\0\r\n]{1,500}|url:\/[^\0\r\n]{0,500}|pasted)$/.test(s.source) || (s.source.startsWith("file:") && s.source.split(/[\\/]/).includes(".."))) throw new StateError(`${at} the API's source isn't right.`);
+    const doc = obj(s.doc, `${at} API ${n + 1}`);
+    if ((typeof doc.openapi !== "string" && typeof doc.swagger !== "string") || !doc.paths || typeof doc.paths !== "object") throw new StateError(`${at} API ${n + 1} isn't an OpenAPI or Swagger document.`);
+    wrap(`API ${n + 1}`, () => readSpec(doc));
+    const out: NonNullable<StateProject["specs"]>[number] = { source: s.source, doc };
+    if (s.id !== undefined) {
+      if (typeof s.id !== "string" || !/^[a-z0-9-]{1,40}$/.test(s.id)) throw new StateError(`${at} an API's id isn't right.`);
+      out.id = s.id;
+    }
+    if (s.name !== undefined) {
+      if (typeof s.name !== "string" || !s.name.trim() || s.name.length > 60) throw new StateError(`${at} an API's name isn't right.`);
+      out.name = s.name.trim();
+    }
+    if (s.service !== undefined) {
+      if (typeof s.service !== "string" || !/^[\w.-]{1,60}$/.test(s.service)) throw new StateError(`${at} an API's service isn't right.`);
+      out.service = s.service;
+    }
+    if (s.mount !== undefined) {
+      if (typeof s.mount !== "string" || !/^\/[\w./{}~-]{0,200}$/.test(s.mount)) throw new StateError(`${at} where an API is served isn't right.`);
+      out.mount = s.mount;
+    }
+    return out;
+  };
   if (o.spec !== undefined) {
     const s = obj(o.spec, `${at} spec`);
-    if (s.off === true && Object.keys(s).length === 1) p.spec = { off: true };
-    else {
-      only(s, new Set(["source", "doc"]), `${at} spec`);
-      if (typeof s.source !== "string" || !/^(file:[^\0\r\n]{1,500}|url:\/[^\0\r\n]{0,500}|pasted)$/.test(s.source) || (s.source.startsWith("file:") && s.source.split(/[\\/]/).includes(".."))) throw new StateError(`${at} the spec's source isn't right.`);
-      const doc = obj(s.doc, `${at} spec`);
-      if ((typeof doc.openapi !== "string" && typeof doc.swagger !== "string") || !doc.paths || typeof doc.paths !== "object") throw new StateError(`${at} the spec isn't an OpenAPI or Swagger document.`);
-      wrap("spec", () => readSpec(doc));
-      p.spec = { source: s.source, doc };
-    }
+    if (s.off === true && Object.keys(s).length === 1) p.specsOff = true;
+    else p.specs = [oneSpec(s, 0)];
   }
+  const specs = list(o.specs, `${at} API specs`, 20);
+  if (specs.length) p.specs = specs.map(oneSpec);
+  if (o.specsOff === true) p.specsOff = true;
   if (o.chaos !== undefined) {
     const c = obj(o.chaos, `${at} chaos`);
     only(c, new Set(["level", "faults", "seed", "paths", "clock", "phone", "locale"]), `${at} chaos`);
@@ -568,7 +593,8 @@ function hasOf(p: StateProject): Record<string, number> {
   if (p.tools?.length) has.tools = p.tools.length;
   if (p.mocks?.endpoints.length) has.mocks = p.mocks.endpoints.length;
   if (p.rules?.length) has.rules = p.rules.length;
-  if (p.spec) has.spec = 1;
+  if (p.specs?.length) has.specs = p.specs.length;
+  else if (p.specsOff) has.specs = 0;
   if (p.chaos) has.chaos = 1;
   if (p.scenes?.length) has.scenes = p.scenes.length;
   if (p.note) has.note = 1;
@@ -789,11 +815,22 @@ export async function importState(state: DxState, options: { projects: Project[]
       saveRules(set);
       brought.rules = sp.rules.length;
     }
-    if (sp.spec) {
+    if (sp.specs?.length || sp.specsOff) {
       before.touch(specFile(dir));
-      if ("off" in sp.spec) forgetSpec(dir);
-      else saveSpec(dir, sp.spec.source, sp.spec.doc);
-      brought.spec = 1;
+      if (sp.specs?.length) {
+        // Each API replaces the one with its id here, or the one from the same file; the others stay.
+        for (const x of sp.specs) {
+          try {
+            saveSpec(dir, x.source, x.doc, { id: x.id, name: x.name, service: x.service, mount: x.mount });
+          } catch (err) {
+            result.notes.push(`${project.name}: ${(err as Error).message}`);
+          }
+        }
+        brought.specs = sp.specs.length;
+      } else {
+        forgetSpec(dir);
+        brought.specs = 0;
+      }
     }
     if (sp.chaos) {
       before.touch(chaosFile(dir));
@@ -947,7 +984,7 @@ export function stateSummary(s: DxState): string {
     n("tools") && `${n("tools")} tools`,
     n("mocks") && `${n("mocks")} mocks`,
     n("rules") && `${n("rules")} rules`,
-    n("spec") && `${n("spec")} API specs`,
+    n("specs") && `${n("specs")} API specs`,
     n("chaos") && `${n("chaos")} chaos settings`,
     n("scenes") && `${n("scenes")} data scenes`,
     n("note") && `${n("note")} notes`,

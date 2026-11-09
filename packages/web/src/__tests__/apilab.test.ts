@@ -194,11 +194,11 @@ test("repeater: sends to the project's own dev server only, and keeps a masked h
 test("the API spec: found in the project and on the running app, mapped against real calls", async () => {
   const found = await api(`/api/lab/spec?dir=${encodeURIComponent(app)}`);
   assert.deepEqual(found.files, ["docs/openapi.json"]);
-  assert.deepEqual([found.spec.source, found.spec.found], ["file:docs/openapi.json", true], "found by itself, nothing to set up");
+  assert.deepEqual([found.specs.length, found.specs[0].source, found.specs[0].found], [1, "file:docs/openapi.json", true], "found by itself, nothing to set up");
   // Removed on purpose, it isn't found again, and the running app isn't searched for one.
   await api("/api/lab/spec/forget", { dir: app });
   const gone = await api(`/api/lab/spec?dir=${encodeURIComponent(app)}`);
-  assert.deepEqual([gone.spec, gone.removed, gone.looking], [undefined, true, false]);
+  assert.deepEqual([gone.specs, gone.removed, gone.looking], [[], true, false]);
   assert.equal((await call("/api/lab/spec", { dir: app, file: "../outside.json" })).status, 400, "only files inside the project");
 
   const fromServer = await api("/api/lab/spec", { dir: app });
@@ -207,7 +207,8 @@ test("the API spec: found in the project and on the running app, mapped against 
   assert.equal(fromFile.source, "file:docs/openapi.json");
   await viaProxy("/api/users/alice");
   await viaProxy("/api/orders");
-  const mapped = (await api(`/api/lab/spec?dir=${encodeURIComponent(app)}`)).spec.map;
+  const mapped = await api(`/api/lab/spec?dir=${encodeURIComponent(app)}`);
+  mapped.endpoints = mapped.specs[0].endpoints;
   const users = mapped.endpoints.find((e: { path: string }) => e.path === "/api/users/{name}");
   assert.equal(users.calls, 1);
   assert.ok(users.issues.some((i: string) => /name is missing/.test(i)), users.issues.join("; "));

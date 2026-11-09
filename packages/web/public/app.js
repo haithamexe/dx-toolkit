@@ -979,6 +979,7 @@ const pages = [
   { id: "chaos", label: "Break it", icon: "chaos", render: chaosPage, project: true },
   { id: "env", label: "Env & secrets", icon: "key", render: envPage, project: true },
   { id: "projects", label: "All projects", icon: "projects", render: projectsPage, group: "everything" },
+  { id: "agents", label: "Agents", icon: "ai", render: agentsPage, group: "everything" },
   { id: "machine", label: "This computer", icon: "machine", render: machinePage, group: "everything", tab: "Machine" },
   { id: "summary", label: "Look back", icon: "summary", render: summaryPage, group: "everything", tab: "Summary" },
   { id: "ports", label: "Ports", icon: "ports", render: portsPage, under: "machine" },
@@ -1197,27 +1198,35 @@ function specCard(dir) {
       return fill(el, title, h("div", { class: "card card-pad" }, errorView(err, load)));
     }
     if (stopped) return;
-    const s = r.spec;
-    const called = s ? s.map.endpoints.filter((e) => e.calls).length : 0;
-    const mismatched = s ? s.map.endpoints.filter((e) => e.issues.length).length : 0;
+    const specs = r.specs ?? [];
+    const several = specs.length > 1;
     fill(
       el,
-      h("div", { class: "section-head" }, title, s ? toApiPage("Open on the API page") : null),
+      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "spec-title" }, several ? "API specs" : "API spec"), specs.length ? toApiPage(several ? "Open on the API page" : "Open on the API page") : null),
       h(
         "div",
         { class: "card card-pad section" },
-        s
+        specs.length
           ? [
-              h("p", null, h("strong", null, `${s.title}${s.version ? ` ${s.version}` : ""}`), h("span", { class: "dim" }, ` · ${s.kind}, ${specSourceText(s.source)}${s.found ? ", found by dx" : ""}`)),
-              h(
-                "div",
-                { class: "machine-badges" },
-                h("span", { class: "badge" }, plural(s.map.endpoints.length, "endpoint")),
-                h("span", { class: "badge" }, `${called} called this week`),
-                s.map.undocumented.length ? h("span", { class: "badge badge-warn" }, `${plural(s.map.undocumented.length, "call")} it doesn't have`) : null,
-                mismatched ? h("span", { class: "badge badge-warn" }, `${plural(mismatched, "endpoint")} answering differently`) : null,
-              ),
-              h("p", { class: "dim" }, "Activity names each call by its endpoint, the tour lists it, mocks and Break it's unused routes start from it, and AI agents get it through dx."),
+              ...specs.map((s) => {
+                const called = s.endpoints.filter((e) => e.calls).length;
+                const mismatched = s.endpoints.filter((e) => e.issues.length).length;
+                return h(
+                  "div",
+                  { class: "spec-api" },
+                  h("p", null, h("strong", null, several ? s.name : `${s.title}${s.version ? ` ${s.version}` : ""}`), several && s.name !== s.title ? h("span", { class: "dim" }, ` ${s.title}${s.version ? ` ${s.version}` : ""}`) : null, h("span", { class: "dim" }, ` · ${s.kind}, ${specSourceText(s.source)}${s.found ? ", found by dx" : ""}${s.service ? `, service ${s.service}` : ""}${s.mount ? `, served at ${s.mount}` : ""}`)),
+                  h(
+                    "div",
+                    { class: "machine-badges" },
+                    h("span", { class: "badge" }, plural(s.endpoints.length, "endpoint")),
+                    h("span", { class: "badge" }, `${called} called this week`),
+                    mismatched ? h("span", { class: "badge badge-warn" }, `${plural(mismatched, "endpoint")} answering differently`) : null,
+                  ),
+                );
+              }),
+              r.undocumented?.length ? h("div", { class: "machine-badges" }, h("span", { class: "badge badge-warn" }, `${plural(r.undocumented.length, "call")} no API has`)) : null,
+              r.overlaps?.length ? h("p", { class: "note note-warn" }, icon("warn"), h("span", null, `${plural(r.overlaps.length, "endpoint")} in more than one API (${r.overlaps.slice(0, 2).map((o) => `${o.method} ${o.path} in ${o.apis.join(" and ")}`).join("; ")}${r.overlaps.length > 2 ? "…" : ""}). Say which service each is, or where it's served, on the API page, so their calls and mocks stay apart.`)) : null,
+              h("p", { class: "dim" }, "Activity names each call by its endpoint and API, the tour lists them, mocks and Break it's unused routes start from them, and AI agents get them through dx."),
             ]
           : r.looking
             ? loadingView("Looking for its API spec on the running app…")
@@ -2507,22 +2516,22 @@ function tourSection(dir) {
             ),
           )
         : null,
-      t.spec
-        ? section(
-            `API spec: ${t.spec.title}${t.spec.version ? ` ${t.spec.version}` : ""}`,
-            h("p", { class: "dim" }, `${t.spec.kind}, ${specSourceText(t.spec.source)}. ${plural(t.spec.endpoints.length, "endpoint")}, ${t.spec.endpoints.filter((e) => e.calls).length} called in the history${t.spec.undocumented ? `, and ${plural(t.spec.undocumented, "call")} it doesn't have` : ""}.`),
+      ...(t.specs ?? []).map((sp) =>
+        section(
+          `API spec: ${t.specs.length > 1 ? sp.name : `${sp.title}${sp.version ? ` ${sp.version}` : ""}`}`,
+          h("p", { class: "dim" }, `${sp.title}${sp.version ? ` ${sp.version}` : ""}, ${sp.kind}, ${specSourceText(sp.source)}${sp.service ? `, service ${sp.service}` : ""}. ${plural(sp.endpoints.length, "endpoint")}, ${sp.endpoints.filter((e) => e.calls).length} called in the history${t.undocumented ? `; ${plural(t.undocumented, "call")} no API has` : ""}.`),
+          h(
+            "div",
+            { class: "table-wrap" },
             h(
-              "div",
-              { class: "table-wrap" },
-              h(
-                "table",
-                { class: "table" },
-                h("thead", null, h("tr", null, h("th", { scope: "col" }, "Endpoint"), h("th", { scope: "col" }, "What"), h("th", { scope: "col", class: "num" }, "Calls"))),
-                h("tbody", null, t.spec.endpoints.slice(0, 150).map((e) => h("tr", null, h("td", { class: "mono" }, `${e.method} ${e.path}`), h("td", null, e.summary ?? h("span", { class: "dim" }, "—")), h("td", { class: "num" }, String(e.calls))))),
-              ),
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null, h("th", { scope: "col" }, "Endpoint"), h("th", { scope: "col" }, "What"), h("th", { scope: "col", class: "num" }, "Calls"))),
+              h("tbody", null, sp.endpoints.slice(0, 150).map((e) => h("tr", null, h("td", { class: "mono" }, `${e.method} ${e.path}`), h("td", null, e.summary ?? h("span", { class: "dim" }, "—")), h("td", { class: "num" }, String(e.calls))))),
             ),
-          )
-        : null,
+          ),
+        ),
+      ),
       t.data ? section("Data", h("p", { class: "dim" }, `From ${t.data.file}.`), h("div", { class: "machine-badges" }, t.data.tables.map((x) => h("span", { class: "badge" }, `${x.name}${x.links.length ? ` → ${x.links.join(", ")}` : ""}`)))) : null,
       t.folders.some((f) => f.what) ? section("Where things are", h("ul", { class: "tour-list" }, t.folders.filter((f) => f.what).map((f) => h("li", null, h("code", { class: "mono" }, `${f.path}/`), ` ${f.what} `, h("span", { class: "dim" }, `(${plural(f.files, "file")})`))))) : null,
       t.busy.length ? section("Where the work happens", h("p", { class: "dim" }, "Changed most in the last 90 days."), h("ul", { class: "tour-list" }, t.busy.map((b) => h("li", null, openFile(b.file), h("span", { class: "dim" }, ` ${plural(b.commits, "commit")}`))))) : null,
@@ -3968,44 +3977,99 @@ function requestsPage(root) {
     };
     const useSpec = async (button, body) => {
       const r = await busy(button, "Reading…", () => api("/api/lab/spec", { method: "POST", body: { dir, ...body } }));
-      if (r) (toast(`${r.title}: ${plural(r.map.endpoints.length, "endpoint")}`), loadSpec());
+      if (r) (toast(`${r.name}: ${plural(r.endpoints.length, "endpoint")}`), loadSpec());
     };
-    const drawSpec = (s) => {
-      if (!s.spec) {
-        const paste = h("textarea", { class: "input lab-text mono", rows: 5, placeholder: "openapi: 3.0.3 …  (or the JSON)", "aria-label": "Paste an OpenAPI or Swagger spec" });
-        specCard.replaceChildren(
-          h("h2", { class: "section-title" }, "API spec"),
-          h("p", { class: "dim" }, "An OpenAPI (Swagger) spec maps every endpoint, checks real answers against it, and makes a mock server that answers from the first call."),
-          s.files.length
-            ? h("div", { class: "section" }, h("p", null, "Found in the project:"), h("div", { class: "toolbar" }, s.files.map((f) => btn(f, (ev) => useSpec(ev.currentTarget, { file: f }), { small: true, iconName: "check" }))))
-            : h("p", { class: "dim" }, "No openapi.json, openapi.yaml or swagger file in the project."),
+    // The panel that adds an API: files in the project that aren't one yet, the running app, or pasted text; with its name,
+    // and (for a stack) which service it is and where it's served, so several APIs' calls and mocks stay apart.
+    const addPanel = (s, first) => {
+      const name = h("input", { class: "input", id: "api-name", placeholder: "e.g. orders", "aria-label": "The API's name", autocomplete: "off" });
+      const service = h("input", { class: "input", id: "api-service", placeholder: "only in a stack", "aria-label": "Which service it is", autocomplete: "off" });
+      const mount = h("input", { class: "input", id: "api-mount", placeholder: "e.g. /payments", "aria-label": "Where it's served", autocomplete: "off" });
+      const paste = h("textarea", { class: "input lab-text mono", rows: 4, placeholder: "openapi: 3.0.3 …  (or the JSON)", "aria-label": "Paste an OpenAPI or Swagger spec" });
+      const extra = () => ({ ...(name.value.trim() ? { name: name.value.trim() } : {}), ...(service.value.trim() ? { service: service.value.trim() } : {}), ...(mount.value.trim() ? { mount: mount.value.trim() } : {}) });
+      const files = first ? s.files : s.more;
+      return h(
+        "div",
+        { class: "section api-add" },
+        first ? h("p", { class: "dim" }, "An OpenAPI (Swagger) spec maps every endpoint, checks real answers against it, and makes a mock server that answers from the first call. A project can have several: each is its own API, and its endpoints and mocks know which.") : null,
+        files.length ? h("div", { class: "section" }, h("p", null, first ? "Found in the project:" : "Also in the project:"), h("div", { class: "toolbar" }, files.map((f) => btn(f, (ev) => useSpec(ev.currentTarget, { file: f, ...extra() }), { small: true, iconName: "check" })))) : first ? h("p", { class: "dim" }, "No openapi.json, openapi.yaml or swagger file in the project.") : null,
+        h("div", { class: "toolbar" }, btn("Read it from the running app", (ev) => useSpec(ev.currentTarget, extra()), { small: true, iconName: "external", disabled: !s.running, title: s.running ? `Looks at ${s.urls.slice(0, 4).join(", ")}…` : "Start the project's dev server first" })),
+        h("label", { class: "field" }, h("span", { class: "field-label" }, "Or paste it"), paste),
+        h("div", { class: "toolbar" }, btn("Use it", (ev) => paste.value.trim() && useSpec(ev.currentTarget, { text: paste.value, ...extra() }), { small: true })),
+        h(
+          "div",
+          { class: "form-grid" },
+          h("label", { class: "field", for: "api-name" }, h("span", { class: "field-label" }, "Name"), name, h("span", { class: "field-hint" }, "Before you add it; its title when left empty")),
+          h("label", { class: "field", for: "api-service" }, h("span", { class: "field-label" }, "Service"), service, h("span", { class: "field-hint" }, "Calls to this stack service belong to it")),
+          h("label", { class: "field", for: "api-mount" }, h("span", { class: "field-label" }, "Served at"), mount, h("span", { class: "field-hint" }, "When that isn't the spec's own base path")),
+        ),
+      );
+    };
+    // One API: its name, where it comes from, who it is, and what to do with it.
+    const apiRow = (a, several) => {
+      const called = a.endpoints.filter((e) => e.calls).length;
+      const issues = a.endpoints.filter((e) => e.issues.length).length;
+      const name = h("input", { class: "input", value: a.name, "aria-label": "Name", autocomplete: "off" });
+      const service = h("input", { class: "input", value: a.service ?? "", placeholder: "only in a stack", "aria-label": "Service", autocomplete: "off" });
+      const mount = h("input", { class: "input", value: a.mount ?? "", placeholder: a.basePath || "/", "aria-label": "Served at", autocomplete: "off" });
+      return h(
+        "div",
+        { class: "card card-pad section api-card" },
+        h(
+          "div",
+          { class: "section-head" },
+          h("div", null, h("h3", { class: "section-title" }, a.name), h("p", { class: "dim" }, `${a.title}${a.version ? ` ${a.version}` : ""} · ${a.kind} · from ${a.source.replace(/^file:/, "").replace(/^url:/, "the app at ")}${a.basePath ? ` · base ${a.basePath}` : ""}${a.found ? " · found by dx" : ""}`)),
           h(
             "div",
             { class: "toolbar" },
-            btn("Read it from the running app", (ev) => useSpec(ev.currentTarget, {}), { small: true, iconName: "external", disabled: !s.running, title: s.running ? `Looks at ${s.urls.slice(0, 4).join(", ")}…` : "Start the project's dev server first" }),
+            btn("Make mocks", async (ev) => {
+              const b = ev.currentTarget;
+              const r = await busy(b, "Making…", () => api("/api/lab/spec/mocks", { method: "POST", body: { dir, api: a.id } }));
+              if (r) (toast(`${a.name}: ${r.added} new mocks, ${r.replaced} updated${r.kept ? `, ${r.kept} you edited kept` : ""}`), loadMocks());
+            }, { small: true, kind: "primary", iconName: "template", title: `Mocks of ${a.name} only; other APIs' mocks stay` }),
+            btn("Remove", async (ev) => {
+              const b = ev.currentTarget;
+              if (!(await confirmDialog({ title: `Remove the API ${a.name}?`, text: "Its spec is forgotten here (the file stays in the project). Its mocks stay until you purge them.", confirm: "Remove" }))) return;
+              const ok = await busy(b, "…", () => api("/api/lab/spec/forget", { method: "POST", body: { dir, id: a.id } }));
+              if (ok) (loadSpec(), loadMocks());
+            }, { small: true, kind: "danger-ghost", iconName: "x" }),
           ),
-          h("label", { class: "field" }, h("span", { class: "field-label" }, "Or paste it"), paste),
-          h("div", { class: "toolbar" }, btn("Use it", (ev) => paste.value.trim() && useSpec(ev.currentTarget, { text: paste.value }), { small: true })),
-        );
+        ),
+        h("div", { class: "stats" }, statTile(a.endpoints.length, "endpoints"), statTile(`${called}`, "called in the last 7 days"), statTile(issues, issues === 1 ? "endpoint answering off-spec" : "endpoints answering off-spec")),
+        h(
+          "div",
+          { class: "form-grid" },
+          h("label", { class: "field" }, h("span", { class: "field-label" }, "Name"), name),
+          h("label", { class: "field" }, h("span", { class: "field-label" }, "Service"), service, h("span", { class: "field-hint" }, "In a stack: calls to this service belong to this API, and so do its mocks")),
+          h("label", { class: "field" }, h("span", { class: "field-label" }, "Served at"), mount, h("span", { class: "field-hint" }, "Leave empty for the spec's own base path")),
+        ),
+        h("div", { class: "toolbar" }, btn("Save", async (ev) => {
+          const b = ev.currentTarget;
+          const r = await busy(b, "Saving…", () => api("/api/lab/spec/update", { method: "POST", body: { dir, id: a.id, name: name.value, service: service.value.trim(), mount: mount.value.trim() } }));
+          if (r) (toast(`${r.name} saved`), loadSpec());
+        }, { small: true, iconName: "save" }), several ? h("span", { class: "dim" }, `Its id is ${a.id}`) : null),
+      );
+    };
+    const drawSpec = (s) => {
+      if (!s.specs.length) {
+        specCard.replaceChildren(h("h2", { class: "section-title" }, "API spec"), addPanel(s, true));
         mapCard.replaceChildren();
         return;
       }
-      const sp = s.spec;
-      const map = sp.map;
-      const called = map.endpoints.filter((e) => e.calls).length;
-      const issues = map.endpoints.filter((e) => e.issues.length).length;
+      const several = s.specs.length > 1;
       specCard.replaceChildren(
-        h("div", { class: "section-head" }, h("div", null, h("h2", { class: "section-title" }, `${sp.title} ${sp.version}`), h("p", { class: "dim" }, `${sp.kind} · from ${sp.source.replace(/^file:/, "").replace(/^url:/, "the app at ")}${sp.basePath ? ` · base ${sp.basePath}` : ""}`)), h("div", { class: "toolbar" }, btn("Make mocks from it", async (ev) => {
+        h("div", { class: "section-head" }, h("h2", { class: "section-title" }, several ? `${s.specs.length} API specs` : "API spec"), h("div", { class: "toolbar" }, several ? btn("Make mocks from all", async (ev) => {
           const b = ev.currentTarget;
           const r = await busy(b, "Making…", () => api("/api/lab/spec/mocks", { method: "POST", body: { dir } }));
-          if (r) (toast(`${plural(r.endpoints, "mock")}: ${r.added} new, ${r.replaced} updated${r.kept ? `, ${r.kept} you edited kept` : ""}`), loadMocks());
-        }, { small: true, kind: "primary", iconName: "template" }), btn("Use another spec", async (ev) => {
-          const b = ev.currentTarget;
-          const ok = await busy(b, "…", () => api("/api/lab/spec/forget", { method: "POST", body: { dir } }));
-          if (ok) loadSpec();
-        }, { small: true, kind: "ghost" }))),
-        h("div", { class: "stats" }, statTile(map.endpoints.length, "endpoints in the spec"), statTile(`${called}`, "called in the last 7 days"), statTile(issues, issues === 1 ? "endpoint answering off-spec" : "endpoints answering off-spec"), statTile(map.undocumented.length, "calls not in the spec")),
+          if (r) (toast(`${plural(r.apis, "API")}: ${r.added} new mocks, ${r.replaced} updated${r.kept ? `, ${r.kept} you edited kept` : ""}`), loadMocks());
+        }, { small: true, kind: "primary", iconName: "template" }) : null)),
+        s.overlaps.length
+          ? h("p", { class: "note note-warn" }, icon("warn"), h("span", null, `${plural(s.overlaps.length, "endpoint")} in more than one API: ${s.overlaps.slice(0, 3).map((o) => `${o.method} ${o.path} (${o.apis.join(" and ")})`).join("; ")}${s.overlaps.length > 3 ? "…" : ""}. A call or mock can only be told apart when each API says which service it is or where it's served; until then the first one has it.`))
+          : null,
+        ...s.specs.map((a) => apiRow(a, several)),
+        h("details", { class: "api-add-more" }, h("summary", null, "Add another API"), addPanel(s, false)),
       );
+      const rows = s.specs.flatMap((a) => a.endpoints.map((e) => ({ ...e, apiName: a.name })));
       mapCard.replaceChildren(
         h(
           "section",
@@ -4017,15 +4081,16 @@ function requestsPage(root) {
             h(
               "table",
               { class: "table" },
-              h("thead", null, h("tr", null, h("th", { scope: "col" }, "Endpoint"), h("th", { scope: "col", class: "num" }, "Calls"), h("th", { scope: "col" }, "Answers"), h("th", { scope: "col" }, "Off the spec"))),
+              h("thead", null, h("tr", null, h("th", { scope: "col" }, "Endpoint"), several ? h("th", { scope: "col" }, "API") : null, h("th", { scope: "col", class: "num" }, "Calls"), h("th", { scope: "col" }, "Answers"), h("th", { scope: "col" }, "Off the spec"))),
               h(
                 "tbody",
                 null,
-                map.endpoints.map((e) =>
+                rows.map((e) =>
                   h(
                     "tr",
                     null,
                     h("td", null, h("span", { class: "mono" }, `${e.method} ${e.path}`), e.summary || e.operationId ? h("div", { class: "dim" }, e.summary ?? e.operationId) : null),
+                    several ? h("td", null, h("span", { class: "badge" }, e.apiName)) : null,
                     h("td", { class: "num" }, e.calls || h("span", { class: "dim" }, "never")),
                     h("td", null, h("div", { class: "machine-badges" }, e.statuses.map((st) => h("span", { class: `badge ${st >= 400 ? "badge-danger" : "badge-ok"}` }, String(st))))),
                     h("td", null, e.issues.length ? h("ul", { class: "lab-issues" }, e.issues.map((i) => h("li", null, i))) : e.calls ? h("span", { class: "badge badge-ok" }, "fits") : null),
@@ -4034,8 +4099,8 @@ function requestsPage(root) {
               ),
             ),
           ),
-          map.undocumented.length
-            ? h("div", { class: "card card-pad" }, h("p", null, h("strong", null, "Called, but not in the spec")), h("ul", { class: "lab-issues" }, map.undocumented.map((u) => h("li", { class: "mono" }, `${u.method} ${u.path} · ${plural(u.calls, "call")}${u.lastStatus ? ` · last ${u.lastStatus}` : ""}`))))
+          s.undocumented.length
+            ? h("div", { class: "card card-pad" }, h("p", null, h("strong", null, `Called, but ${several ? "in none of the APIs" : "not in the spec"}`)), h("ul", { class: "lab-issues" }, s.undocumented.map((u) => h("li", { class: "mono" }, `${u.method} ${u.path} · ${plural(u.calls, "call")}${u.lastStatus ? ` · last ${u.lastStatus}` : ""}`))))
             : null,
         ),
       );
@@ -4131,7 +4196,7 @@ function requestsPage(root) {
       const main = h(
         "tr",
         null,
-        h("td", null, h("span", { class: "mono" }, `${e.method} ${e.pattern ?? e.path}`), e.operation || e.example ? h("div", { class: "dim" }, [e.operation, e.example && `example ${e.example}`].filter(Boolean).join(" · ")) : null),
+        h("td", null, h("span", { class: "mono" }, `${e.method} ${e.pattern ?? e.path}`), e.apiName ? h("span", { class: "badge", title: `Made from the API ${e.apiName}${e.service ? `, service ${e.service}` : ""}` }, e.apiName) : null, e.operation || e.example ? h("div", { class: "dim" }, [e.operation, e.example && `example ${e.example}`].filter(Boolean).join(" · ")) : null),
         h("td", null, h("span", { class: `badge ${e.status >= 400 ? "badge-danger" : "badge-ok"}` }, String(e.status)), e.enabled ? null : h("span", { class: "badge" }, "off"), h("div", { class: "dim mono lab-preview" }, e.preview.slice(0, 120))),
         h("td", null, h("span", { class: `badge ${e.source === "ai" ? "badge-accent" : ""}` }, MOCK_SOURCES[e.source ?? "recorded"]), e.edited ? h("span", { class: "badge" }, "edited") : null),
         h(
@@ -8357,7 +8422,9 @@ function activityPage(root) {
     try {
       const r = await api(`/api/lab/spec?dir=${encodeURIComponent(d)}`);
       if (d !== dir || stopped) return;
-      apiSpec = { dir: d, spec: r.spec ? { title: r.spec.title, version: r.spec.version, endpoints: r.spec.map.endpoints.map((e) => ({ ...e, re: specPathRe(e.path) })) } : null };
+      // Every API of the project: each endpoint keeps which API it's in (and its stack service, to tell same paths apart).
+      const apis = r.specs ?? [];
+      apiSpec = { dir: d, spec: apis.length ? { several: apis.length > 1, title: apis.length > 1 ? `${apis.length} APIs` : apis[0].title, version: apis.length > 1 ? "" : apis[0].version, names: apis.map((a) => a.name), endpoints: apis.flatMap((a) => a.endpoints.map((e) => ({ ...e, apiName: a.name, apiService: a.service, re: specPathRe(e.path) }))) } : null };
     } catch {
       apiSpec = { dir: d, spec: null };
     }
@@ -8365,9 +8432,10 @@ function activityPage(root) {
   }
 
   /** A spec endpoint for a call, by method and path (a folded :id fits any {param}); the exact path wins. */
-  function specEndpointFor(endpoint) {
+  function specEndpointFor(endpoint, service) {
     const [method, p] = endpoint.split(" ");
-    const fits = (apiSpec?.spec?.endpoints ?? []).filter((e) => e.method === method && e.re.test(p.split("?")[0]));
+    // A stack's call only fits an API that is that service (or one that isn't tied to a service).
+    const fits = (apiSpec?.spec?.endpoints ?? []).filter((e) => e.method === method && e.re.test(p.split("?")[0]) && !(service && e.apiService && e.apiService !== service));
     return fits.sort((a, b) => b.path.split("/").filter((s) => !s.includes("{")).length - a.path.split("/").filter((s) => !s.includes("{")).length)[0];
   }
 
@@ -8385,19 +8453,19 @@ function activityPage(root) {
     const ownCall = (g) => !g.env || g.env === "local";
     const matched = new Set();
     for (const g of groups.values()) {
-      g.spec = spec && ownCall(g) ? specEndpointFor(g.endpoint) : undefined;
-      if (g.spec) matched.add(`${g.spec.method} ${g.spec.path}`);
+      g.spec = spec && ownCall(g) ? specEndpointFor(g.endpoint, g.service) : undefined;
+      if (g.spec) matched.add(`${g.spec.apiName}|${g.spec.method} ${g.spec.path}`);
     }
-    const uncalled = spec ? spec.endpoints.filter((e) => !matched.has(`${e.method} ${e.path}`)) : [];
+    const uncalled = spec ? spec.endpoints.filter((e) => !matched.has(`${e.apiName}|${e.method} ${e.path}`)) : [];
     const specNote = spec
       ? h(
           "details",
           { class: "card card-pad api-spec-note" },
-          h("summary", null, h("strong", null, `API spec: ${spec.title}${spec.version ? ` ${spec.version}` : ""}`), h("span", { class: "dim" }, ` · ${plural(spec.endpoints.length, "endpoint")}, ${uncalled.length ? `${uncalled.length} not called here` : "all called here"}`)),
+          h("summary", null, h("strong", null, spec.several ? `API specs: ${spec.names.join(", ")}` : `API spec: ${spec.title}${spec.version ? ` ${spec.version}` : ""}`), h("span", { class: "dim" }, ` · ${plural(spec.endpoints.length, "endpoint")}, ${uncalled.length ? `${uncalled.length} not called here` : "all called here"}`)),
           uncalled.length
-            ? h("ul", { class: "tour-list" }, uncalled.slice(0, 100).map((e) => h("li", null, h("span", { class: "badge mono" }, e.method), " ", h("span", { class: "mono" }, e.path), e.summary ? h("span", { class: "dim" }, ` ${e.summary}`) : null)))
+            ? h("ul", { class: "tour-list" }, uncalled.slice(0, 100).map((e) => h("li", null, h("span", { class: "badge mono" }, e.method), " ", h("span", { class: "mono" }, e.path), spec.several ? h("span", { class: "badge" }, e.apiName) : null, e.summary ? h("span", { class: "dim" }, ` ${e.summary}`) : null)))
             : h("p", { class: "dim" }, "Every endpoint in the spec was called in this time."),
-          h("p", { class: "dim" }, "From the project's API spec, given or found by dx: ", h("a", { href: "#/requests", onclick: () => setPref("labTab", "api") }, "see it on the API page"), "."),
+          h("p", { class: "dim" }, spec.several ? "From the project's API specs, given or found by dx: " : "From the project's API spec, given or found by dx: ", h("a", { href: "#/requests", onclick: () => setPref("labTab", "api") }, "see it on the API page"), "."),
         )
       : null;
     if (!groups.size) return holder.replaceChildren(...[specNote, stateView("No API calls", "Requests your app makes to its API show up here, each endpoint with its calls, payloads, responses and times.")].filter(Boolean));
@@ -8441,8 +8509,9 @@ function activityPage(root) {
                 { class: "api-endpoint" },
                 h("span", { class: "badge mono" }, method),
                 h("span", { class: "mono" }, rest.join(" ")),
+                g.spec && spec?.several ? h("span", { class: "badge", title: `${g.spec.method} ${g.spec.path} in the API ${g.spec.apiName}` }, g.spec.apiName) : null,
                 g.spec?.summary ? h("span", { class: "dim api-spec-summary", title: `${g.spec.method} ${g.spec.path} in the API spec` }, g.spec.summary) : null,
-                spec && ownCall(g) && !g.spec && (method !== "GET" || /\/api\/|graphql|trpc/.test(rest.join(" "))) ? h("span", { class: "badge badge-warn", title: "The project's API spec has no endpoint for this call" }, "not in the spec") : null,
+                spec && ownCall(g) && !g.spec && (method !== "GET" || /\/api\/|graphql|trpc/.test(rest.join(" "))) ? h("span", { class: "badge badge-warn", title: spec.several ? "None of the project's API specs has an endpoint for this call" : "The project's API spec has no endpoint for this call" }, "not in the spec") : null,
                 g.spec?.issues?.length ? h("span", { class: "badge badge-warn", title: g.spec.issues.join("\n") }, "doesn't match the spec") : null,
                 many ? h("span", { class: "badge" }, g.project) : null,
                 envBadge(g.env),
@@ -10745,6 +10814,233 @@ function toolsPage(root) {
   return () => {
     stopped = true;
     clearTimeout(watchTimer);
+  };
+}
+
+// ------------------------------------------------------------------ Agents
+
+/** An SVG element with attributes and children (strings become text nodes: never HTML). */
+function agentSvg(tag, attrs = {}, ...children) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null && v !== false) el.setAttribute(k, String(v));
+  el.append(...children);
+  return el;
+}
+
+const AGENT_NODE = { w: 268, h: 66, gapX: 60, gapY: 14, pad: 16 };
+const AGENT_STATUS = { working: "Working", waiting: "Waiting for you", idle: "Idle", done: "Done", stopped: "Stopped" };
+
+/** A tool's name for people: mcp__dx__dx_do → "dx · dx_do". */
+function agentToolName(name) {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name ?? "");
+  return m ? `${m[1]} · ${m[2]}` : (name ?? "");
+}
+const clipText = (s, n) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : (s ?? ""));
+const shortModel = (m) => (m ? m.replace(/^claude-/, "").replace(/-\d{8}$/, "") : "");
+
+/** The tree's layout: a session at the left, each subagent one column to the right of what started it, leaves in rows. */
+function layoutAgents(agents) {
+  const byId = new Map(agents.map((a) => [a.id, { ...a, kids: [] }]));
+  const roots = [];
+  for (const n of byId.values()) {
+    const p = n.parent ? byId.get(n.parent) : undefined;
+    (p ? p.kids : roots).push(n);
+  }
+  let row = 0;
+  let columns = 1;
+  const place = (n, col) => {
+    columns = Math.max(columns, col + 1);
+    n.x = AGENT_NODE.pad + col * (AGENT_NODE.w + AGENT_NODE.gapX);
+    if (!n.kids.length) {
+      n.y = AGENT_NODE.pad + row * (AGENT_NODE.h + AGENT_NODE.gapY);
+      row++;
+      return;
+    }
+    n.kids.sort((a, b) => (a.startedAt ?? a.lastAt).localeCompare(b.startedAt ?? b.lastAt));
+    for (const k of n.kids) place(k, col + 1);
+    n.y = (n.kids[0].y + n.kids[n.kids.length - 1].y) / 2;
+  };
+  for (const r of roots) {
+    place(r, 0);
+    row += 0.5;
+  }
+  return {
+    nodes: [...byId.values()],
+    width: AGENT_NODE.pad * 2 + columns * AGENT_NODE.w + (columns - 1) * AGENT_NODE.gapX,
+    height: AGENT_NODE.pad * 2 + Math.max(1, row) * (AGENT_NODE.h + AGENT_NODE.gapY),
+  };
+}
+
+/** What's worth showing "now": working or waiting, with what they hang from. */
+function activeAgents(agents) {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const keep = new Set();
+  for (const a of agents) {
+    if (a.status !== "working" && a.status !== "waiting") continue;
+    for (let n = a; n && !keep.has(n.id); n = n.parent ? byId.get(n.parent) : undefined) keep.add(n.id);
+  }
+  return agents.filter((a) => keep.has(a.id));
+}
+
+function agentsPage(root) {
+  const statTile = (value, label) => h("div", { class: "card stat" }, h("div", { class: "stat-value" }, String(value)), h("div", { class: "stat-label" }, label));
+  let data = null;
+  let range = pref("agentsRange", "active");
+  let only = pref("agentsProject", "");
+  let selected = "";
+  let sig = "";
+  let stopped = false;
+  let timer = 0;
+  const graph = h("div", { class: "agent-graph card", role: "region", "aria-label": "Agents and their subagents" });
+  const detail = h("div", { class: "agent-detail" });
+  const stats = h("div", { class: "stats" });
+  const filters = h("div", { class: "toolbar" });
+  append(
+    root,
+    pageHead("Agents", "The AI agents on this computer and the subagents they started, live. dx reads only the names of tools, models, titles and times from Claude Code's session files, never your messages."),
+    filters,
+    stats,
+    graph,
+    detail,
+  );
+
+  const hours = () => (range === "week" ? 168 : 24);
+  async function load() {
+    try {
+      data = await api(`/api/agents?hours=${hours()}`);
+    } catch (err) {
+      if (!data) fill(graph, errorView(err, load));
+      return;
+    }
+    draw();
+  }
+
+  function visible() {
+    let list = data.agents;
+    if (only) {
+      // A whole session when any of it is in the project.
+      const sessions = new Set(list.filter((a) => a.project === only).map((a) => a.id.split(":")[1]));
+      list = list.filter((a) => sessions.has(a.id.split(":")[1]));
+    }
+    return range === "active" ? activeAgents(list) : list;
+  }
+
+  function drawFilters() {
+    const projects = [...new Set(data.agents.map((a) => a.project).filter(Boolean))].sort();
+    const select = h("select", { "aria-label": "Project", onchange: (e) => ((only = e.target.value), setPref("agentsProject", only), sig = "", draw()) }, h("option", { value: "" }, "All projects"), projects.map((p) => h("option", { value: p, selected: p === only }, p)));
+    fill(filters, segmented("How far back", [["active", "Active now"], ["day", "Last 24 hours"], ["week", "Last 7 days"]], range, (v) => ((range = v), setPref("agentsRange", v), sig = "", load())), projects.length ? select : null);
+  }
+
+  function draw() {
+    drawFilters();
+    const list = visible();
+    const count = (s) => list.filter((a) => a.status === s).length;
+    const sessions = list.filter((a) => a.kind === "session").length;
+    fill(
+      stats,
+      statTile(count("working"), "working"),
+      statTile(count("waiting"), "waiting for you"),
+      statTile(sessions, sessions === 1 ? "session" : "sessions"),
+      statTile(list.length - sessions, list.length - sessions === 1 ? "subagent" : "subagents"),
+      statTile(list.reduce((n, a) => n + a.dxCalls, 0), "calls through dx"),
+    );
+    const next = JSON.stringify(list.map((a) => [a.id, a.status, a.tool, a.calls, a.parent, a.label])) + selected;
+    if (next !== sig) {
+      sig = next;
+      drawGraph(list);
+    }
+    drawDetail(list);
+  }
+
+  function drawGraph(list) {
+    if (!list.length) {
+      return fill(
+        graph,
+        stateView(
+          range === "active" ? "No agent is working right now" : "No agents in this time",
+          "Start Claude Code in a project and its session shows here, with every subagent it starts hanging under it. dx finds them by reading Claude Code's session files on this computer.",
+          range === "active" ? btn("Show the last 24 hours", () => ((range = "day"), setPref("agentsRange", "day"), sig = "", load()), { small: true }) : null,
+        ),
+      );
+    }
+    const L = layoutAgents(list);
+    const byId = new Map(L.nodes.map((n) => [n.id, n]));
+    const edges = L.nodes
+      .filter((n) => n.parent && byId.has(n.parent))
+      .map((n) => {
+        const p = byId.get(n.parent);
+        const x1 = p.x + AGENT_NODE.w;
+        const y1 = p.y + AGENT_NODE.h / 2;
+        const x2 = n.x;
+        const y2 = n.y + AGENT_NODE.h / 2;
+        const mid = (x1 + x2) / 2;
+        return agentSvg("path", { class: `agent-edge agent-edge-${n.status}`, d: `M${x1} ${y1} C${mid} ${y1} ${mid} ${y2} ${x2} ${y2}` });
+      });
+    const nodes = L.nodes.map((n) => {
+      const sub = n.kind === "subagent";
+      const doing = n.status === "working" ? (n.tool ? `Running ${agentToolName(n.tool)}` : "Working") : n.status === "waiting" ? "Waiting for you" : `${AGENT_STATUS[n.status]} · ${relativeTime(Date.parse(n.lastAt))}`;
+      // A session names its project first; a subagent its type.
+      const meta = [sub ? n.agentType : (n.project ?? n.app), shortModel(n.model), n.effort].filter(Boolean).join(" · ");
+      const g = agentSvg(
+        "g",
+        { class: `agent-node agent-${n.status}${sub ? " agent-sub" : ""}${n.id === selected ? " agent-selected" : ""}`, transform: `translate(${n.x} ${n.y})`, tabindex: "0", role: "button", "aria-label": `${sub ? "Subagent" : "Session"} ${n.label}, ${AGENT_STATUS[n.status].toLowerCase()}`, "aria-pressed": String(n.id === selected) },
+        agentSvg("title", {}, `${n.label}\n${doing}${n.project ? `\n${n.project}` : ""}`),
+        agentSvg("rect", { class: "agent-card", width: AGENT_NODE.w, height: AGENT_NODE.h, rx: 10 }),
+        n.status === "working" ? agentSvg("circle", { class: "agent-pulse", cx: 18, cy: 20, r: 6 }) : null,
+        agentSvg("circle", { class: "agent-dot", cx: 18, cy: 20, r: 5 }),
+        agentSvg("text", { class: "agent-label", x: 32, y: 24 }, clipText(n.label, 30)),
+        agentSvg("text", { class: "agent-meta", x: 14, y: 43 }, clipText(meta, 40)),
+        agentSvg("text", { class: "agent-now", x: 14, y: 58 }, clipText(doing, 40)),
+      );
+      const pick = () => ((selected = selected === n.id ? "" : n.id), (sig = ""), draw());
+      g.addEventListener("click", pick);
+      g.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), pick()));
+      return g;
+    });
+    fill(graph, agentSvg("svg", { class: "agent-svg", viewBox: `0 0 ${L.width} ${L.height}`, width: L.width, height: L.height, role: "group", "aria-label": "Agent graph" }, ...edges, ...nodes));
+  }
+
+  function drawDetail(list) {
+    const n = list.find((a) => a.id === selected);
+    if (!n) return fill(detail, list.length ? h("p", { class: "dim" }, "Click an agent to see what it's doing.") : null);
+    const parent = list.find((a) => a.id === n.parent);
+    const kids = list.filter((a) => a.parent === n.id);
+    const proj = projectList.find((p) => p.name === n.project);
+    const max = Math.max(1, ...Object.values(n.tools));
+    const fact = (k, v) => (v ? h("div", { class: "agent-fact" }, h("dt", null, k), h("dd", null, v)) : null);
+    fill(
+      detail,
+      h(
+        "div",
+        { class: "card card-pad section" },
+        h("div", { class: "section-head" }, h("h2", { class: "section-title" }, n.label), h("div", { class: "machine-badges" }, h("span", { class: "badge" }, n.kind === "session" ? "Session" : "Subagent"), n.agentType ? h("span", { class: "badge" }, n.agentType) : null, h("span", { class: `badge ${n.status === "working" ? "badge-accent" : n.status === "waiting" ? "badge-warn" : n.status === "stopped" ? "badge-danger" : n.status === "done" ? "badge-ok" : ""}` }, AGENT_STATUS[n.status]))),
+        h(
+          "dl",
+          { class: "agent-facts" },
+          fact("Doing now", n.tool ? `Running ${agentToolName(n.tool)}` : n.status === "waiting" ? "Waiting for you" : AGENT_STATUS[n.status]),
+          fact("Project", n.project ? (proj ? h("a", { href: `#/overview?dir=${encodeURIComponent(proj.dir)}` }, n.project) : n.project) : null),
+          fact("Folder", n.cwd ? h("span", { class: "mono" }, tildify(n.cwd)) : null),
+          fact("Branch", n.branch),
+          fact("Model", [shortModel(n.model), n.effort && `effort ${n.effort}`].filter(Boolean).join(", ")),
+          fact("Runs in", [n.app, n.permissionMode && `${n.permissionMode} permissions`].filter(Boolean).join(", ")),
+          fact("Started", n.startedAt ? `${new Date(n.startedAt).toLocaleString()} (${relativeTime(Date.parse(n.startedAt))})` : null),
+          fact("Last activity", relativeTime(Date.parse(n.lastAt))),
+          fact("Started by", parent ? h("a", { href: "#/agents", onclick: (e) => (e.preventDefault(), (selected = parent.id), (sig = ""), draw()) }, parent.label) : null),
+          fact("Subagents", kids.length ? `${kids.length} (${kids.filter((k) => k.status === "working").length} working)` : null),
+          fact("Tool calls", n.calls ? `${n.calls}${n.dxCalls ? `, ${n.dxCalls} through dx` : ""} in what dx read` : null),
+        ),
+        Object.keys(n.tools).length
+          ? h("ul", { class: "tool-bars" }, Object.entries(n.tools).map(([name, c]) => h("li", null, h("span", { class: "tool-bar-label mono" }, agentToolName(name)), h("span", { class: "tool-bar-track" }, h("span", { class: "tool-bar", style: { width: `${(c / max) * 100}%` } })), h("span", { class: "tool-bar-value" }, String(c)))))
+          : null,
+      ),
+    );
+  }
+
+  void load();
+  timer = setInterval(() => !document.hidden && !stopped && load(), 3000);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
   };
 }
 

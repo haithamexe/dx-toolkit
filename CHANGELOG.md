@@ -4,6 +4,13 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **Several API specs per project**: add as many as the project has (**Add another API** on the API page, or `dx mock spec <project> <file> --name payments`). Each API has a name; its endpoints and its mocks know which API they're from, so the same path in two APIs keeps both, and **Make mocks**, purging and removing work per API. Say which stack service each API is (`--service`) or where it's served (`--mount /payments`) and calls and mocks go to the right one; when two APIs can't be told apart, dx names the endpoints they share. Overview, Activity (an API badge on each call), the tour, `api_map` for AI agents and the state export all list every API. A project's single spec from before is read as one API.
+- **Agents page**: every AI agent working on this computer as a node graph. Each Claude Code session is a node, its subagents (and theirs) hang off it, and a line pulses while one works. Status (working, waiting for you, idle, done, stopped), model, effort, project, the tool each runs now, and a detail panel with branch, permission mode, tools used and calls through dx. Read from Claude Code's session files, metadata only: never messages, prompts, tool inputs or results (it does show titles, a subagent's one-line task description and its folder). `GET /api/agents`, `agents.list` for AI agents, and the `dx://agents` resource.
+- **dx's MCP server like other MCP servers**: resources (`dx://projects`, `dx://actions`, `dx://agents`, `dx://project/<name>`), prompts (`fix_errors`, `ship_check`, `understand_project`, `break_it`, `whats_running`, with the project name completed as you type) and structured results from `dx_do` and `dx_do_risky`.
+- **Develop dx through your AI agent**: `dev.info`, `dev.files`, `dev.read`, `dev.build`, `dev.test`, `dev.job`, and, as risky ones that ask first, `dev.write` and `dev.restart`. Only dx's own repository when it's one of your projects; fixed commands; files inside it only, never git, `node_modules`, builds or `.env` files.
+
 ## 1.8.0 (2026-11-08)
 
 Your AI agent can use all of dx, asking you before anything risky; and two projects on the same usual port each get their own. Update with `npm install -g dx-devkit@latest`.
