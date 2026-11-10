@@ -18,6 +18,7 @@ import {
   saveConfig,
   setAppStartup,
   writeAppLauncherEntry,
+  writeFileAtomic,
   writeFloppySprites,
   type ShortcutLaunch,
 } from "@dx/core";
@@ -64,7 +65,7 @@ function windowIcon(): string {
  */
 export function writeAppLaunch(): void {
   fs.mkdirSync(appHome(), { recursive: true });
-  fs.writeFileSync(path.join(appHome(), "launch.json"), JSON.stringify({ node: realNode(), icon: windowIcon() }, null, 2) + "\n", { mode: 0o600 });
+  writeFileAtomic(path.join(appHome(), "launch.json"), JSON.stringify({ node: realNode(), icon: windowIcon() }, null, 2) + "\n", { mode: 0o600 });
 }
 
 /**

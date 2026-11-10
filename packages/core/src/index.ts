@@ -56,6 +56,7 @@ export * from "./tools/customtools.js";
 export * from "./tools/envwatch.js";
 export * from "./tools/state.js";
 export * from "./tools/agents.js";
+export { writeFileAtomic } from "./atomic.js";
 export * from "./tools/agentwatch.js";
 export * from "./tools/machinebackup.js";
 export * from "./tools/devsetup.js";

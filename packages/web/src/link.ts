@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dxPath, ensureDxHome } from "@dx/core";
+import { dxPath, ensureDxHome, writeFileAtomic } from "@dx/core";
 
 /**
  * How other dx processes (the MCP server, the dx command) find the running dashboard and talk to
@@ -49,7 +49,7 @@ export function dashboardInfoPath(): string {
 export function writeDashboardInfo(info: DashboardInfo): void {
   ensureDxHome();
   const file = dashboardInfoPath();
-  fs.writeFileSync(file, JSON.stringify(info, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  writeFileAtomic(file, JSON.stringify(info, null, 2) + "\n", { mode: 0o600 });
   try {
     fs.chmodSync(file, 0o600);
   } catch {

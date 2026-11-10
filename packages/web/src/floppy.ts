@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { dxPath, ensureDxHome, loadConfig, saveConfig, setFloppyStartup, writeFloppySprites, type FloppyLaunch } from "@dx/core";
+import { dxPath, ensureDxHome, loadConfig, saveConfig, setFloppyStartup, writeFileAtomic, writeFloppySprites, type FloppyLaunch } from "@dx/core";
 
 /**
  * Starting and stopping Floppy, for `dx floppy` and the Startup shortcut. Floppy itself is
@@ -51,7 +51,7 @@ export function readFloppyInfo(): FloppyInfo | undefined {
 export function writeFloppyInfo(pid = process.pid): void {
   ensureDxHome();
   fs.mkdirSync(floppyDir(), { recursive: true });
-  fs.writeFileSync(infoPath(), JSON.stringify({ pid, startedAt: new Date().toISOString() }) + "\n", { mode: 0o600 });
+  writeFileAtomic(infoPath(), JSON.stringify({ pid, startedAt: new Date().toISOString() }) + "\n", { mode: 0o600 });
 }
 
 export function clearFloppyInfo(pid = process.pid): void {

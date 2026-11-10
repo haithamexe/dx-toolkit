@@ -33,6 +33,7 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 
 - **Node 22+, ESM, `module: NodeNext`.** Relative imports end in `.js` even in `.ts` files.
 - **`core` has no runtime dependencies.** Only `node:` modules. `mcp` uses `@modelcontextprotocol/sdk` and `zod`; nothing else is added without a reason.
+- **Dashboard state is written whole.** Use `writeFileAtomic` from core for a file dx keeps under `~/.dx` (never for another program's file or a project's own). Polling in `app.js` goes through `pollWhileVisible` or checks `document.hidden`, so a hidden window polls nothing. A route belongs to one route table (`mergeRoutes` throws on a duplicate).
 - **Tests** use `node:test` and `node:assert/strict`, live in `packages/<pkg>/src/__tests__/*.test.ts`, and never touch real data: they set `DX_HOME` to a temp folder before importing anything that reads config, and build fixture projects in `os.tmpdir()`.
 - **Everything dx stores is under `~/.dx`**, or `DX_HOME` when set. Use `dxHome()` / `dxPath(...)` from `core/src/config.ts`; never hard-code the path.
 - **Record runs.** Anything that changes something calls `recordRun(tool, ok, detail, source, extra)` so it shows in `dx runs`.

@@ -1,8 +1,9 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 import { handleApi, HttpError } from "./api.js";
 import { certCovers, dxPath, ensureCert, loadConfig, projectHostNames, type CertFiles, type DxConfig } from "@dx/core";
 import { releaseAll } from "./intercept.js";
@@ -96,6 +97,29 @@ const TYPES: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
 };
 
+interface StaticAsset {
+  mtimeMs: number;
+  size: number;
+  etag: string;
+  raw: Buffer;
+  /** Compressed once, for text that's worth compressing. */
+  gz?: Buffer;
+}
+const assets = new Map<string, StaticAsset>();
+const COMPRESSIBLE = /^(text\/|application\/(javascript|json)|image\/svg)/;
+
+/** A static file's bytes, its ETag and its gzip, kept until the file changes. */
+function staticAsset(file: string, type: string): StaticAsset {
+  const st = fs.statSync(file);
+  const hit = assets.get(file);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit;
+  const raw = fs.readFileSync(file);
+  const gz = COMPRESSIBLE.test(type) && raw.length > 1024 ? zlib.gzipSync(raw, { level: 9 }) : undefined;
+  const asset: StaticAsset = { mtimeMs: st.mtimeMs, size: st.size, etag: `"${createHash("sha1").update(raw).digest("hex").slice(0, 20)}"`, raw, gz };
+  assets.set(file, asset);
+  return asset;
+}
+
 export async function startDashboard(options: DashboardOptions = {}): Promise<Dashboard> {
   const token = options.token ?? randomBytes(24).toString("hex");
   const publicDir = options.publicDir ?? fileURLToPath(new URL("../public/", import.meta.url));
@@ -152,18 +176,37 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
     if (!file.startsWith(path.resolve(publicDir) + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
       return send(res, 404, { error: "Not found" });
     }
-    let content: Buffer | string = fs.readFileSync(file);
-    if (rel === "index.html") content = content.toString("utf8").replace("__DX_TOKEN__", token);
-    res.writeHead(200, {
-      "Content-Type": TYPES[path.extname(file)] ?? "application/octet-stream",
-      "Cache-Control": "no-store",
+    const type = TYPES[path.extname(file)] ?? "application/octet-stream";
+    const headers: http.OutgoingHttpHeaders = {
+      "Content-Type": type,
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "X-Frame-Options": "DENY",
       "Content-Security-Policy":
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-    });
-    res.end(content);
+    };
+    // The page itself holds this run's token, so it's never kept by the browser. Everything else is
+    // read once (again when its file changes), sent compressed when the browser takes that, and
+    // answered with 304 when the browser's copy is current.
+    if (rel === "index.html") {
+      const page = fs.readFileSync(file, "utf8").replace("__DX_TOKEN__", token);
+      res.writeHead(200, { ...headers, "Cache-Control": "no-store" });
+      return void res.end(page);
+    }
+    const asset = staticAsset(file, type);
+    const gzip = !!asset.gz && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
+    headers["Cache-Control"] = "no-cache";
+    headers.ETag = asset.etag;
+    headers.Vary = "Accept-Encoding";
+    if (req.headers["if-none-match"] === asset.etag) {
+      res.writeHead(304, headers);
+      return void res.end();
+    }
+    if (gzip) headers["Content-Encoding"] = "gzip";
+    const body = gzip ? (asset.gz as Buffer) : asset.raw;
+    headers["Content-Length"] = body.length;
+    res.writeHead(200, headers);
+    res.end(body);
   }
 
   port = await listen(server, options.port ?? DEFAULT_PORT);

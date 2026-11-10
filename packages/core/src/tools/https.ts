@@ -1,3 +1,4 @@
+import { writeFileAtomic } from "../atomic.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { promisify } from "node:util";
@@ -85,7 +86,7 @@ export async function ensureCert(extra: string[] = []): Promise<(CertFiles & { n
   if (!mkcert) return undefined;
   fs.mkdirSync(dxPath("certs"), { recursive: true });
   await run(mkcert, ["-cert-file", files.cert, "-key-file", files.key, ...want], { windowsHide: true, timeout: 60_000 });
-  fs.writeFileSync(NAMES_FILE(), JSON.stringify(want, null, 2) + "\n");
+  writeFileAtomic(NAMES_FILE(), JSON.stringify(want, null, 2) + "\n");
   return { ...files, names: want, created: true };
 }
 

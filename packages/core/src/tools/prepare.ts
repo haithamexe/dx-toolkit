@@ -1,3 +1,4 @@
+import { writeFileAtomic } from "../atomic.js";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -84,7 +85,7 @@ export function remember(dir: string, key: string, value: string): void {
   (store[dirKey(dir)] ??= {})[key] = value;
   try {
     fs.mkdirSync(path.dirname(storeFile()), { recursive: true });
-    fs.writeFileSync(storeFile(), JSON.stringify(store, null, 1));
+    writeFileAtomic(storeFile(), JSON.stringify(store, null, 1));
   } catch {
     // run again next time
   }
@@ -94,7 +95,7 @@ export function forgetPrepared(dir: string): void {
   const store = loadStore();
   delete store[dirKey(dir)];
   try {
-    fs.writeFileSync(storeFile(), JSON.stringify(store, null, 1));
+    writeFileAtomic(storeFile(), JSON.stringify(store, null, 1));
   } catch {
     // nothing to forget
   }

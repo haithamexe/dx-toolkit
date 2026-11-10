@@ -1,3 +1,4 @@
+import { trimJobs } from "./jobs.js";
 import crypto from "node:crypto";
 import { bundleUrl, compareReplay, recordRun, resolveCommit, type BugBundle, type Project, type ReplayVerdict } from "@dx/core";
 import { checkUrl, type CheckResult } from "./check.js";
@@ -47,7 +48,7 @@ export async function startBugReplay(project: Project, bundle: BugBundle, use: "
     startedAt: new Date().toISOString(),
   };
   jobs.set(job.id, job);
-  for (const [id, j] of jobs) if (jobs.size > 20 && j.finishedAt) jobs.delete(id);
+  trimJobs(jobs, 20, (j) => !!j.finishedAt);
   void run(job, project, bundle, commit?.hash).catch((err: Error) => {
     job.phase = "failed";
     job.error = err.message;

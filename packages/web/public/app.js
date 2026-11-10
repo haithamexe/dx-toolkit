@@ -7,6 +7,33 @@ const nav = document.getElementById("nav");
 
 // ------------------------------------------------------------------ helpers
 
+// One banner says when dx has stopped or restarted, instead of every poll failing quietly in its own way.
+const offlineBanner = document.getElementById("offline");
+let connection = "ok";
+function setConnection(next) {
+  if (next === connection) return;
+  const was = connection;
+  connection = next;
+  offlineBanner.hidden = next === "ok";
+  if (next === "ok") {
+    toast("dx is back");
+    if (was === "gone") route();
+    return;
+  }
+  const inApp = /Electron\//.test(navigator.userAgent);
+  offlineBanner.replaceChildren(
+    icon("warn"),
+    next === "stale"
+      ? h("span", null, "dx was restarted, so this page can't talk to it any more. ")
+      : h("span", null, "dx isn't running, so this page has stopped updating. "),
+    next === "stale"
+      ? h("button", { class: "btn btn-sm", type: "button", onclick: () => location.reload() }, "Reload")
+      : inApp
+        ? h("a", { class: "btn btn-sm", href: "http://dx-app.invalid/start" }, "Start dx")
+        : h("span", { class: "dim" }, "Run ", h("code", null, "dx ui"), " to open it again."),
+  );
+}
+
 async function api(path, { method = "GET", body } = {}) {
   let res;
   try {
@@ -16,8 +43,11 @@ async function api(path, { method = "GET", body } = {}) {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new Error("Can't reach dx. Is `dx ui` still running in your terminal?");
+    setConnection("gone");
+    throw new Error("dx isn't running any more.");
   }
+  // 401 means this page belongs to an earlier run of dx (its token changed when dx restarted).
+  setConnection(res.status === 401 ? "stale" : "ok");
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error ?? `Request failed (${res.status})`);
   return data;
@@ -110,6 +140,21 @@ function icon(name) {
   return svg;
 }
 
+/**
+ * Calls `fn` every `ms` while the page is visible. A minimised window or a hidden tab polls
+ * nothing (the app opens minimised at sign-in, and every request counts as activity that keeps a
+ * background dashboard alive), and coming back refreshes at once. Returns the timer.
+ */
+function pollWhileVisible(fn, ms) {
+  const timer = setInterval(() => {
+    if (!document.hidden) void fn();
+  }, ms);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void fn();
+  });
+  return timer;
+}
+
 function btn(label, onclick, { kind = "", iconName, small = false, disabled = false, title, type = "button", name } = {}) {
   return h(
     "button",
@@ -138,7 +183,8 @@ async function busy(button, busyLabel, fn) {
 }
 
 function toast(message, kind = "ok", { ms } = {}) {
-  const el = h("div", { class: `toast ${kind === "error" ? "toast-error" : kind === "warn" ? "toast-warn" : ""}` }, h("div", null, message));
+  // An error is announced at once (role=alert); the rest wait their turn in the polite region.
+  const el = h("div", { class: `toast ${kind === "error" ? "toast-error" : kind === "warn" ? "toast-warn" : ""}`, role: kind === "error" ? "alert" : undefined }, h("div", null, message));
   document.getElementById("toasts").append(el);
   setTimeout(() => el.remove(), ms ?? (kind === "ok" ? 4500 : 9000));
 }
@@ -166,7 +212,16 @@ function warningSound() {
   }
 }
 
-function confirmDialog({ title, text, confirm = "Confirm", danger = true }) {
+// One confirm dialog serves every question, so a second one asked while the first is open waits for it
+// (before, it overwrote the first, whose answer never came).
+let confirmQueue = Promise.resolve();
+function confirmDialog(options) {
+  const answer = confirmQueue.then(() => askConfirm(options));
+  confirmQueue = answer.then(() => undefined, () => undefined);
+  return answer;
+}
+
+function askConfirm({ title, text, confirm = "Confirm", danger = true }) {
   const dialog = document.getElementById("confirm");
   document.getElementById("confirm-title").textContent = title;
   document.getElementById("confirm-text").replaceChildren(...(Array.isArray(text) ? text : [text]).map((t) => (t instanceof Node ? t : h("p", null, t))));
@@ -1042,7 +1097,14 @@ function route() {
   main.replaceChildren(container);
   const tabs = pageTabs(page);
   if (tabs) container.append(tabs);
-  const cleanup = page.render(container);
+  let cleanup;
+  try {
+    cleanup = page.render(container);
+  } catch (err) {
+    // One page's mistake shows as that page's error with a way to try again, not a blank area.
+    console.error(err);
+    container.append(errorView(err, route));
+  }
   if (typeof cleanup === "function") leaveCurrent = cleanup;
   main.focus({ preventScroll: true });
   // Wide windows scroll the page inside .main; narrow ones scroll the window.
@@ -2053,6 +2115,8 @@ function projectsPage(root, { only } = {}) {
 
   async function pollLogs() {
     if (stopped) return;
+    // A hidden page (a minimised window, another tab) reads nothing; it looks again when it's shown.
+    if (document.hidden) return void (timer = setTimeout(pollLogs, 1000));
     let changed = false;
     for (const [key, state] of logState) {
       if (!openLogs.has(key) || !state.el?.isConnected) continue;
@@ -2091,6 +2155,7 @@ function projectsPage(root, { only } = {}) {
   let timer = setTimeout(pollLogs, 1000);
   // Also picks up dev servers an AI agent starts while the page is open.
   const statusTimer = setInterval(async () => {
+    if (document.hidden) return;
     const servers = (await api("/api/dev").catch(() => null))?.filter((s) => !only || sameDir(s.dir, only)) ?? null;
     const differs = (s) => {
       const dev = projects.find((p) => p.dir === s.dir)?.dev;
@@ -3005,6 +3070,7 @@ function chaosPage(root) {
     );
     const poll = async () => {
       if (stopped || tab !== "chaos") return;
+      if (document.hidden) return void (timer = setTimeout(poll, 4000));
       try {
         drawReport(report, await api(`/api/chaos/report?${q()}`));
       } catch (err) {
@@ -3638,6 +3704,7 @@ function requestsPage(root) {
     );
     const poll = async () => {
       if (stopped || tab !== "intercept") return;
+      if (document.hidden) return void (pollTimer = setTimeout(poll, 1000));
       try {
         const held = await api(`/api/lab/intercept?${q()}`);
         for (const [id, card] of editors) if (!held.some((x) => x.id === id)) (card.remove(), editors.delete(id));
@@ -10609,7 +10676,13 @@ function toolsPage(root) {
       };
       if (button) await busy(button, "Running…", run);
       else await run();
-      if (t.kind === "watch" && openId === t.id && !stopped) watchTimer = setTimeout(() => go(), 5000);
+      if (t.kind === "watch" && openId === t.id && !stopped) {
+        // A watch only looks while the page is shown.
+        watchTimer = setTimeout(function again() {
+          if (document.hidden && !stopped) watchTimer = setTimeout(again, 5000);
+          else go();
+        }, 5000);
+      }
     };
     const runButton = btn(t.kind === "operation" ? "Run it" : "Refresh", (ev) => go(ev.currentTarget), { kind: t.kind === "operation" ? "primary" : "", iconName: t.kind === "operation" ? "play" : "refresh" });
     const offNote = TOOL_SWITCHABLE.has(t.kind) && t.off ? h("div", { class: "note note-warn", role: "status" }, icon("warn"), h("p", null, "It's off: this is what it would do. Turn it on in the list to apply it.")) : null;
@@ -11762,13 +11835,13 @@ async function checkToolAlerts() {
     // the dashboard went away; the page says so elsewhere
   }
 }
-setInterval(checkToolAlerts, 5000);
+pollWhileVisible(checkToolAlerts, 5000);
 
 window.addEventListener("hashchange", route);
-setInterval(updateRunningCount, 5000);
+pollWhileVisible(updateRunningCount, 5000);
 // New folders and clones show up in the switcher without a reload.
-setInterval(loadProjectList, 60_000);
-floppyPoll = setInterval(updateFloppyButton, 5000);
+pollWhileVisible(loadProjectList, 60_000);
+floppyPoll = pollWhileVisible(updateFloppyButton, 5000);
 void updateFloppyButton();
 void loadProjectList().finally(route);
 void refreshAiLane();

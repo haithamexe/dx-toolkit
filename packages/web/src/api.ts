@@ -45,6 +45,7 @@ import {
   recordRun,
   revealInFileManager,
   runDoctor,
+  findKnownProject,
   saveAsTemplate,
   saveConfig,
   saveSummary,
@@ -1202,9 +1203,32 @@ interface DepsJob {
 }
 let depsJob: DepsJob = { running: false, done: 0, total: 0, current: "" };
 
+/**
+ * Every route table as one map. A route in two tables used to be answered by whichever came first in
+ * a chain of `??`, silently; now it's an error the first request (and the tests) raise by name.
+ */
+export function mergeRoutes(tables: Record<string, Record<string, Handler>>): Record<string, Handler> {
+  const merged: Record<string, Handler> = Object.create(null);
+  const owner = new Map<string, string>();
+  for (const [table, list] of Object.entries(tables)) {
+    for (const [key, handler] of Object.entries(list)) {
+      if (owner.has(key)) throw new Error(`The route "${key}" is in two route tables: ${owner.get(key)} and ${table}.`);
+      owner.set(key, table);
+      merged[key] = handler;
+    }
+  }
+  return merged;
+}
+
+let allRoutes: Record<string, Handler> | undefined;
+/** All of the dashboard's API routes, built once. */
+export function apiRoutes(): Record<string, Handler> {
+  return (allRoutes ??= mergeRoutes({ routes, labRoutes, chaosRoutes, dataRoutes, phoneRoutes, teamRoutes, toolRoutes, stateRoutes, agentsRoutes, devToolsRoutes }));
+}
+
 export async function handleApi(req: ApiRequest): Promise<unknown> {
   const key = `${req.method} ${req.path}`;
-  const handler = routes[key] ?? labRoutes[key] ?? chaosRoutes[key] ?? dataRoutes[key] ?? phoneRoutes[key] ?? teamRoutes[key] ?? toolRoutes[key] ?? stateRoutes[key] ?? agentsRoutes[key] ?? devToolsRoutes[key];
+  const handler = apiRoutes()[key];
   if (!handler) throw new HttpError(404, `No such API: ${req.method} ${req.path}`);
   return handler(req);
 }
@@ -1216,8 +1240,8 @@ export async function handleApi(req: ApiRequest): Promise<unknown> {
  * and opening it; nothing that changes files or git takes one.
  */
 export function knownProject(dir: unknown, { snapshots = false } = {}): Project {
-  const wanted = String(dir ?? "").toLowerCase();
-  const project = scanProjects(loadConfig()).find((p) => p.dir.toLowerCase() === wanted);
+  // From the kept scan (read again for this one project); a folder that isn't in it gets a fresh scan first.
+  const project = findKnownProject(String(dir ?? ""));
   if (project) return project;
   const snap = snapshots && typeof dir === "string" ? snapshotByDir(dir) : undefined;
   const asProject = snap && snapshotProject(snap);

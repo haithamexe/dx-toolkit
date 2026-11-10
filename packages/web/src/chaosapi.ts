@@ -1,3 +1,4 @@
+import { trimJobs } from "./jobs.js";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -92,7 +93,7 @@ function newJob(kind: JobKind, project: Project, step: string): ChaosJob & { abo
   if (running) throw new HttpError(409, `One is already running for ${project.name}. Stop it first, or wait for it.`);
   const job = { id: crypto.randomBytes(8).toString("hex"), kind, dir: project.dir, project: project.name, phase: "starting" as const, step, done: 0, total: 0, startedAt: new Date().toISOString(), abort: new AbortController() };
   jobs.set(job.id, job);
-  for (const [id, j] of jobs) if (jobs.size > 30 && j.finishedAt) jobs.delete(id);
+  trimJobs(jobs, 30, (j) => !!j.finishedAt);
   return job;
 }
 

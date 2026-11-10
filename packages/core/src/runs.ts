@@ -1,3 +1,4 @@
+import { writeFileAtomic } from "./atomic.js";
 import fs from "node:fs";
 import { dxPath, ensureDxHome } from "./config.js";
 
@@ -57,5 +58,11 @@ function trimIfLarge(file: string): void {
   const size = fs.statSync(file).size;
   if (size <= MAX_BYTES) return;
   const lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
-  fs.writeFileSync(file, lines.slice(Math.floor(lines.length / 2)).join("\n") + "\n", "utf8");
+  // Other processes (an AI tool's MCP server) append to this file: replacing it whole, never truncating it in place, can lose
+  // at most a line written in the same instant. If the file is busy (Windows), it's trimmed on a later write instead.
+  try {
+    writeFileAtomic(file, lines.slice(Math.floor(lines.length / 2)).join("\n") + "\n", { direct: false });
+  } catch {
+    // too busy to replace now; the next write tries again
+  }
 }

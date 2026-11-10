@@ -1,4 +1,4 @@
-import { agentSummary, loadConfig, readAgents, scanProjects } from "@dx/core";
+import { agentSummary, loadConfig, readAgents, scanProjectsCached } from "@dx/core";
 import type { ApiRequest } from "./api.js";
 import { agentAlertsSince } from "./agentwatch.js";
 
@@ -12,7 +12,7 @@ export const agentsRoutes: Record<string, (req: ApiRequest) => unknown> = {
   "GET /api/agents": (req) => {
     const asked = Number(req.query.get("hours"));
     const hours = Number.isFinite(asked) && asked >= 1 ? Math.min(24 * 14, asked) : 24;
-    const agents = readAgents({ sinceHours: hours, projects: scanProjects(loadConfig()).map((p) => ({ name: p.name, dir: p.dir })) });
+    const agents = readAgents({ sinceHours: hours, projects: scanProjectsCached(loadConfig()).map((p) => ({ name: p.name, dir: p.dir })) });
     return { at: new Date().toISOString(), hours, agents, summary: agentSummary(agents) };
   },
   // Warnings since a moment (an agent waiting for you, or stuck), for the page's toast and sound. Titles and tool names only.

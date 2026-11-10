@@ -293,3 +293,12 @@ test("dx_do answers with structured content as well as text; the dev tools are t
   const agents = JSON.parse((await call("dx_do", { action: "agents.list" })).text);
   assert.deepEqual(agents.agents, []);
 });
+
+test("tool descriptions stay short enough for an agent to read all 49, and come in the same order every time", async () => {
+  const first = (await client.listTools()).tools;
+  const second = (await client.listTools()).tools;
+  assert.deepEqual(first.map((t) => t.name), second.map((t) => t.name), "a fixed order, so a client can cache the list");
+  const long = first.filter((t) => (t.description ?? "").length > 520).map((t) => `${t.name} (${t.description?.length})`);
+  assert.deepEqual(long, [], "put the detail in the parameters' descriptions, and the when-to-use sentence first");
+  assert.ok(first.every((t) => (t.description ?? "").length > 40), "none left too thin to say when to use it");
+});

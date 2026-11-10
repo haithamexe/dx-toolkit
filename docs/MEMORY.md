@@ -27,6 +27,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Backlog
 
+- **Direction (Nov 2026): make what exists better; add no new features.** The researched list, with sources and sizes, is in [ENHANCEMENTS.md](ENHANCEMENTS.md): batch 1 foundations (cache the project scan, pause hidden polling, static file caching, page error fallback, atomic writes, dialog accessibility, shorter MCP answers), batch 2 accuracy in existing features, batch 3 bigger changes (undo any entry, activity reads from the tail, splitting `app.js`).
 - **Your own tools, not yet tried**: a chat with the real Claude Code or Codex (only the stand-in in tests; the maintainer's agent wasn't run during development); running a tool from the terminal (`dx tools` lists, exports and imports only); a watch's system notification (watches speak in dx and on Floppy's line only).
 - **.env alerts beyond Windows**: the macOS (`osascript`) and Linux (`notify-send`) notifications are written from their documentation; only the Windows toast was seen.
 - **Your dx on another computer, next**: The Settings page's Undo button wasn't clicked through in a rendering window (the pane was hidden, so the dialog's close event never fired); the route, the CLI and the tests undo for real.
@@ -79,6 +80,18 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - With port 80 taken (another dashboard), the `.localhost` addresses show `:1355`.
 
 ## Decisions
+
+### Batch 1 of the enhancements (`docs/ENHANCEMENTS.md`)
+
+- **The maintainer asked for existing things to be made better, not new features, then to start with batch 1.** Nine items, each measured or read from the code first.
+- **The project scan is kept 5 s, per set of roots** (`scanProjectsCached`); `findKnownProject` is the dashboard's "is this one of mine" check: a folder in the kept list is read again on its own (`readProject`), and one that isn't in it, or no longer reads as a project, gets a fresh scan before it's refused. So a project just made or removed is right at once, and the security check is still a membership test. The config isn't cached: callers change what `loadConfig` returns and save it.
+- **Polling pauses while the page is hidden** (`pollWhileVisible`, and a hidden check in each loop), and coming back refreshes at once. The Electron app opens minimised at sign-in; before, it polled all day and every call counted as activity, so the background dashboard never stopped itself.
+- **Static files are read once, compressed once and sent with an ETag** (`staticAsset`), revalidated with `no-cache`; the page that holds the run's token stays `no-store`. A stray `\b` in a Python-written edit once put backspace characters in a regex: the sources are scanned for control characters now and then.
+- **The page can say why it's broken**: `route()` catches a page that throws; `api()` reports the connection once (`setConnection`: gone, or stale after a restart, which a 401 means) in one banner.
+- **`writeFileAtomic`** (temporary file, rename, a few retries on Windows, in place only when asked) for dx's own state files. Not used for files that belong to someone else (an editor's MCP config, a project's `.devrc.json`): a rename would replace a symlinked dotfile with a copy.
+- **MCP descriptions** are capped at 520 characters by a test (the longest were 890), and `activity_log` and `network_log` end a full or long answer with how to narrow it.
+- **Route tables are merged once and a duplicate key throws** (`mergeRoutes`), instead of a `??` chain where the first wins.
+- **The front end has a test**: every public script parses, and each page opens in a real browser (four at a time, since a page's own polling means the network is never quiet) with no script error. About 20 s.
 
 ### Agent alerts, effort, proof, clone on import, machine export, developer setup checks, coverage (`core/src/tools/agentwatch.ts`, `machinebackup.ts`, `devsetup.ts`, `coverage.ts`; `web/src/agentwatch.ts`)
 

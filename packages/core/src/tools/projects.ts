@@ -80,6 +80,44 @@ export function scanProjects(config: DxConfig = loadConfig()): Project[] {
   }
 }
 
+// The dashboard asks "is this one of my projects?" on nearly every request, and a full scan walks the
+// projects folders (about 17 ms for 22 projects). The list is kept a few seconds, per set of roots.
+// A project that isn't in it makes a fresh scan, so one just made is found at once, and one that is
+// in it is read again on its own, so its scripts and activity are never stale.
+const SCAN_TTL_MS = 5000;
+let scanned: { key: string; at: number; list: Project[] } | undefined;
+
+const scanKey = (config: DxConfig) => JSON.stringify([config.projectsRoots, config.ignore, config.scanDepth]);
+
+/** scanProjects, from the last scan when it's under five seconds old and the roots are the same. */
+export function scanProjectsCached(config: DxConfig = loadConfig(), ttlMs = SCAN_TTL_MS): Project[] {
+  const key = scanKey(config);
+  if (scanned && scanned.key === key && Date.now() - scanned.at < ttlMs) return scanned.list;
+  const list = scanProjects(config);
+  scanned = { key, at: Date.now(), list };
+  return list;
+}
+
+/** Forget the kept scan: a project was cloned or created, or the projects folders changed. */
+export function invalidateProjectScan(): void {
+  scanned = undefined;
+}
+
+/**
+ * The project at `dir` if it's one dx finds (compared without regard to case), read fresh. Looks in
+ * the kept scan first; a folder that isn't there is looked for with a new scan before it's refused.
+ */
+export function findKnownProject(dir: string, config: DxConfig = loadConfig()): Project | undefined {
+  const wanted = dir.toLowerCase();
+  const hit = scanProjectsCached(config).find((p) => p.dir.toLowerCase() === wanted);
+  if (hit) {
+    const fresh = readProject(hit.dir, hit.root);
+    if (fresh) return fresh;
+  }
+  invalidateProjectScan();
+  return scanProjectsCached(config).find((p) => p.dir.toLowerCase() === wanted);
+}
+
 /** Returns project info if `dir` looks like a project, otherwise undefined. */
 export function readProject(dir: string, root = path.dirname(dir)): Project | undefined {
   const has = (f: string) => fs.existsSync(path.join(dir, f));

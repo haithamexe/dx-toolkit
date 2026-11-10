@@ -4,6 +4,16 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Changed
+
+- **Faster and quieter dashboard**: the project scan is kept for a few seconds instead of walking the projects folders on almost every request (a new project is still found at once, a changed one is read again); a hidden or minimised window polls nothing, so the app left open all day stops using the computer and the background dashboard can idle out again; the page's scripts and styles are compressed and revalidated with an ETag instead of re-sent whole each time.
+- **A page that fails shows why**: one page's error appears as that page's error with Try again, not a blank area; a banner says when dx has stopped (with Start dx in the app) or was restarted (with Reload) instead of each poll failing quietly.
+- **Safer saves**: dx's own state files (config, the dashboard's address, prepare memory, certificates' names, Floppy's files, the machine cache) are written whole through a temporary file and a rename, and the run log is trimmed without truncating a file that an AI tool's server is appending to.
+- **Dialogs and toasts**: a second question asked while one is open waits its turn (before it replaced the first, whose answer never came); the dialog is named for screen readers; errors are announced at once.
+- **MCP**: the twelve longest tool descriptions are about half as long (the detail is in the parameters), and a long answer says how to narrow it. A test keeps descriptions short and the tool list in a fixed order.
+- **A route in two route tables is an error**, named, instead of the first one silently winning.
+- **Tests**: every page of the dashboard is opened in a real browser and fails on a script error; every script must parse.
+
 ## 1.10.0 (2026-11-10)
 
 dx tells you when an AI agent is waiting for you, shows where agents spend their effort, and puts agents in your pull request's proof; moving to a new computer gets `dx machine export` and clone-on-import; `dx doctor` checks your developer setup and `dx test` measures coverage. Update with `npm install -g dx-devkit@latest`.

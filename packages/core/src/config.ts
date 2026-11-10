@@ -1,3 +1,4 @@
+import { writeFileAtomic } from "./atomic.js";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -183,7 +184,7 @@ export function loadConfig(): DxConfig {
   if (!fs.existsSync(file)) {
     ensureDxHome();
     const first = firstRunConfig();
-    fs.writeFileSync(file, JSON.stringify(first, null, 2) + "\n", "utf8");
+    writeFileAtomic(file, JSON.stringify(first, null, 2) + "\n");
     return first;
   }
   let raw: unknown;
@@ -203,7 +204,7 @@ export function loadConfig(): DxConfig {
 
 export function saveConfig(config: DxConfig): void {
   ensureDxHome();
-  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2) + "\n", "utf8");
+  writeFileAtomic(configPath(), JSON.stringify(config, null, 2) + "\n");
 }
 
 export function expandHome(p: string): string {

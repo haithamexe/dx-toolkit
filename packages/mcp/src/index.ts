@@ -220,11 +220,7 @@ server.registerTool(
   {
     title: "This computer's developer tools",
     description:
-      "What's installed on this computer and what runs in the background, so commands you suggest fit it. " +
-      "tools: Node, npm, pnpm, yarn, bun, deno, git, gh, docker, python, go, java, rust with their versions, the newest version, whether that version still gets security fixes, and the update command. " +
-      "projects: what each project asks for (.nvmrc, engines, packageManager, lock files, go.mod) next to what's installed, with the fix. " +
-      "processes: dev servers, watchers and tools running, with memory, CPU, ports, and which were left behind by a closed terminal. " +
-      "Read-only. Suggest updates and stops to the user; the dashboard's Machine page runs them.",
+      "What's installed on this computer and what runs in the background, so your commands fit it. tools: versions, the newest, support status and the update command. projects: what each asks for next to what's installed. processes: dev servers and tools running, left-behind ones marked. Read-only; suggest fixes to the user.",
     inputSchema: {
       part: z.enum(["all", "tools", "projects", "processes", "docker"]).optional().describe("Which part (default: all but docker)"),
       project: z.string().optional().describe("Only this project's needs, by name"),
@@ -269,9 +265,7 @@ server.registerTool(
   {
     title: "A project's API, from its OpenAPI spec",
     description:
-      "The project's API specs (OpenAPI or Swagger; a project can have several APIs, each named, with its endpoints knowing which API they're in; else a spec file found in the project) next to what the app really called in the last 7 days: " +
-      "each endpoint with its calls and statuses, answers that don't fit the spec (wrong types, missing fields, undeclared statuses), and calls the spec doesn't have. " +
-      "Use it to see an API's shape before writing code against it, or to check a backend change against the spec.",
+      "The project's API specs (several allowed, each named; else a spec file found in the project) next to what the app called in the last 7 days: per endpoint its calls and statuses, answers that don't fit the spec, and calls the spec lacks. Use it to see an API's shape before writing code against it, or to check a backend change.",
     inputSchema: { project: z.string().describe("Project name"), api: z.string().optional().describe("One of the project's APIs, by name or id (default: all of them)") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
@@ -586,11 +580,7 @@ server.registerTool(
   {
     title: "Start a project's dev server",
     description:
-      "Start one of the user's projects' dev server (npm run dev and the like) inside the dx dashboard, wait until it's " +
-      "ready or has failed, and return its URL, any errors and its output. If it's already running, report on it. " +
-      "When the project is a stack (front end, API, worker, databases in docker-compose…) every service starts, in order, " +
-      "and each is reported. Apps are also served at name.localhost. " +
-      "Use this to run the app you are working on; after editing files use wait_for_rebuild, and check_url to try pages.",
+      "Start a project's dev server inside the dx dashboard, wait until it's ready or failed, and return its URL, errors and output (or report on it if it's running). A stack starts every service in order and reports each. Use it to run the app you're working on; then wait_for_rebuild after edits and check_url to try pages.",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       timeout_seconds: z.number().int().min(5).max(300).optional().describe("How long to wait for it to be ready (default 90)"),
@@ -777,14 +767,7 @@ server.registerTool(
   {
     title: "Request a page or API route",
     description:
-      "Request a URL on a locally running app (localhost only) and report the status, timing, page title and the start of the body, " +
-      "plus what the dev server printed and any errors it logged while answering. Use it to confirm a change works. " +
-      "With browser: true the page is loaded in a headless Chrome/Edge instead, and you also get what went wrong in the browser: " +
-      "uncaught exceptions, console errors and warnings, failed requests (4xx/5xx, refused) and a Vite/Next.js error overlay; " +
-      "use it for front-end pages, since a page can answer 200 and still crash in the browser. screenshot: true adds a picture of the page. " +
-      "steps clicks through a flow after the page loads (fill a form, sign in, add to cart), reporting each step and the errors it caused: " +
-      'e.g. [{"type":"me@example.com","into":"#email"},{"click":"text=Sign in"},{"waitFor":"url=/dashboard"}]. ' +
-      "Give either a full URL, or a project and a path.",
+      "Check a locally running app after a change: request a URL (localhost only) and get the status, timing, title and start of the body, plus the dev server's output and errors. browser: true loads it in headless Chrome or Edge and also reports exceptions, console errors, failed requests and error overlays (a page can answer 200 and still crash); steps clicks through a flow. Give a url, or a project and a path.",
     inputSchema: {
       url: z.string().optional().describe("e.g. http://localhost:5173/checkout, or a stack service's local domain: http://api.shop.localhost/health"),
       project: z.string().optional().describe("Project name; its dev server's address is used"),
@@ -808,7 +791,7 @@ server.registerTool(
         )
         .max(50)
         .optional()
-        .describe("Things to do after the page loads, in order; implies browser. A failed step stops the rest."),
+        .describe('Things to do after the page loads, in order; implies browser; each step is reported with the errors it caused, and a failed step stops the rest. e.g. [{"type":"me@example.com","into":"#email"},{"click":"text=Sign in"},{"wait_for":"url=/dashboard"}]'),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
@@ -968,10 +951,7 @@ server.registerTool(
   {
     title: "Requests the app made",
     description:
-      "The requests that went through a running project's local domain (shop.localhost, api.shop.localhost): method, path, status, " +
-      "timing and the start of each request and response body, with passwords, tokens and cookies masked. Use it to see what the front " +
-      "end sent to the API and what came back, e.g. after check_url with browser or steps, or when the user clicked something. " +
-      "Only traffic through *.localhost is recorded, not localhost:<port>. By default lists API calls only and only what's new since you last asked.",
+      "Requests that went through a running project's local domain (shop.localhost): method, path, status, timing and the start of each body, secrets masked. Use it to see what the front end sent and what came back. Only *.localhost traffic is recorded, not localhost:<port>. Default: API calls only, and only what's new since you last asked.",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       path: z.string().optional().describe("Only paths containing this, e.g. /api/cart"),
@@ -1006,7 +986,8 @@ server.registerTool(
       if (e.responseBody) lines.push(`  response ${e.responseHeaders["content-type"] ?? ""}: ${e.responseBody}${e.truncated ? " …(cut)" : ""}`);
       return lines.join("\n");
     });
-    return text(`${list.length} request(s), oldest first:\n${rows.join("\n")}`);
+    const hint = list.length > 40 ? "\n\nA long list: narrow it with path or failed: true." : !detail ? "\n\nBodies are left out of a list this long: use path to see fewer requests with their bodies, or bodies: true." : "";
+    return text(`${list.length} request(s), oldest first:\n${rows.join("\n")}${hint}`);
   },
 );
 
@@ -1018,13 +999,7 @@ server.registerTool(
   {
     title: "What happened in the app",
     description:
-      "The history of what happened in the user's apps, in order: API requests with their payloads and responses, pages loaded, " +
-      "front-end route changes, clicks and form submits (never typed values), console output, uncaught errors in the browser, and the " +
-      "dev server starting, stopping and printing errors. Passwords, tokens and cookies are masked. Use it to see what the user just did " +
-      "and what went wrong (\"I clicked checkout and nothing happened\"), or to replay the steps that led to an error. Recorded for apps " +
-      "opened at their .localhost address while the dashboard runs, and for deployed sites the user added (dx sites) and used in the dx " +
-      "browser, each event labelled with its site and environment (staging, production); kept 7 days. By default: what's new since you last asked (the last " +
-      "30 minutes the first time).",
+      "What happened in the user's apps, oldest first: requests with payloads, pages, route changes, clicks and submits (never typed values), console output, browser errors and dev server events. Secrets are masked. Use it to see what the user just did and what went wrong, or to find a visit to replay. Records apps opened at their .localhost address and sites added with dx sites; kept 7 days. Default: what's new since you last asked (30 minutes the first time).",
     inputSchema: {
       project: z.string().optional().describe("Project name, or part of it; every project when left out"),
       since: z.string().optional().describe("30m, 2h, 3d, today, yesterday, 14:30, or a date. Overrides 'only what's new'"),
@@ -1087,6 +1062,9 @@ server.registerTool(
     return text(
       `${list.length} event(s), oldest first${problemsSeen ? `, ${problemsSeen} of them problems` : ""}:\n` +
         formatActivity(list, { bodies: detail, project: many, maxBody: 1500, visits: true }) +
+        // A full page says so, and how to narrow it, instead of leaving the agent to guess there is more.
+        (list.length >= query.limit ? `\n\nThat's the newest ${query.limit}; there may be more. Narrow with since, types, problems or search, or raise limit.` : "") +
+        (detail ? "" : "\n\nBodies are left out of a long list: ask again with search or types for fewer events, or bodies: true.") +
         (list.some((e) => e.visit) ? "\n\nreplay_visit repeats a visit's clicks in a headless browser." : ""),
     );
   },
@@ -1412,10 +1390,7 @@ server.registerTool(
   {
     title: "Did a commit change how the app looks",
     description:
-      "Screenshots of a project's most used pages per commit, compared with the commit before's: which pages changed, the share of " +
-      "pixels, where (\"around the Checkout button\"), and the diff image (changed pixels orange over a faded copy). dx captures after " +
-      "each commit made on the dashboard's Git page, or when HEAD moves, while it runs the project's dev server. capture: true takes a " +
-      "capture now (start_dev_server first). Use it after a change to check you didn't move something you didn't mean to.",
+      "Did a commit change how the app looks? Screenshots of the most used pages per commit against the commit before's: which pages changed, the share of pixels, where (\"around the Checkout button\") and the diff image. dx captures after each commit made in the dashboard or when HEAD moves; capture: true takes one now (start_dev_server first).",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       commit: z.string().regex(/^[0-9a-fA-F]{4,64}$/).optional().describe("A captured commit's hash; the newest capture when left out"),
@@ -1496,12 +1471,7 @@ server.registerTool(
   {
     title: "Break the app's API calls on purpose (chaos mode), or say what broke",
     description:
-      "Chaos mode breaks a project's API calls as they pass through dx (its .localhost address, or the address dx records) the way real " +
-      "networks and servers do: slow, 500s, dropped halfway, a 401 as if the session expired, answers out of order, 429s, odd data (a field " +
-      "null, empty or 10,000 characters long). Pages, scripts and styles always load. Seeded: the same seed breaks the same calls the same way. " +
-      "Levels: wifi (slow and patchy), deploy (server misbehaving), blackfriday (everything, under load). Also sets the page's fake clock " +
-      "(clock_at, time_zone, frozen) and the weak phone (phone). With no settings it only reports: what was broken since the run started, " +
-      "and what the app did about it (blank pages, uncaught errors, loading indicators that never stopped, the same order sent twice).",
+      "Break a project's API calls as they pass through dx, the way real networks do: slow, 500s, dropped halfway, a 401 as if the session expired, out of order, 429s, odd data. Pages and scripts always load. Seeded, so the same seed breaks the same calls. level: wifi, deploy or blackfriday. Also sets the fake clock and the weak phone. With no settings it only reports what broke and how the app coped.",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       on: z.boolean().optional().describe("Turn chaos mode on or off"),
@@ -1553,11 +1523,7 @@ server.registerTool(
   {
     title: "Let gremlins loose on the app: a headless browser that clicks, types and double-submits at random",
     description:
-      "A headless browser goes through a project's app by itself, on this computer only, through the dev server dx runs: clicks what it " +
-      "finds, types nonsense into fields, double-clicks submit buttons, presses Enter, goes back halfway. Controls that look destructive " +
-      "(delete, sign out, reset) are left alone unless bold is true. Returns each problem (exceptions, console errors, 5xx answers, failed " +
-      "calls, blank pages, error overlays) with the steps that led to it, in the format check_url's steps take, to reproduce it. Seeded. " +
-      "With chaos_mode on, its calls are broken too. Takes up to a few minutes.",
+      "A headless browser goes through the app by itself: clicks, types nonsense, double-submits, goes back halfway (destructive-looking controls are skipped unless bold is true). Returns each problem (exceptions, console errors, 5xx, failed calls, blank pages) with the steps to reproduce it, in check_url's step format. Seeded; takes a few minutes; chaos_mode breaks its calls too.",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       path: z.string().max(300).optional().describe("Where to start, a path on the app (default /)"),
@@ -1588,10 +1554,7 @@ server.registerTool(
   {
     title: "Did a change alter how the app behaves: calls, errors and warnings against an earlier commit",
     description:
-      "Loads the same pages on the working copy (its dev server) and on an earlier commit (run as a snapshot on its own port), and compares " +
-      "the API calls they make (by method and path, with how often and what they answer), errors, warnings, and the page's status and title. " +
-      "\"GET /api/cart is called 3 times, was 1; new warning: …\". The commit defaults to HEAD when there are uncommitted changes, else the " +
-      "commit before. Pages default to the most visited ones. Use it after a change as a regression check nobody had to write.",
+      "Did a change alter how the app behaves? Loads the same pages on the working copy and on an earlier commit and compares API calls (counts and answers), errors, warnings, status and title: \"GET /api/cart is called 3 times, was 1\". The commit defaults to HEAD when there are uncommitted changes, else the one before. A regression check nobody had to write.",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       commit: z.string().regex(/^[0-9a-fA-F]{4,40}$/).optional(),
@@ -1681,12 +1644,7 @@ server.registerTool(
   {
     title: "A friendly security pass on the user's own app (XSS, IDOR, CSRF, CORS, cookies, headers, stack traces, login limits)",
     description:
-      "Tries the requests and pages in a project's activity history against its own dev server on this computer (started if needed): " +
-      "script that comes back unescaped (reflected, and stored through the app's forms, checked in a headless browser), signed-in calls " +
-      "that answer without a session, CORS that lets any site read answers, cookies without HttpOnly/SameSite, missing security headers, " +
-      "stack traces and SQL errors after malformed input, and logins that take 20 wrong passwords. Each finding has the request that shows " +
-      "it, what to fix, and the route's file and line when found. It sends a few test records and wrong passwords to the development " +
-      "database unless read_only is true. Use it after adding routes or forms.",
+      "A security pass on the user's own app, from its activity history, against its dev server on this computer: unescaped output (reflected and stored), signed-in calls that answer without a session, CORS, cookies, missing headers, stack traces and SQL errors, login limits. Each finding has the request, the fix and the route's file and line. Sends test records to the development database unless read_only is true.",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       read_only: z.boolean().optional().describe("Skip the checks that change data"),
@@ -1713,11 +1671,7 @@ server.registerTool(
   {
     title: "Fill the development database with realistic, connected data (scenes)",
     description:
-      "Reads the project's database schema (Prisma, or CREATE TABLE in SQL migrations) and makes believable, connected rows for it: users " +
-      "with orders, orders with items, and edge cases (an empty one, a 200-character name, emoji, missing optional values, a deleted user " +
-      "who still has records). action: list (the schema and saved scenes), make (a scene from a recipe: typical, big-customer, first-time, " +
-      "empty; nothing is written to the database), load (replaces the database's rows with a scene; what was there is saved first as a " +
-      "backup scene). Only a database on this computer.",
+      "Make believable, connected rows from the project's database schema (Prisma or SQL migrations), with edge cases. action: list (schema and saved scenes), make (a scene from a recipe: typical, big-customer, first-time, empty; writes nothing), load (replaces the database's rows with a scene after saving a backup scene). Local databases only.",
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       action: z.enum(["list", "make", "load"]),

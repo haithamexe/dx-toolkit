@@ -1,3 +1,4 @@
+import { writeFileAtomic } from "../atomic.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -231,7 +232,7 @@ export async function latestVersions(options: { refresh?: boolean; fetcher?: typ
   if (answered > 0) {
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, JSON.stringify(data));
+      writeFileAtomic(file, JSON.stringify(data));
     } catch {
       // checked again next time
     }

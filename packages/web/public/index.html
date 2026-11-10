@@ -29,8 +29,9 @@
       </header>
       <main class="main" id="main" tabindex="-1"></main>
     </div>
+    <div class="offline" id="offline" role="alert" hidden></div>
     <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
-    <dialog class="dialog" id="confirm">
+    <dialog class="dialog" id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
       <form method="dialog" class="dialog-body">
         <h2 class="dialog-title" id="confirm-title"></h2>
         <div class="dialog-text" id="confirm-text"></div>

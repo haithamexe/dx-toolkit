@@ -1,3 +1,4 @@
+import { writeFileAtomic } from "../atomic.js";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDxHome } from "../config.js";
@@ -281,7 +282,7 @@ export function writeFloppySprites(dir: string, colourway: FloppyColourway = "na
     return { type, png: pngAt.get(px)! };
   });
   fs.writeFileSync(path.join(dir, "floppy.icns"), icnsFile(icns));
-  fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + "\n");
+  writeFileAtomic(manifestFile, JSON.stringify(manifest, null, 2) + "\n");
   return manifest;
 }
 

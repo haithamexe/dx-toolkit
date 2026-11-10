@@ -1,3 +1,4 @@
+import { trimJobs } from "./jobs.js";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -93,7 +94,7 @@ function startJob(task: "build" | "test", dir: string): Job {
   if (running) throw new HttpError(409, `${running.task} is already running (job ${running.id}). Wait for it, or read it with dev.job.`);
   const job: Job = { id: randomBytes(6).toString("hex"), task, command: COMMANDS[task], status: "running", startedAt: new Date().toISOString(), output: [] };
   jobs.set(job.id, job);
-  for (const [id, j] of jobs) if (jobs.size > 10 && j.status !== "running") jobs.delete(id);
+  trimJobs(jobs, 10, (j) => j.status !== "running");
   const push = (chunk: Buffer) => {
     for (const l of chunk.toString("utf8").split(/\r?\n/)) if (l) job.output.push(l.slice(0, 400));
     if (job.output.length > 600) job.output.splice(0, job.output.length - 600);
