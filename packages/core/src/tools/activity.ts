@@ -227,22 +227,33 @@ export function readActivity(q: ActivityQuery = {}): ActivityEvent[] {
   const sinceDay = q.since ? localDay(q.since) : undefined;
   const untilDay = q.until ? localDay(q.until) : undefined;
   const matches = activityMatcher(q);
+  // An id is the time in milliseconds times 1000; with one that looks like it, only the newest part of each file is read.
+  const timeId = q.after !== undefined && q.after > 1e14;
+  const tailFrom = timeId ? q.after! - TAIL_SLACK : undefined;
+  const afterDay = timeId ? localDay(new Date(Math.floor(q.after! / 1000))) : undefined;
   const out: ActivityEvent[] = [];
   for (const folder of folders) {
     const found: ActivityEvent[] = [];
     // Newest day first, and stop once there's enough: the files are in time order.
     for (const day of days(folder).reverse()) {
       if (sinceDay && day < sinceDay) break;
+      if (afterDay && day < afterDay) break;
       if (untilDay && day > untilDay) continue;
       const batch: ActivityEvent[] = [];
-      for (const line of readLines(path.join(folder, `${day}.jsonl`))) {
-        let e: ActivityEvent;
-        try {
-          e = JSON.parse(line) as ActivityEvent;
-        } catch {
-          continue; // a line cut short when the dashboard stopped
+      const file = path.join(folder, `${day}.jsonl`);
+      // "What's new since id N" is the end of the file: read from the end, not the whole day (a busy day is tens of megabytes).
+      if (tailFrom !== undefined) {
+        for (const e of readTailEvents(file, tailFrom)) if (matches(e)) batch.push(e);
+      } else {
+        for (const line of readLines(file)) {
+          let e: ActivityEvent;
+          try {
+            e = JSON.parse(line) as ActivityEvent;
+          } catch {
+            continue; // a line cut short when the dashboard stopped
+          }
+          if (matches(e)) batch.push(e);
         }
-        if (matches(e)) batch.push(e);
       }
       found.unshift(...batch);
       if (found.length >= limit) break;
@@ -473,6 +484,63 @@ function days(folder: string): string[] {
       .sort();
   } catch {
     return [];
+  }
+}
+
+/**
+ * How far before the asked-for id the end-of-file read goes on: events are written in the order they
+ * arrived, and a page sends its clicks a moment after them, so an event a little older than the id
+ * can sit after it. A minute of ids (ms times 1000) is far more than that.
+ */
+const TAIL_SLACK = 60_000 * 1000;
+
+/**
+ * A day's events with an id after `boundary`, oldest first, read from the end of the file in 256 KB
+ * steps and stopping at the first event older than the boundary. A line cut short is skipped.
+ */
+export function readTailEvents(file: string, boundary: number): ActivityEvent[] {
+  let fd: number;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch {
+    return [];
+  }
+  const newestFirst: ActivityEvent[] = [];
+  try {
+    let pos = fs.fstatSync(fd).size;
+    let carry: Buffer = Buffer.alloc(0);
+    while (pos > 0) {
+      const len = Math.min(256 * 1024, pos);
+      pos -= len;
+      const chunk = Buffer.alloc(len);
+      fs.readSync(fd, chunk, 0, len, pos);
+      carry = carry.length ? Buffer.concat([chunk, carry]) : chunk;
+      // Every complete line in what's held (those after its first newline, unless it starts the file), last first.
+      let end = carry.length;
+      for (let nlAt = carry.lastIndexOf(0x0a, end - 1); nlAt >= 0; nlAt = end > 0 ? carry.lastIndexOf(0x0a, end - 1) : -1) {
+        if (take(carry.subarray(nlAt + 1, end))) return newestFirst.reverse();
+        end = nlAt;
+      }
+      carry = carry.subarray(0, end);
+    }
+    if (carry.length) take(carry);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return newestFirst.reverse();
+
+  /** Adds one line's event; true when it's older than the boundary, so nothing before it is wanted. */
+  function take(line: Buffer): boolean {
+    if (!line.length) return false;
+    let e: ActivityEvent;
+    try {
+      e = JSON.parse(line.toString("utf8")) as ActivityEvent;
+    } catch {
+      return false;
+    }
+    if (typeof e.id === "number" && e.id <= boundary) return true;
+    newestFirst.push(e);
+    return false;
   }
 }
 

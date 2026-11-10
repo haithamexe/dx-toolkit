@@ -57,6 +57,8 @@ export * from "./tools/envwatch.js";
 export * from "./tools/state.js";
 export * from "./tools/agents.js";
 export { writeFileAtomic } from "./atomic.js";
+export { mapLimit } from "./concurrency.js";
+export { gitStdout, withPrefetchedGit } from "./gitprefetch.js";
 export * from "./tools/agentwatch.js";
 export * from "./tools/machinebackup.js";
 export * from "./tools/devsetup.js";

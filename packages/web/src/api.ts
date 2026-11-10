@@ -7,7 +7,7 @@ import {
   alertSettings,
   auditDependencies,
   buildSummary,
-  checkEnv,
+  checkEnvAsync,
   cloneProject,
   commandExists,
   findUnsavedWork,
@@ -54,7 +54,8 @@ import {
   clearActivity,
   activityUsage,
   addGitignoreRules,
-  auditEnv,
+  auditEnvAsync,
+  mapLimit,
   ensureEnvFile,
   readEnvFile,
   writeEnvFile,
@@ -547,13 +548,16 @@ const routes: Record<string, Handler> = {
       coverage: req.body.coverage === true,
       source: "web",
     }),
-  "GET /api/env": (req) => checkEnv(knownProject(req.query.get("dir")).dir),
+  "GET /api/env": (req) => checkEnvAsync(knownProject(req.query.get("dir")).dir),
   // The Env page: every project's .env files and .gitignore, then one project in full.
-  "GET /api/env/all": () =>
-    scanProjects(loadConfig()).map((p) => {
-      const a = auditEnv(p.dir);
-      return { name: p.name, ...a };
-    }),
+  // Four projects at a time: it used to hold the whole dashboard (and the proxy to your dev servers) up for about 3 s.
+  "GET /api/env/all": async () =>
+    mapLimit(
+      scanProjects(loadConfig()),
+      4,
+      async (p) => ({ name: p.name, ...(await auditEnvAsync(p.dir)) }),
+      (p) => ({ name: p.name, dir: p.dir, git: false, gitignore: false, files: [], rules: [], exampleIgnored: false, missingVars: [], emptyVars: [], secrets: [], scanned: false, problems: 0 }),
+    ),
   // A project's alerts: all of them (.env warnings and its tools' watches), and the system's notifications. On unless turned off.
   "GET /api/alerts/project": (req) => {
     const project = knownProject(req.query.get("dir"));
@@ -577,9 +581,9 @@ const routes: Record<string, Handler> = {
     const since = Date.parse(req.query.get("since") ?? "");
     return { alerts: envAlertsSince(Number.isNaN(since) ? Date.now() - 60_000 : since).map(({ id, at, project, kind, files, title, text }) => ({ id, at, project, kind, files, title, text })) };
   },
-  "GET /api/env/project": (req) => {
+  "GET /api/env/project": async (req) => {
     const project = knownProject(req.query.get("dir"));
-    return { name: project.name, ...auditEnv(project.dir, { secrets: true }) };
+    return { name: project.name, ...(await auditEnvAsync(project.dir, { secrets: true })) };
   },
   "GET /api/env/file": (req) => {
     const project = knownProject(req.query.get("dir"));

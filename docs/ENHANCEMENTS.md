@@ -18,6 +18,10 @@ Researched 10 Nov 2026 from five angles: local running and machine setup, debugg
 | 8 | **MCP tool answers that steer the agent**: `detail: concise \| full` on the big tools, every truncated answer ends with how to narrow it, descriptions cut to about 300 characters (longest are 970), tools listed in a fixed order. | Anthropic's *Writing tools for agents*: concise answers used 72 tokens against 206 | S per tool |
 | 9 | **Fail loudly on duplicate routes** (one merged route map built at start, with a test) and a shared capped `JobStore` for the jobs maps (visual's never forgets). | ten route tables chained with `??` | S-M |
 
+## Batch 2a: speed and freezes
+
+**Done** (Nov 2026, unreleased), from measuring every GET route on 22 real projects. The Env audit, the tour and the doctor's npm check no longer hold the dashboard up; the Summary's GitHub search runs while commits are read; Activity polls read the end of the file. Not done, on purpose: caching the health check (its answer includes the config, which changes when Settings saves) and the Summary (a stale answer right after a commit would confuse); the unsaved-work list was already parallel and costs its git spawns (about 1.6 s for 22 projects).
+
 ## Batch 2: accuracy and less noise in features people use
 
 **Errors and debugging**

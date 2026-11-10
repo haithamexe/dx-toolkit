@@ -1,4 +1,4 @@
-import { addProofToPr, currentPr, findDatabases, prProof, projectTour, queryLogState, queryReport, readActivity, recordRun, setQueryLog, tourMarkdown } from "@dx/core";
+import { addProofToPr, currentPr, findDatabases, prProof, projectTour, projectTourAsync, queryLogState, queryReport, readActivity, recordRun, setQueryLog, tourMarkdown } from "@dx/core";
 import { flushActivity } from "./activity.js";
 import { HttpError, knownProject, type ApiRequest } from "./api.js";
 
@@ -10,10 +10,10 @@ import { HttpError, knownProject, type ApiRequest } from "./api.js";
  * project's compose database, and statements are kept with their values replaced by ?.
  */
 export const teamRoutes: Record<string, (req: ApiRequest) => unknown> = {
-  "GET /api/tour": (req) => {
+  "GET /api/tour": async (req) => {
     const project = knownProject(req.query.get("dir"));
     flushActivity();
-    const tour = projectTour(project);
+    const tour = await projectTourAsync(project);
     return { tour, markdown: tourMarkdown(tour) };
   },
 

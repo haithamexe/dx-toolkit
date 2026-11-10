@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { killProcess } from "./ports.js";
@@ -38,12 +38,30 @@ export function runNpm(args: string[], options: { quiet?: boolean; cwd?: string 
   return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
+/** npm with fixed arguments, without waiting for it on the main thread (the dashboard asks while it serves other requests). */
+function runNpmAsync(args: string[]): Promise<string> {
+  const [file, list] = win ? ["cmd.exe", ["/d", "/s", "/c", "npm", ...args]] : ["npm", args];
+  return new Promise((resolve) => execFile(file, list, { encoding: "utf8", windowsHide: true, timeout: 15_000 }, (_err, stdout, stderr) => resolve(`${stdout ?? ""}${stderr ?? ""}`)));
+}
+
+/** npm's global folders, both asked at once, for callers that mustn't hold the dashboard up. */
+export async function npmGlobalDirsAsync(): Promise<{ root: string; binDir: string }> {
+  const last = (out: string) => out.trim().split(/\r?\n/).pop() ?? "";
+  const [root, prefix] = await Promise.all([runNpmAsync(["root", "-g"]).then(last), runNpmAsync(["prefix", "-g"]).then(last)]);
+  return { root, binDir: win ? prefix : path.join(prefix, "bin") };
+}
+
 /** npm's global folders, asked once. */
 export function npmGlobalDirs(): { root: string; binDir: string } {
   const last = (out: string) => out.trim().split(/\r?\n/).pop() ?? "";
   const root = last(runNpm(["root", "-g"], { quiet: true }).out);
   const prefix = last(runNpm(["prefix", "-g"], { quiet: true }).out);
   return { root, binDir: win ? prefix : path.join(prefix, "bin") };
+}
+
+/** findDxInstalls, asking npm without holding up the dashboard. */
+export async function findDxInstallsAsync(): Promise<DxInstalls> {
+  return findDxInstalls(await npmGlobalDirsAsync());
 }
 
 /** What's installed globally as dx, and the shims nothing owns any more. */

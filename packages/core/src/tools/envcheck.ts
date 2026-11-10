@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -72,7 +72,49 @@ export function ensureEnvFile(dir: string): string | undefined {
   return env;
 }
 
+/**
+ * The .env checks are written once as steps: each `yield` asks for git's answer (or the scan of the
+ * tracked files) and gets it back. `runEnvSteps` answers them with the synchronous calls (the CLI,
+ * an AI tool's server, tests); `runEnvStepsAsync` with ones that don't hold up the dashboard, which
+ * also runs the proxy to your dev servers, while git starts for each of 22 projects.
+ */
+export type EnvStep = { dir: string; git: string[]; sep: string } | { dir: string; scan: string[] };
+export type EnvSteps<T> = Generator<EnvStep, T, unknown>;
+
+/** git's output as lines. */
+export function* gitLinesStep(dir: string, args: string[], sep = "\n"): EnvSteps<string[]> {
+  return (yield { dir, git: args, sep }) as string[];
+}
+/** The keys and tokens in these tracked files. */
+export function* scanStep(dir: string, files: string[]): EnvSteps<SecretFinding[]> {
+  return (yield { dir, scan: files }) as SecretFinding[];
+}
+/** Whether `dir` is inside a git repository. */
+export function* isGitRepoStep(dir: string): EnvSteps<boolean> {
+  return (yield* gitLinesStep(dir, ["rev-parse", "--show-toplevel"])).length > 0;
+}
+
+export function runEnvSteps<T>(steps: EnvSteps<T>): T {
+  let r = steps.next();
+  while (!r.done) r = steps.next("git" in r.value ? gitLines(r.value.dir, r.value.git, r.value.sep) : scanSecrets(r.value.dir, r.value.scan));
+  return r.value;
+}
+
+export async function runEnvStepsAsync<T>(steps: EnvSteps<T>): Promise<T> {
+  let r = steps.next();
+  while (!r.done) r = steps.next("git" in r.value ? await gitLinesAsync(r.value.dir, r.value.git, r.value.sep) : await scanSecretsAsync(r.value.dir, r.value.scan));
+  return r.value;
+}
+
 export function checkEnv(dir: string, options: { secrets?: boolean } = {}): EnvReport {
+  return runEnvSteps(checkEnvSteps(dir, options));
+}
+
+export function checkEnvAsync(dir: string, options: { secrets?: boolean } = {}): Promise<EnvReport> {
+  return runEnvStepsAsync(checkEnvSteps(dir, options));
+}
+
+export function* checkEnvSteps(dir: string, options: { secrets?: boolean } = {}): EnvSteps<EnvReport> {
   const report: EnvReport = { dir, envFiles: [], missing: [], empty: [], tracked: [], notIgnored: [], secrets: [], scanned: false };
   const example = findExampleFile(dir);
   if (example) report.exampleFile = example;
@@ -91,18 +133,18 @@ export function checkEnv(dir: string, options: { secrets?: boolean } = {}): EnvR
     }
   }
 
-  const git = isGitRepo(dir);
+  const git = yield* isGitRepoStep(dir);
   if (git) {
-    const tracked = gitLines(dir, ["ls-files", "-z", "--cached"], "\0");
+    const tracked = yield* gitLinesStep(dir, ["ls-files", "-z", "--cached"], "\0");
     const isEnv = (f: string) => /(^|\/)\.env(\.[\w.-]+)?$/.test(f) && !EXAMPLE_FILES.some((e) => f === e || f.endsWith(`/${e}`));
     report.tracked = tracked.filter(isEnv);
     const unTracked = report.envFiles.map((f) => path.relative(dir, f).split(path.sep).join("/")).filter((f) => !report.tracked.includes(f));
     if (unTracked.length) {
-      const ignored = new Set(gitLines(dir, ["check-ignore", "--", ...unTracked]));
+      const ignored = new Set(yield* gitLinesStep(dir, ["check-ignore", "--", ...unTracked]));
       report.notIgnored = unTracked.filter((f) => !ignored.has(f));
     }
     if (options.secrets !== false) {
-      report.secrets = scanSecrets(dir, tracked);
+      report.secrets = yield* scanStep(dir, tracked);
       report.scanned = true;
     }
   }
@@ -147,17 +189,46 @@ function scanSecrets(dir: string, files: string[]): SecretFinding[] {
     } catch {
       continue;
     }
-    const lines = text.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      for (const p of PATTERNS) {
-        const m = p.re.exec(lines[i]);
-        if (!m) continue;
-        // An OpenAI-shaped match that is really an Anthropic key is reported once, as Anthropic.
-        if (p.kind === "OpenAI API key" && m[0].startsWith("sk-ant-")) continue;
-        found.push({ file: rel, line: i + 1, kind: p.kind, preview: mask(m[0]) });
-        if (found.length >= MAX_FINDINGS) return found;
-      }
+    found.push(...findSecrets(rel, text, MAX_FINDINGS - found.length));
+    if (found.length >= MAX_FINDINGS) return found;
+  }
+  return found;
+}
+
+/** The keys and tokens on each line of one file's text, at most `room` of them. */
+function findSecrets(rel: string, text: string, room: number): SecretFinding[] {
+  const found: SecretFinding[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    for (const p of PATTERNS) {
+      const m = p.re.exec(lines[i]);
+      if (!m) continue;
+      // An OpenAI-shaped match that is really an Anthropic key is reported once, as Anthropic.
+      if (p.kind === "OpenAI API key" && m[0].startsWith("sk-ant-")) continue;
+      found.push({ file: rel, line: i + 1, kind: p.kind, preview: mask(m[0]) });
+      if (found.length >= room) return found;
     }
+  }
+  return found;
+}
+
+/** scanSecrets, reading the files without holding up the dashboard: a file at a time, with the event loop free in between. */
+async function scanSecretsAsync(dir: string, files: string[]): Promise<SecretFinding[]> {
+  const found: SecretFinding[] = [];
+  for (const rel of files) {
+    if (SKIP.test(rel)) continue;
+    let buf: Buffer;
+    try {
+      const file = path.join(dir, rel);
+      const st = await fs.promises.stat(file);
+      if (!st.isFile() || st.size > MAX_FILE) continue;
+      buf = await fs.promises.readFile(file);
+    } catch {
+      continue;
+    }
+    if (buf.includes(0)) continue; // binary
+    found.push(...findSecrets(rel, buf.toString("utf8"), MAX_FINDINGS - found.length));
+    if (found.length >= MAX_FINDINGS) break;
   }
   return found;
 }
@@ -175,12 +246,12 @@ function read(file: string): string {
   }
 }
 
-function isGitRepo(dir: string): boolean {
-  try {
-    return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim() !== "";
-  } catch {
-    return false;
-  }
+/** git output split into lines, without waiting for it on the main thread. */
+function gitLinesAsync(dir: string, args: string[], sep = "\n"): Promise<string[]> {
+  return new Promise((resolve) => {
+    const split = (out: unknown) => (typeof out === "string" ? out.split(sep).map((l) => l.trim()).filter(Boolean) : []);
+    execFile("git", args, { cwd: dir, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => resolve(split(err ? (err as { stdout?: string }).stdout : stdout)));
+  });
 }
 
 /** git output split into lines; check-ignore exits 1 when nothing is ignored, which isn't an error. */

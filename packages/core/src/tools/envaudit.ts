@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { checkEnv, EXAMPLE_FILES, parseDotenv, type SecretFinding } from "./envcheck.js";
+import { checkEnvSteps, EXAMPLE_FILES, gitLinesStep, isGitRepoStep, parseDotenv, runEnvSteps, runEnvStepsAsync, type EnvSteps, type SecretFinding } from "./envcheck.js";
 
 /**
  * The Env page's view of a project: its .env files (wherever they are in the project), whether
@@ -103,11 +102,20 @@ export function isExampleFile(name: string): boolean {
 
 /** The Env page's view of one project. `secrets` also scans tracked files for keys (slower). */
 export function auditEnv(dir: string, options: { secrets?: boolean } = {}): ProjectEnv {
-  const git = isGitRepo(dir);
+  return runEnvSteps(auditEnvSteps(dir, options));
+}
+
+/** auditEnv for the dashboard: git and the file reads happen without holding it up. */
+export function auditEnvAsync(dir: string, options: { secrets?: boolean } = {}): Promise<ProjectEnv> {
+  return runEnvStepsAsync(auditEnvSteps(dir, options));
+}
+
+function* auditEnvSteps(dir: string, options: { secrets?: boolean } = {}): EnvSteps<ProjectEnv> {
+  const git = yield* isGitRepoStep(dir);
   const names = findEnvFiles(dir);
-  const tracked = new Set(git ? gitLines(dir, ["ls-files", "-z", "--cached", "--", ...names], "\0") : []);
+  const tracked = new Set(git ? yield* gitLinesStep(dir, ["ls-files", "-z", "--cached", "--", ...names], "\0") : []);
   const untracked = names.filter((n) => !tracked.has(n));
-  const ignored = new Set(git && untracked.length ? gitLines(dir, ["check-ignore", "--", ...untracked]) : []);
+  const ignored = new Set(git && untracked.length ? yield* gitLinesStep(dir, ["check-ignore", "--", ...untracked]) : []);
   const ignoreText = readText(path.join(dir, ".gitignore"));
   const lines = ignoreText === undefined ? [] : ignoreText.split(/\r?\n/);
 
@@ -122,7 +130,7 @@ export function auditEnv(dir: string, options: { secrets?: boolean } = {}): Proj
   const rules = GITIGNORE_RULES.map((r) => ({ pattern: r.pattern, why: r.why, covered: r.test.every((t) => matchesGitignore(lines, t)) }));
   const exampleIgnored = matchesGitignore(lines, ".env.example");
 
-  const report = options.secrets ? checkEnv(dir) : checkEnv(dir, { secrets: false });
+  const report = yield* checkEnvSteps(dir, options.secrets ? {} : { secrets: false });
   const problems =
     files.filter((f) => f.tracked || f.notIgnored).length +
     // No .gitignore, or one missing rules, is one thing to fix: the button adds them all.
@@ -283,20 +291,4 @@ function readText(file: string): string | undefined {
   }
 }
 
-function isGitRepo(dir: string): boolean {
-  try {
-    return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim() !== "";
-  } catch {
-    return false;
-  }
-}
 
-function gitLines(dir: string, args: string[], sep = "\n"): string[] {
-  try {
-    const out = execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-    return out.split(sep).map((l) => l.trim()).filter(Boolean);
-  } catch (err) {
-    const out = (err as { stdout?: string }).stdout;
-    return typeof out === "string" ? out.split(sep).map((l) => l.trim()).filter(Boolean) : [];
-  }
-}

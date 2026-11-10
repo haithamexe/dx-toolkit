@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { gitStdout, withPrefetchedGit } from "../gitprefetch.js";
+import { ROUTE_FILES_ARGS } from "./graveyard.js";
 import fs from "node:fs";
 import path from "node:path";
 import { readActivity, type ActivityEvent } from "./activity.js";
@@ -191,10 +192,9 @@ function readJson<T>(file: string): T | undefined {
   }
 }
 
-function git(dir: string, args: string[]): string {
-  const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
-  return r.status === 0 ? r.stdout : "";
-}
+const git = gitStdout;
+const BUSY_ARGS = ["log", "--since=90.days", "--no-merges", "--name-only", "--format=", "--relative"];
+const TRACKED_ARGS = ["ls-files", "--cached", "--others", "--exclude-standard"];
 
 const major = (v: string | undefined) => /(\d+)/.exec(v ?? "")?.[1];
 
@@ -308,7 +308,7 @@ function folders(dir: string, tracked: string[]): TourFolder[] {
 }
 
 function busyFiles(dir: string): { file: string; commits: number }[] {
-  const out = git(dir, ["log", "--since=90.days", "--no-merges", "--name-only", "--format=", "--relative"]);
+  const out = git(dir, BUSY_ARGS);
   const count = new Map<string, number>();
   for (const f of out.split("\n")) {
     const file = f.trim();
@@ -368,12 +368,17 @@ export function callsByPage(events: ActivityEvent[]): { pages: Map<string, numbe
   return { pages, calls, all };
 }
 
+/** projectTour for the dashboard: git's three answers are fetched at once without holding it up. */
+export function projectTourAsync(project: Pick<Project, "name" | "dir"> & Partial<Project>, options: { events?: ActivityEvent[]; days?: number } = {}): Promise<ProjectTour> {
+  return withPrefetchedGit(project.dir, [BUSY_ARGS, TRACKED_ARGS, ROUTE_FILES_ARGS], () => projectTour(project, options));
+}
+
 /** Builds the tour of a project. `events` defaults to the activity history (its whole length). */
 export function projectTour(project: Pick<Project, "name" | "dir"> & Partial<Project>, options: { events?: ActivityEvent[]; days?: number } = {}): ProjectTour {
   const dir = project.dir;
   const days = options.days ?? 30;
   const events = options.events ?? readActivity({ dir, since: new Date(Date.now() - days * 86_400_000), limit: 50_000 });
-  const tracked = git(dir, ["ls-files", "--cached", "--others", "--exclude-standard"]).split("\n").filter(Boolean);
+  const tracked = git(dir, TRACKED_ARGS).split("\n").filter(Boolean);
   const declared = declaredRoutes(dir);
   const seen = callsByPage(events);
 

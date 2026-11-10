@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { gitStdout } from "../gitprefetch.js";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
@@ -44,10 +44,13 @@ export interface Graveyard {
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".nuxt", ".svelte-kit", ".output", ".venv", "venv", "__pycache__", "coverage", ".turbo", ".cache", "target", "vendor", "public", "static"]);
 const CODE = /\.(m?[jt]sx?|cjs|vue|svelte|astro|py)$/i;
 
+/** The git call the route finder starts from; a tour fetches it ahead of time. */
+export const ROUTE_FILES_ARGS = ["ls-files", "-z", "--cached", "--others", "--exclude-standard"];
+
 function files(dir: string): string[] {
-  const git = spawnSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: dir, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  const out = gitStdout(dir, ROUTE_FILES_ARGS);
   let list: string[] = [];
-  if (git.status === 0 && git.stdout) list = git.stdout.split("\0").filter(Boolean);
+  if (out) list = out.split("\0").filter(Boolean);
   else {
     const walk = (rel: string, depth: number) => {
       if (depth > 10 || list.length > 20_000) return;

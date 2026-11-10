@@ -81,6 +81,16 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Decisions
 
+### Batch 2a: speed and freezes (`core/src/tools/envcheck.ts`, `gitprefetch.ts`, `concurrency.ts`, `activity.ts`)
+
+- **Measured first, on the real projects folder with a throwaway DX_HOME**: each GET route's time, and how long its handler holds up the event loop before it returns. The dashboard also proxies your dev servers, so a handler that runs synchronous git for 3.5 s (`/api/env/all`) stalls them for that long.
+- **One set of steps, two ways to run it** for the .env checks: `checkEnvSteps` / `auditEnvSteps` are generators that `yield` each git call and the secrets scan; `runEnvSteps` answers them with the synchronous calls (CLI, an AI tool's server, tests), `runEnvStepsAsync` with `execFile` and `fs.promises`. The two can't drift apart, and a test checks they give the same answer. `mapLimit` runs a few projects at a time (a failed project gets a fallback, it doesn't lose the others).
+- **The tour reads git through `gitStdout`**, and `withPrefetchedGit` asks git for its three answers in parallel first, then runs the unchanged synchronous builder, which finds them in hand. It's safe because that call runs to its end before anything else can. The answers live only for that call.
+- **The doctor starts npm's folder lookup and the port listing first** and waits for them where they're used, instead of running them in a row and holding the loop with `spawnSync`.
+- **The Summary's GitHub search starts as soon as the username is known** (the setting, else the most common owner of the repositories' remotes, gathered in parallel), while the commits are read.
+- **Activity "what's new" polls read from the end of the day's file** (`readTailEvents`, 256 KB steps, stopping at the first event older than the asked-for id minus a minute, since a page sends its clicks a moment after the requests they caused). Only when the id looks like a time-based one (`> 1e14`); anything else reads the whole file as before. Ids are the time in ms times 1000, so they keep increasing across restarts.
+- **Not cached**: the health check (its answer holds the config, which Settings changes) and the Summary (right after a commit, a stale answer would be wrong). A Python edit typed inline through the shell lost a doubled backslash once more (an escaped newline became a real one, so the text to replace wasn't found, and an earlier timing run read a config path with its backslashes gone and saw no projects): a script that has backslashes in it is written to a file first.
+
 ### Batch 1 of the enhancements (`docs/ENHANCEMENTS.md`)
 
 - **The maintainer asked for existing things to be made better, not new features, then to start with batch 1.** Nine items, each measured or read from the code first.

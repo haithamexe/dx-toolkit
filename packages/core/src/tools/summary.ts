@@ -72,6 +72,25 @@ export interface SummaryOptions {
 const FIELD = "\x1f";
 const MAX_PARALLEL = 6;
 
+/** The pull requests since `start`: the username (the setting, else the most common owner among the repositories' remotes) is found first, then GitHub is asked. */
+async function startGithubSearch(config: DxConfig, repos: Project[], start: Date): Promise<WorkSummary["github"]> {
+  let user = config.githubUser;
+  if (!user) {
+    const remotes: string[] = [];
+    await inBatches(repos, MAX_PARALLEL, async (p) => {
+      const url = await gitOutput(p.dir, ["remote", "get-url", "origin"]).catch(() => "");
+      if (url) remotes.push(url);
+    });
+    user = mostCommonOwner(remotes);
+  }
+  if (!user) return { error: "no GitHub username: set it with dx config github <username>" };
+  try {
+    return await fetchGithubActivity(user, localDate(start), await githubToken());
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+}
+
 export async function buildSummary(options: SummaryOptions = {}): Promise<WorkSummary> {
   const days = Math.max(1, Math.floor(options.days ?? 7));
   const now = options.now ?? new Date();
@@ -85,9 +104,11 @@ export async function buildSummary(options: SummaryOptions = {}): Promise<WorkSu
   const projects: ProjectActivity[] = [];
   const skipped: WorkSummary["skipped"] = [];
   const uncommitted: WorkSummary["uncommitted"] = [];
-  const remotes: string[] = [];
   let gitMissing = false;
   const authors = new Set<string>();
+
+  // The GitHub search (a second or so over the network) starts as soon as the username is known, while the repositories' commits are read.
+  const githubSearch = options.github ? startGithubSearch(config, repos, start) : undefined;
 
   await inBatches(repos, MAX_PARALLEL, async (project) => {
     try {
@@ -98,10 +119,6 @@ export async function buildSummary(options: SummaryOptions = {}): Promise<WorkSu
       if (commits.length || project.lastActive >= start.getTime()) {
         const files = await changedFiles(project.dir);
         if (files) uncommitted.push({ project: project.name, files });
-      }
-      if (options.github && !config.githubUser) {
-        const url = await gitOutput(project.dir, ["remote", "get-url", "origin"]);
-        if (url) remotes.push(url);
       }
     } catch (err) {
       const e = err as NodeJS.ErrnoException & { stderr?: string };
@@ -118,19 +135,7 @@ export async function buildSummary(options: SummaryOptions = {}): Promise<WorkSu
   skipped.sort((a, b) => a.project.localeCompare(b.project));
   uncommitted.sort((a, b) => b.files - a.files || a.project.localeCompare(b.project));
 
-  let github: WorkSummary["github"];
-  if (options.github) {
-    const user = config.githubUser || mostCommonOwner(remotes);
-    if (!user) {
-      github = { error: "no GitHub username: set it with dx config github <username>" };
-    } else {
-      try {
-        github = await fetchGithubActivity(user, localDate(start), await githubToken());
-      } catch (err) {
-        github = { error: (err as Error).message };
-      }
-    }
-  }
+  const github = await githubSearch;
 
   return {
     from: localDate(start),

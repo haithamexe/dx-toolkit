@@ -10,7 +10,7 @@ import { devSetupChecks } from "./devsetup.js";
 import { githubToken } from "./github.js";
 import { certFiles, mkcertInstallFix } from "./https.js";
 import { listListeningPorts } from "./ports.js";
-import { findDxInstalls } from "./selfinstall.js";
+import { findDxInstallsAsync } from "./selfinstall.js";
 import { scanProjects } from "./projects.js";
 import { detectStack } from "./stacks.js";
 
@@ -27,6 +27,11 @@ export interface Check {
 /** Checks that everything dx relies on works on this machine. */
 export async function runDoctor(): Promise<Check[]> {
   const checks: Check[] = [];
+  // npm is asked for its folders while the other checks run (it takes about 0.7 s), and not on the main thread.
+  const installs = findDxInstallsAsync().catch(() => undefined);
+  // The listening ports (about a second on Windows) are read in the same time, not after the checks before them.
+  const listening = listListeningPorts();
+  listening.catch(() => undefined);
   const major = Number(process.versions.node.split(".")[0]);
   checks.push({
     name: "Node.js",
@@ -78,7 +83,7 @@ export async function runDoctor(): Promise<Check[]> {
   });
 
   try {
-    const ports = await listListeningPorts();
+    const ports = await listening;
     checks.push({ name: "Port listing", status: "ok", detail: `${ports.length} listening port(s) visible` });
   } catch (err) {
     checks.push({ name: "Port listing", status: "fail", detail: (err as Error).message, fix: lsofFix() });
@@ -194,13 +199,7 @@ export async function runDoctor(): Promise<Check[]> {
   }
 
   // Two installs of dx, or shims left by one that's gone, make npm install -g fail with EEXIST.
-  const dx = (() => {
-    try {
-      return findDxInstalls();
-    } catch {
-      return undefined;
-    }
-  })();
+  const dx = await installs;
   if (dx) {
     if (dx.npm && dx.local) {
       checks.push({
