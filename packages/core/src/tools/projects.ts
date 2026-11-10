@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, stripBom, type DxConfig } from "../config.js";
 import { fuzzyRank } from "../fuzzy.js";
+import { devCommandFromFiles } from "./runfiles.js";
 
 export type ProjectKind = "node" | "go" | "rust" | "python" | "dotnet" | "other";
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
@@ -141,9 +142,11 @@ export function readProject(dir: string, root = path.dirname(dir)): Project | un
         devCommand = `${packageManager ?? "npm"} run ${script}`;
         devScript = pkg.scripts[script];
       }
-    } else if (kind === "go") devCommand = "go run .";
-    else if (kind === "rust") devCommand = "cargo run";
-    else if (kind === "python" && has("manage.py")) devCommand = "python manage.py runserver";
+    }
+    // A task runner or the framework's own command, from the project's files.
+    devCommand ??= devCommandFromFiles(dir);
+    if (!devCommand && kind === "go") devCommand = "go run .";
+    else if (!devCommand && kind === "rust") devCommand = "cargo run";
   }
 
   let url = devrc?.url;

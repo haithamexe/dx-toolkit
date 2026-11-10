@@ -22,7 +22,7 @@ import {
   writeFloppySprites,
   type ShortcutLaunch,
 } from "@dx/core";
-import { floppySpritesDir, readFloppyInfo, startFloppy } from "./floppy.js";
+import { floppySpritesDir, floppySupported, readFloppyInfo, startFloppy } from "./floppy.js";
 
 /**
  * Opening the dx app: the dashboard in a window of its own, run by the Electron dx installs in
@@ -164,7 +164,7 @@ export async function openDxApp(url: string, options: { install?: "wait" | "back
  * `dx floppy --stop`; `dx floppy` brings it back). Starting is quick and doesn't wait for it.
  */
 export function startFloppyWithApp(): void {
-  if (process.platform !== "win32" || loadConfig().floppy?.off || readFloppyInfo()) return;
+  if (!floppySupported() || loadConfig().floppy?.off || readFloppyInfo()) return;
   void startFloppy().catch(() => undefined);
 }
 

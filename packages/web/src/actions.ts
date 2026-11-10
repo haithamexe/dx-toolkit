@@ -69,7 +69,7 @@ export const DX_ACTIONS: DxAction[] = [
 
   // Run
   A("run.list", "The dev servers dx runs, with status, address and error count", "GET", "/api/dev"),
-  A("run.start", "Start a project's dev server (or whole stack)", "POST", "/api/dev/start", { dir: DIR }, { fixed: { by: "ai" } }),
+  A("run.start", "Start a project's dev server (or whole stack), or another way to run it (projects.list gives runModes and envFiles)", "POST", "/api/dev/start", { dir: DIR, "mode?": "a run mode's id: production, script:start:staging, devrc:<name>", "env?": "a .env.<name> file to lay over .env, or empty for none" }, { fixed: { by: "ai" } }),
   A("run.restart", "Restart a project's dev server", "POST", "/api/dev/restart", { dir: DIR }, { fixed: { by: "ai" }, risky: true }),
   A("run.stop", "Stop a project's dev server", "POST", "/api/dev/stop", { dir: DIR }, RISKY),
   A("run.logs", "A dev server's output, after a line number", "GET", "/api/dev/logs", { dir: DIR, "after?": "the last line number already seen" }),

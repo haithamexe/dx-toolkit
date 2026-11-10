@@ -4,6 +4,8 @@ import { parseArgs } from "node:util";
 import { ensureDashboard } from "@dx/web/link";
 import {
   detectStack,
+  runEnvFiles,
+  runModes,
   findProjects,
   getProjectPort,
   killPort,
@@ -37,6 +39,9 @@ export const goCommand: Command = {
     "  --no-dev         only open the editor",
     "  --no-editor      only start the dev server",
     "  --no-browser     don't open the browser when the server is ready",
+    "  --mode <id>      run it another way: production (build, then its server), script:<name>,",
+    "                   devrc:<name> (from .devrc.json \"modes\"); --modes lists them",
+    "  --env <file>     lay a .env.<name> file over .env, e.g. --env .env.staging",
     "",
     "Without a search, picks from your most recently active projects.",
     "Use . for the project in the current folder: dx go .",
@@ -51,6 +56,9 @@ export const goCommand: Command = {
         dev: { type: "boolean", default: true },
         editor: { type: "boolean", default: true },
         browser: { type: "boolean", default: true },
+        mode: { type: "string" },
+        env: { type: "string" },
+        modes: { type: "boolean" },
       },
     });
     const config = loadConfig();
@@ -87,6 +95,21 @@ export const goCommand: Command = {
       return;
     }
 
+    if (values.modes) {
+      const modes = runModes(project);
+      const envs = runEnvFiles(project.dir);
+      if (!modes.length) info(`${project.name} has no way to run it yet. Add one in .devrc.json: { "dev": "..." }`);
+      for (const m of modes) console.log(`  ${c.cyan(m.id.padEnd(22))} ${m.build ? `${m.build} && ` : ""}${m.command}${m.envFile ? c.dim(`  (with ${m.envFile})`) : ""}`);
+      if (envs.length) console.log(`\n  .env files for --env: ${envs.map((e) => `${e.file} ${c.dim(`(${e.count})`)}`).join(", ")}`);
+      return;
+    }
+    // Another mode or an env file: run through the dashboard, which checks both against the project's files.
+    if (values.mode || values.env !== undefined) {
+      const client = await ensureDashboard();
+      const started = await client.post<{ run?: { label: string; envFile?: string } }>("/api/dev/start", { dir: project.dir, by: "terminal", ...(values.mode ? { mode: values.mode } : {}), ...(values.env !== undefined ? { env: values.env } : {}) });
+      info(`Running ${project.name}${started.run ? ` as ${[started.run.label, started.run.envFile && `with ${started.run.envFile}`].filter(Boolean).join(", ")}` : ""}  ${c.dim("(Ctrl+C stops it)")}\n`);
+      return follow(client, project, values.browser);
+    }
     const stack = detectStack(project);
     if (stack) {
       if (values.window) {

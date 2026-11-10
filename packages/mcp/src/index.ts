@@ -9,6 +9,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   addJournalEntry,
+  adoptShellPath,
   auditDependencies,
   buildSummary,
   commandExists,
@@ -584,15 +585,17 @@ server.registerTool(
     inputSchema: {
       project: z.string().describe("Project name, or part of it"),
       timeout_seconds: z.number().int().min(5).max(300).optional().describe("How long to wait for it to be ready (default 90)"),
+      mode: z.string().max(60).optional().describe("Another way to run it: production (build, then its server), script:<name>, devrc:<name>"),
+      env: z.string().max(70).optional().describe("A .env.<name> file to lay over .env, e.g. .env.staging"),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
-  async ({ project: name, timeout_seconds }) => {
+  async ({ project: name, timeout_seconds, mode, env }) => {
     const project = pickProject(name);
     if (typeof project === "string") return failure(project);
     try {
       const client = await ensureDashboard();
-      const started = await client.post<DevInfo>("/api/dev/start", { dir: project.dir, by: "ai" });
+      const started = await client.post<DevInfo>("/api/dev/start", { dir: project.dir, by: "ai", ...(mode ? { mode } : {}), ...(env !== undefined ? { env } : {}) });
       recordRun("go", true, `${project.name} started by an AI agent`, "mcp", { project: project.name });
       const after = started.status === "starting" ? 0 : (seen.get(project.dir) ?? 0);
       const report = await waitAndReport(client, project, "ready", after, (timeout_seconds ?? 90) * 1000);
@@ -2032,4 +2035,7 @@ const PROMPTS: Record<string, ReturnType<typeof prompt>> = {
 };
 for (const [name, def] of Object.entries(PROMPTS)) server.registerPrompt(name, def.config, def.run);
 
+// An AI app started from the Dock or a launcher hands its MCP servers the system's bare PATH:
+// take the login shell's (macOS and Linux), in the background so the first answer isn't held up.
+void adoptShellPath().catch(() => undefined);
 await server.connect(new StdioServerTransport());

@@ -11,7 +11,7 @@ import { after, test } from "node:test";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "dx-floppy-home-"));
 process.env.DX_HOME = home;
 const { crc32, encodePng, pngToIco, parseColor } = await import("../tools/png.js");
-const { FLOPPY_MOODS, FLOPPY_SPRITE, composeFloppy, floppyIcon16, writeFloppySprites, floppyView, newFloppyMemory, setFloppyStartup, floppyStartsWithWindows, floppyShortcutPath, openAppWindow, FLOPPY_SLEEP_MS } = await import("../tools/floppy.js");
+const { FLOPPY_MOODS, FLOPPY_SPRITE, composeFloppy, floppyIcon16, writeFloppySprites, floppyView, newFloppyMemory, setFloppyStartup, floppyStartsWithWindows, floppyShortcutPath, floppyLaunchAgent, floppyAutostartEntry, openAppWindow, FLOPPY_SLEEP_MS } = await import("../tools/floppy.js");
 const { FLOPPY_WINDOW_PS } = await import("../tools/floppyWindow.js");
 type Snap = import("../tools/floppy.js").FloppySnapshot;
 
@@ -163,4 +163,25 @@ test("the window script parses, and only addresses on this computer open as an a
   fs.writeFileSync(file, FLOPPY_WINDOW_PS);
   const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:DX_PS, [ref]$null, [ref]$e); $e.Count"], { encoding: "utf8", env: { ...process.env, DX_PS: file }, windowsHide: true });
   assert.equal(r.stdout.trim(), "0", r.stdout + r.stderr);
+});
+
+test("Floppy starts at sign-in on macOS (a LaunchAgent) and Linux (an autostart entry), written as files", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "dx-floppy-signin-"));
+  const env = { HOME: base };
+  const launch = { command: "/usr/local/bin/node", args: ["/path/to/dx tools/floppyapp.js", "--detach"] };
+  assert.equal(floppyShortcutPath(env, "darwin"), path.join(base, "Library", "LaunchAgents", "dx.floppy.plist"));
+  assert.equal(floppyShortcutPath(env, "linux"), path.join(base, ".config", "autostart", "dx-floppy.desktop"));
+  const plist = floppyLaunchAgent({ ...launch, args: ["a&b<c>", "--detach"] });
+  assert.ok(plist.includes("<string>dx.floppy</string>") && plist.includes("<key>RunAtLoad</key>"));
+  assert.ok(plist.includes("<string>a&amp;b&lt;c&gt;</string>"), "escaped for XML");
+  const entry = floppyAutostartEntry(launch);
+  assert.ok(entry.includes('Exec=/usr/local/bin/node "/path/to/dx tools/floppyapp.js" --detach'), entry);
+  assert.ok(entry.includes("NoDisplay=true"));
+  for (const platform of ["darwin", "linux"] as const) {
+    const r = setFloppyStartup(true, launch, env, platform);
+    assert.equal(r.ok, true, r.message);
+    assert.ok(fs.existsSync(r.path!));
+    assert.equal(setFloppyStartup(false, undefined, env, platform).ok, true);
+    assert.ok(!fs.existsSync(r.path!));
+  }
 });

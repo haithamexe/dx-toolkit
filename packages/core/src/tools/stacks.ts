@@ -87,6 +87,10 @@ export function detectStack(project: Project): Stack | undefined {
     if (stack && infra.length) {
       stack.services.unshift(...infra);
       stack.composeFile = compose?.file;
+    } else if (!stack && compose && !project.devCommand && composeApps(compose.file, compose.services).length) {
+      // The app itself runs in Docker (built from its own Dockerfile, or an image): every service
+      // compose would start, each with `docker compose up -d`, so Run works without a dev command.
+      stack = { source: "compose", dir, composeFile: compose.file, services: composeApps(compose.file, compose.services) };
     } else if (!stack && infra.length && project.devCommand) {
       // One app plus its database: still a stack.
       stack = {
@@ -99,7 +103,8 @@ export function detectStack(project: Project): Stack | undefined {
   }
   if (!stack) return undefined;
   const appServices = stack.services.filter((s) => s.kind === "process").length;
-  if (stack.source !== "devrc" && stack.services.length < 2 && !(stack.runner && appServices >= 2)) return undefined;
+  const dockerOnly = stack.source === "compose" && stack.services.every((s) => s.kind === "docker");
+  if (stack.source !== "devrc" && !dockerOnly && stack.services.length < 2 && !(stack.runner && appServices >= 2)) return undefined;
   orderDependencies(stack);
   return stack;
 }
@@ -243,6 +248,30 @@ function dockerServices(file: string, services: ComposeService[]): StackService[
     }));
 }
 
+/**
+ * Every service `docker compose up` would start (not ones behind a profile), for a project whose
+ * app runs in Docker: database-like images are data, the rest are named by role like any service.
+ */
+function composeApps(file: string, services: ComposeService[]): StackService[] {
+  return services
+    .filter((s) => (s.build || s.image) && !s.profiles)
+    .map((s) => {
+      const name = serviceName(s.name);
+      const data = !s.build && !!s.image && DATA_IMAGES.test(s.image);
+      return {
+        name,
+        role: data ? ("data" as const) : roleOf(name),
+        kind: "docker" as const,
+        dir: path.dirname(file),
+        command: `docker compose up -d ${s.name}`,
+        composeService: s.name,
+        hostPort: s.hostPort,
+        url: s.hostPort ? `http://localhost:${s.hostPort}` : undefined,
+        dependsOn: [],
+      };
+    });
+}
+
 // ------------------------------------------------------------ order
 
 const TIER: Record<ServiceRole, number> = { data: 0, backend: 1, other: 2, frontend: 3 };
@@ -292,7 +321,13 @@ export function startOrder(stack: Stack): StackService[][] {
 
 /** The service a browser should open: the first front end, else the first app service. */
 export function mainService(stack: Stack): StackService | undefined {
-  return stack.services.find((s) => s.role === "frontend" && s.kind === "process") ?? stack.services.find((s) => s.kind === "process");
+  return (
+    stack.services.find((s) => s.role === "frontend" && s.kind === "process") ??
+    stack.services.find((s) => s.kind === "process") ??
+    // An app that runs in Docker: its first published service that isn't a database.
+    stack.services.find((s) => s.kind === "docker" && s.role === "frontend" && s.hostPort) ??
+    stack.services.find((s) => s.kind === "docker" && s.role !== "data" && s.hostPort)
+  );
 }
 
 /** "@acme/Web App" → "web-app" */
@@ -387,6 +422,8 @@ interface ComposeService {
   image?: string;
   build?: boolean;
   hostPort?: number;
+  /** Only started with --profile, so not by a plain `docker compose up`. */
+  profiles?: boolean;
 }
 interface Compose {
   file: string;
@@ -405,6 +442,8 @@ export function readCompose(dir: string): Compose | undefined {
   let inServices = false;
   let serviceIndent = -1;
   let current: ComposeService | undefined;
+  // A service's keys, at whatever indent the file uses (2 or 4 spaces, tabs as one).
+  let keyIndent = -1;
   let inPorts = false;
   for (const raw of lines) {
     const line = raw.replace(/\s+#.*$/, "");
@@ -422,15 +461,18 @@ export function readCompose(dir: string): Compose | undefined {
       const m = /^\s*([\w.-]+):\s*$/.exec(line);
       current = m ? { name: m[1] } : undefined;
       if (current) services.push(current);
+      keyIndent = -1;
       inPorts = false;
       continue;
     }
-    if (!current) continue;
+    if (!current || indent < serviceIndent) continue;
+    if (keyIndent === -1) keyIndent = indent;
     const kv = /^\s*([\w-]+):\s*(.*)$/.exec(line);
-    if (kv && indent === serviceIndent + 2) {
+    if (kv && indent === keyIndent) {
       inPorts = kv[1] === "ports";
       if (kv[1] === "image") current.image = kv[2].replace(/^['"]|['"]$/g, "");
       if (kv[1] === "build") current.build = true;
+      if (kv[1] === "profiles") current.profiles = true;
       if (kv[1] === "ports" && kv[2].startsWith("[")) current.hostPort ??= hostPortOf(kv[2].slice(1).split(",")[0]);
       continue;
     }

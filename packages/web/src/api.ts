@@ -25,6 +25,8 @@ import {
   copyProject,
   deleteCleanup,
   detectStack,
+  runEnvFiles,
+  runModes,
   disconnectAiTools,
   expandHome,
   findCleanup,
@@ -208,7 +210,7 @@ import {
 } from "./dev.js";
 import { aiLane, interruptAi } from "./ai.js";
 import { floppySnapshot } from "./floppysnap.js";
-import { readFloppyInfo, runFloppy } from "./floppy.js";
+import { floppySupported, readFloppyInfo, runFloppy } from "./floppy.js";
 import { noticeHead, requestCapture, sawHead, visualState } from "./visual.js";
 
 /** A request the page made, already parsed. */
@@ -253,6 +255,10 @@ const routes: Record<string, Handler> = {
       dev: running.get(p.dir.toLowerCase()),
       mocks: mockSummary(p.dir),
       stack: stack && { source: stack.source, services: stack.services.map((s) => ({ name: s.name, role: s.role, kind: s.kind, command: s.command })) },
+      // Other ways to run it (production build, per-environment scripts, .devrc.json modes) and its
+      // .env.<name> files, by name and count only: the Run button's menu.
+      runModes: runModes(p).filter((m) => m.id !== "dev").map((m) => ({ id: m.id, label: m.label, command: m.build ? `${m.build} && ${m.command}` : m.command, envFile: m.envFile })),
+      envFiles: runEnvFiles(p.dir).map((e) => ({ file: e.file, name: e.name, count: e.count })),
     };
     });
   },
@@ -815,7 +821,15 @@ const routes: Record<string, Handler> = {
   "GET /api/dev": () => listDevServers(),
   "POST /api/dev/start": (req) => {
     const project = knownProject(req.body.dir, { snapshots: true });
-    return startDevServer(project, startedBy(req.body.by), { snapshot: !!snapshotByDir(project.dir) });
+    // A mode and .env file are names checked against the project's own (resolveRun), never commands.
+    const mode = typeof req.body.mode === "string" && /^[\w:-]{1,60}$/.test(req.body.mode) ? req.body.mode : undefined;
+    const env = typeof req.body.env === "string" && (req.body.env === "" || /^\.env\.[\w.-]{1,60}$/.test(req.body.env)) ? req.body.env : undefined;
+    if ((req.body.mode !== undefined && mode === undefined) || (req.body.env !== undefined && env === undefined)) throw new HttpError(400, "mode is a run mode's id and env a .env.<name> file of the project.");
+    try {
+      return startDevServer(project, startedBy(req.body.by), { snapshot: !!snapshotByDir(project.dir), mode, env });
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
   },
   "POST /api/dev/restart": (req) => restartDevServer(knownProject(req.body.dir, { snapshots: true }), startedBy(req.body.by)),
   "GET /api/dev/errors": (req) =>
@@ -899,7 +913,7 @@ const routes: Record<string, Handler> = {
   // What Floppy shows: read-only, polled with X-DX-Quiet so it doesn't keep a background dashboard alive.
   "GET /api/floppy": () => floppySnapshot(),
   // The sidebar's Run Floppy button: whether there's a Floppy to start here, and starting it as `dx floppy` does. Takes nothing.
-  "GET /api/floppy/status": () => ({ available: process.platform === "win32", running: !!readFloppyInfo() }),
+  "GET /api/floppy/status": () => ({ available: floppySupported(), running: !!readFloppyInfo() }),
   "POST /api/floppy/start": async () => {
     const r = await runFloppy();
     recordRun("floppy", r.running, r.message, "web");

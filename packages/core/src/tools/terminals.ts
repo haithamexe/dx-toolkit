@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadConfig } from "../config.js";
+import { spawn } from "node:child_process";
+import crypto from "node:crypto";
+import { dxPath, loadConfig } from "../config.js";
 import { detached, winQuote } from "./detached.js";
 import { commandExists } from "./doctor.js";
 
@@ -44,6 +46,53 @@ const macApp = (name: string) => existing(path.join("/Applications", `${name}.ap
 const keepOpen = (command: string) => `${command}; exec "\${SHELL:-sh}" -l`;
 const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const appleScriptString = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+/**
+ * Runs a launcher that exits once it has handed the window over (`open`, `osascript`), and fails
+ * when it does: unlike a terminal started detached, its exit code says whether a window opened, so
+ * a refusal (a missing app, a permission) moves on to the next terminal instead of doing nothing.
+ */
+function launcher(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let err = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (d: string) => (err += d));
+    const timer = setTimeout(() => resolve(), 15_000);
+    child.once("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(err.trim().split(/\r?\n/)[0] || `${command} exited with ${code}`));
+    });
+  });
+}
+
+/**
+ * A `.command` file for Terminal.app (dx's own, under ~/.dx/terminal, 0700): it goes to the folder,
+ * runs the command and leaves your shell open. Terminal opens these by itself, so dx needs no
+ * permission to control Terminal (AppleScript's `do script` asks for one, and fails quietly
+ * without it). Files older than a day are removed.
+ */
+export function terminalScript(dir: string, command: string | undefined, folder = dxPath("terminal")): string {
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  try {
+    for (const name of fs.readdirSync(folder)) {
+      const file = path.join(folder, name);
+      if (name.endsWith(".command") && Date.now() - fs.statSync(file).mtimeMs > 86_400_000) fs.rmSync(file, { force: true });
+    }
+  } catch {
+    // nothing to tidy
+  }
+  const file = path.join(folder, `dx-${crypto.randomBytes(6).toString("hex")}.command`);
+  const lines = ["#!/bin/sh", `cd ${shQuote(dir)} || exit 1`, ...(command ? [command] : []), 'exec "${SHELL:-/bin/zsh}" -l', ""];
+  fs.writeFileSync(file, lines.join("\n"), { mode: 0o700 });
+  fs.chmodSync(file, 0o700);
+  return file;
+}
 
 /** `start "title" /D dir <program…>` through cmd.exe: a new classic console window. */
 function startConsole(dir: string, title: string | undefined, program: string[]): Promise<void> {
@@ -106,11 +155,8 @@ const MAC: Terminal[] = [
   {
     id: "terminal",
     name: "Terminal",
-    find: async () => "/System/Applications/Utilities/Terminal.app",
-    open: (_exe, dir, command) => {
-      const line = command ? `cd ${shQuote(dir)} && ${command}` : `cd ${shQuote(dir)}`;
-      return detached("osascript", ["-e", `tell application "Terminal" to do script ${appleScriptString(line)}`, "-e", 'tell application "Terminal" to activate']);
-    },
+    find: async () => existing("/System/Applications/Utilities/Terminal.app", "/Applications/Utilities/Terminal.app"),
+    open: (_exe, dir, command) => launcher("/usr/bin/open", ["-a", "Terminal", terminalScript(dir, command)]),
   },
   {
     id: "iterm",
@@ -118,7 +164,7 @@ const MAC: Terminal[] = [
     find: async () => macApp("iTerm"),
     open: (_exe, dir, command) => {
       const line = command ? `cd ${shQuote(dir)} && ${command}` : `cd ${shQuote(dir)}`;
-      return detached("osascript", [
+      return launcher("/usr/bin/osascript", [
         "-e", 'tell application "iTerm"',
         "-e", "activate",
         "-e", "set w to (create window with default profile)",
@@ -132,13 +178,13 @@ const MAC: Terminal[] = [
     name: "Warp",
     find: async () => macApp("Warp"),
     // Warp opens a folder but can't be handed a command: for one, openTerminal uses the next terminal.
-    open: (_exe, dir) => detached("open", ["-a", "Warp", dir]),
+    open: (_exe, dir) => launcher("/usr/bin/open", ["-a", "Warp", dir]),
   },
   {
     id: "ghostty",
     name: "Ghostty",
     find: async () => macApp("Ghostty"),
-    open: (_exe, dir, command) => detached("open", ["-na", "Ghostty", "--args", `--working-directory=${dir}`, ...(command ? ["-e", "/bin/sh", "-c", keepOpen(command)] : [])]),
+    open: (_exe, dir, command) => launcher("/usr/bin/open", ["-na", "Ghostty", "--args", `--working-directory=${dir}`, ...(command ? ["-e", "/bin/sh", "-c", keepOpen(command)] : [])]),
   },
   {
     id: "kitty",

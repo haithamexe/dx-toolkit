@@ -13,6 +13,15 @@ export interface FloppyInfo {
   startedAt: string;
 }
 
+/**
+ * Where Floppy can live: Windows (its WPF window), macOS, and Linux with a desktop to draw on
+ * (an X11 or Wayland display), both through the Electron the dx app uses.
+ */
+export function floppySupported(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (platform === "win32" || platform === "darwin") return true;
+  return platform === "linux" && !!(env.DISPLAY || env.WAYLAND_DISPLAY);
+}
+
 export function floppyDir(): string {
   return dxPath("floppy");
 }
@@ -80,7 +89,7 @@ export function floppyLauncher(): FloppyLaunch {
 }
 
 export async function startFloppy(): Promise<{ started: boolean; pid?: number; message: string }> {
-  if (process.platform !== "win32") return { started: false, message: "Floppy lives on the Windows taskbar for now. macOS and Linux come later." };
+  if (!floppySupported()) return { started: false, message: "Floppy needs Windows, macOS or Linux with a desktop." };
   const running = readFloppyInfo();
   if (running) return { started: false, pid: running.pid, message: "Floppy is already on your desktop." };
   ensureDxHome();
@@ -110,7 +119,7 @@ export function settleFloppyStartup(): { message?: string; warning?: string } {
     const r = setFloppyStartup(true, floppyLauncher());
     const config = loadConfig();
     saveConfig({ ...config, floppy: { ...(config.floppy ?? {}), startup: r.ok } });
-    return r.ok ? { message: "Floppy will start when you sign in to Windows." } : { warning: r.message };
+    return r.ok ? { message: process.platform === "win32" ? "Floppy will start when you sign in to Windows." : "Floppy will start when you sign in." } : { warning: r.message };
   }
   if (floppy.startup) setFloppyStartup(true, floppyLauncher());
   return {};
@@ -121,7 +130,7 @@ export function settleFloppyStartup(): { message?: string; warning?: string } {
  * keeps the app from starting it) and starts it, as `dx floppy` does. `start` is for tests.
  */
 export async function runFloppy(start: typeof startFloppy = startFloppy): Promise<{ started: boolean; running: boolean; message: string }> {
-  if (process.platform !== "win32") return { started: false, running: false, message: "Floppy lives on the Windows taskbar for now. macOS and Linux come later." };
+  if (!floppySupported()) return { started: false, running: false, message: "Floppy needs Windows, macOS or Linux with a desktop." };
   const config = loadConfig();
   if (config.floppy?.off) {
     const floppy = { ...config.floppy };

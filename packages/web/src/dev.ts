@@ -14,6 +14,9 @@ import {
   moveDevPort,
   recordRun,
   rememberSession,
+  resolveEnvFile,
+  resolveRun,
+  type RunChoice,
   serviceName,
   splitRunnerLine,
   startOrder,
@@ -74,6 +77,15 @@ export interface DevServerInfo {
   snapshot?: boolean;
   /** Getting it ready before it starts: packages, .env, Docker, migrations… with each step's state. */
   prepare?: PrepareView[];
+  /** How it was run, when not as the plain dev server: the mode and the .env file laid over it. */
+  run?: RunInfo;
+}
+
+/** A run mode and env file (core's runmodes.ts), as the page shows them. Never the values. */
+export interface RunInfo {
+  mode: string;
+  label: string;
+  envFile?: string;
 }
 
 export interface PrepareView {
@@ -126,6 +138,8 @@ interface Proc {
   snapshot?: boolean;
   portHint?: number;
   prepare?: PrepareStep[];
+  run?: RunInfo;
+  choice?: RunChoice;
 }
 
 /** Whether apps dx starts are recorded at localhost:<port> too (needs the activity history on). */
@@ -159,6 +173,10 @@ interface StackRun {
   snapshot?: boolean;
   /** The Docker services a copy shares with the project. */
   shared?: string[];
+  /** A .env file's values laid over every app service, and what was asked for (kept for Restart). */
+  env?: Record<string, string>;
+  run?: RunInfo;
+  choice?: RunChoice;
 }
 
 const MAX_LINES = 2000;
@@ -285,22 +303,31 @@ function errorsOf(list: Proc[], options: { all?: boolean; after?: number; servic
  * it was at a commit, under ~/.dx/snapshots) runs on a port of its own, next to the project's
  * usual dev server, and isn't remembered as where you left off.
  */
-export function startDevServer(project: Project, startedBy: StartedBy = "dashboard", options: { snapshot?: boolean } = {}): DevServerInfo {
-  const stack = detectStack(project);
+export function startDevServer(project: Project, startedBy: StartedBy = "dashboard", options: { snapshot?: boolean; mode?: string; env?: string } = {}): DevServerInfo {
+  const choice: RunChoice = { mode: options.mode || undefined, env: options.env };
+  const plainDev = !choice.mode || choice.mode === "dev";
+  // A stack runs as it is; a run mode (production, a script) is the project's one command instead.
+  const stack = plainDev ? detectStack(project) : undefined;
   // Where you left off: what ran, on which branch (dx resume, resume_project).
-  if (!options.snapshot) rememberSession(project.dir, project.name, { ran: stack ? stack.services.map((s) => s.name) : ["dev"] });
-  if (stack) return startStack(project, stack, startedBy, options.snapshot === true);
-  if (!project.devCommand) throw new Error(`${project.name} has no dev command. Add one in .devrc.json: { "dev": "..." }`);
+  if (!options.snapshot) rememberSession(project.dir, project.name, { ran: stack ? stack.services.map((s) => s.name) : [choice.mode ?? "dev"] });
+  if (stack) return startStack(project, stack, startedBy, options.snapshot === true, options.snapshot ? {} : choice);
   const existing = procs.get(key(project.dir));
   if (existing && (existing.status === "starting" || existing.status === "ready")) return info(existing);
+  // The mode's command (dev by default) and the .env file laid over it; a snapshot runs plain.
+  const resolved = resolveRun(project, options.snapshot ? {} : choice);
+  const runInfo: RunInfo | undefined = resolved.mode.id !== "dev" || resolved.envFile ? { mode: resolved.mode.id, label: resolved.mode.label, envFile: resolved.envFile } : undefined;
   const spec: Spec = {
     key: key(project.dir),
     project: project.name,
     dir: project.dir,
-    command: project.devCommand,
-    url: project.url,
-    port: getProjectPort(project),
+    command: resolved.command,
+    // Another mode's server listens where it says (next start, vite preview): its printed address is used.
+    url: plainDev ? project.url : undefined,
+    port: plainDev ? getProjectPort(project) : undefined,
     startedBy,
+    env: Object.keys(resolved.env).length ? resolved.env : undefined,
+    run: runInfo,
+    choice,
   };
   // Getting it ready first (packages, .env, migrations…), in its own log; a snapshot prepares itself.
   const steps = options.snapshot ? [] : safePlan(project, {});
@@ -351,14 +378,27 @@ function launchProject(project: Project, spec: Spec, options: { snapshot?: boole
   return spawnProc(spec);
 }
 
-function startStack(project: Project, stack: Stack, startedBy: StartedBy, snapshot = false): DevServerInfo {
+function startStack(project: Project, stack: Stack, startedBy: StartedBy, snapshot = false, choice: RunChoice = {}): DevServerInfo {
   const k = key(project.dir);
   const existing = stacks.get(k);
   if (existing && (existing.phase === "starting" || existing.phase === "running")) return stackInfo(existing);
   for (const p of [...procs.values()]) if (p.stackKey === k && !p.child) procs.delete(p.key);
   const shared = snapshot ? stack.services.filter((s) => s.kind === "docker").map((s) => s.name) : [];
   const own = snapshot ? { ...stack, services: stack.services.filter((s) => s.kind !== "docker") } : stack;
-  const run: StackRun = { key: k, dir: project.dir, name: project.name, stack: own, startedBy, phase: "starting", startedAt: new Date().toISOString(), ...(snapshot ? { snapshot, shared } : {}) };
+  // A .env file is laid over every app service; Docker services read their own compose file.
+  const resolvedEnv = choice.env ? resolveEnvFile(project, choice.env) : undefined;
+  const run: StackRun = {
+    key: k,
+    dir: project.dir,
+    name: project.name,
+    stack: own,
+    startedBy,
+    phase: "starting",
+    startedAt: new Date().toISOString(),
+    ...(snapshot ? { snapshot, shared } : {}),
+    ...(resolvedEnv?.envFile ? { env: resolvedEnv.env, run: { mode: "dev", label: "Dev server", envFile: resolvedEnv.envFile } } : {}),
+    choice,
+  };
   stacks.set(k, run);
   void runStack(run).catch((err: Error) => {
     run.note = `Couldn't start the stack: ${err.message}`;
@@ -452,7 +492,7 @@ async function runStack(run: StackRun): Promise<void> {
 }
 
 function startService(run: StackRun, svc: StackService): Proc {
-  const env = { ...(svc.env ?? {}), ...urlEnv(run) };
+  const env = { ...(svc.kind === "docker" ? {} : (run.env ?? {})), ...(svc.env ?? {}), ...urlEnv(run) };
   delete env.DX_LABEL;
   return spawnProc({
     key: `${run.key}#${svc.name}`,
@@ -515,6 +555,8 @@ interface Spec {
   snapshot?: boolean;
   /** The PORT it was given, when its tool can't be told by flag: ready once that port opens. */
   portHint?: number;
+  run?: RunInfo;
+  choice?: RunChoice;
 }
 
 function spawnProc(spec: Spec): Proc {
@@ -648,6 +690,7 @@ function launch(p: Proc, spec: Spec): void {
 
 function launchNow(p: Proc, spec: Spec): void {
   Object.assign(p, { command: spec.command, url: spec.url, port: spec.port, portHint: spec.portHint });
+  if (spec.run && !spec.stackKey) push(p, "dx", `Running as ${[spec.run.mode === "dev" ? "the dev server" : spec.run.label, spec.run.envFile ? `with ${spec.run.envFile}` : ""].filter(Boolean).join(", ")}.`);
   push(p, "dx", `$ ${spec.command}`);
 
   const child = spawn(spec.command, {
@@ -839,6 +882,8 @@ export async function restartDevServer(project: Project, startedBy: StartedBy = 
   const run = stacks.get(k);
   const by = run?.startedBy ?? procs.get(k)?.startedBy ?? startedBy;
   const snapshot = procs.get(k)?.snapshot;
+  // Restarted the way it was started: the same mode and .env file.
+  const choice = run?.choice ?? procs.get(k)?.choice ?? {};
   if (run) {
     await stopStack(run);
     clearDevServer(project.dir);
@@ -851,7 +896,7 @@ export async function restartDevServer(project: Project, startedBy: StartedBy = 
     }
     procs.delete(k);
   }
-  return startDevServer(project, by, { snapshot });
+  return startDevServer(project, by, { snapshot, mode: choice.mode, env: choice.env });
 }
 
 /** Forgets a stopped server or stack, so its card and output go away. */
@@ -1052,6 +1097,7 @@ function info(p: Proc): DevServerInfo {
   if (p.snapshot) out.snapshot = true;
   if (!p.stackKey && url && p.child) out.localUrl = localUrlOf(`${serviceName(project)}.localhost`);
   if (p.prepare && !p.stackKey) out.prepare = prepareView(p.prepare);
+  if (p.run && !p.stackKey) out.run = p.run;
   return out;
 }
 
@@ -1115,6 +1161,7 @@ function stackInfo(run: StackRun): DevServerInfo {
     services: services.map(({ kind: _kind, ...s }) => s),
     stackSource: run.stack.source,
     note: run.note,
+    run: run.run,
     prepare: prepareView(run.prepare),
   };
 }

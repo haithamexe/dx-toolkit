@@ -4,8 +4,17 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **Run as**: beside Run, the other ways to run a project: a production build then its own server (`next start`, `vite preview`, a `serve` script, with `NODE_ENV=production` and `.env.production`), its per-environment scripts (`start:staging`, with `build:staging` first), modes it names in `.devrc.json` (`"modes"`), and the dev server with any `.env.<name>` file laid over `.env`. The card says how it runs, and Restart and Run again run it the same way. `dx go --modes`, `--mode` and `--env`, and `mode`/`env` on the `start_dev_server` MCP tool and the `run.start` action do the same. Values are never shown or logged.
+- **Run finds more projects' command**: a `dev`/`run`/`start`/`serve` target in a Makefile, justfile, Taskfile or `deno.json`, and Rails, Laravel, Phoenix, Flask, FastAPI and .NET projects' own commands, so those projects get a Run button.
+- **Projects that run in Docker**: a project with only a `docker-compose.yml` (its app built from its own Dockerfile, or an image) gets Run, which starts every service `docker compose up` would, databases first. Compose files indented with four spaces are read too.
+- **Floppy on macOS and Linux**: the same Floppy, moods, balloon, line and menu, in a transparent window of the Electron the dx app uses, with no Dock or taskbar button; it starts at sign-in through a LaunchAgent or an autostart entry, and comes with the dx app as on Windows.
+
 ### Changed
 
+- **macOS and Linux: Run, terminals and the editor work when dx is opened from the Dock, a launcher or at sign-in.** Programs started that way get the system's bare PATH, so the dashboard behind the app (and the MCP server an AI app starts) couldn't find `npm`, `node` from nvm or Homebrew, `docker` or `code`. dx now takes your login shell's PATH once (only PATH), and adds the usual install folders that exist.
+- **macOS: Open in Terminal** goes through a `.command` file Terminal opens by itself, instead of AppleScript, which needed an Automation permission and failed without a word; a terminal that refuses now moves on to the next one.
 - **The dashboard no longer freezes while it works things out** (it also proxies your dev servers, so a freeze stalled them too). Measured on 22 projects: the Env & secrets list held everything up for 3.5 s and now runs a few projects at a time without holding anything up; a project's Env page (about 200 ms), its Overview tour (about 280 ms) and the Settings health check (about 0.7 s of it) no longer hold it up either.
 - **Faster**: the Summary with GitHub takes about 1.3 s instead of 1.9 s (the GitHub search runs while the commits are read), the Settings health check about 1.4 s instead of 1.9 s, and the Activity page's 3-second poll reads the end of the day's file instead of all of it (4 ms instead of 135 ms for a 35 MB day).
 - **Faster and quieter dashboard**: the project scan is kept for a few seconds instead of walking the projects folders on almost every request (a new project is still found at once, a changed one is read again); a hidden or minimised window polls nothing, so the app left open all day stops using the computer and the background dashboard can idle out again; the page's scripts and styles are compressed and revalidated with an ETag instead of re-sent whole each time.

@@ -1,23 +1,24 @@
 import { parseArgs } from "node:util";
 import { FLOPPY_COLOURWAYS, floppyStartsWithWindows, loadConfig, saveConfig, setFloppyStartup, writeFloppySprites, type FloppyColourway } from "@dx/core";
-import { floppyLauncher, floppySpritesDir, readFloppyInfo, settleFloppyStartup, startFloppy, stopFloppy } from "@dx/web/floppy";
+import { floppyLauncher, floppySpritesDir, floppySupported, readFloppyInfo, settleFloppyStartup, startFloppy, stopFloppy } from "@dx/web/floppy";
 import type { Command } from "../command.js";
 import { c, info, ok, UsageError, warn } from "../ui.js";
 
 export const floppyCommand: Command = {
   name: "floppy",
   aliases: ["pet"],
-  summary: "Put Floppy on your taskbar: it shows what dx is doing and opens the dashboard as an app",
+  summary: "Put Floppy on your desktop: it shows what dx is doing and opens the dashboard as an app",
   usage: [
-    "dx floppy                  put Floppy on your taskbar (Windows)",
+    "dx floppy                  put Floppy on your desktop (above the taskbar or the Dock)",
     "dx floppy --stop           take it off",
-    "dx floppy --startup        start it when you sign in to Windows",
-    "dx floppy --no-startup     stop starting it with Windows",
+    "dx floppy --startup        start it when you sign in",
+    "dx floppy --no-startup     stop starting it when you sign in",
     "dx floppy --colour maroon  its colours: navy (default), charcoal or maroon",
-    "dx floppy --status         is it running, and does it start with Windows",
+    "dx floppy --status         is it running, and does it start when you sign in",
     "",
     "Click Floppy to open dx in its own window. Drag it along the taskbar; right-click for the menu.",
-    "The first time it runs, it's set to start with Windows; --no-startup or its menu turns that off.",
+    "The first time it runs, it's set to start when you sign in; --no-startup or its menu turns that off.",
+    "On macOS and Linux it uses the Electron the dx app installs (about 100 MB, once).",
   ].join("\n"),
   async run(argv) {
     const { values } = parseArgs({
@@ -31,10 +32,11 @@ export const floppyCommand: Command = {
         status: { type: "boolean" },
       },
     });
-    if (process.platform !== "win32") {
-      info("Floppy lives on the Windows taskbar for now. macOS and Linux come later.");
+    if (!floppySupported()) {
+      info("Floppy needs a desktop to sit on: Windows, macOS, or Linux with a display.");
       return 0;
     }
+    const signIn = process.platform === "win32" ? "with Windows" : "when you sign in";
     const config = loadConfig();
     const floppy = { ...(config.floppy ?? {}) };
     const save = () => saveConfig({ ...loadConfig(), floppy });
@@ -42,7 +44,7 @@ export const floppyCommand: Command = {
     if (values.status) {
       const running = readFloppyInfo();
       console.log(`${running ? c.green("●") : c.dim("○")} Floppy ${running ? `is on your taskbar ${c.dim(`(pid ${running.pid})`)}` : "isn't running"}`);
-      console.log(`  ${floppyStartsWithWindows() ? "starts with Windows" : c.dim("doesn't start with Windows")} · ${floppy.colourway ?? "navy"}`);
+      console.log(`  ${floppyStartsWithWindows() ? `starts ${signIn}` : c.dim(`doesn't start ${signIn}`)} · ${floppy.colourway ?? "navy"}`);
       return 0;
     }
 

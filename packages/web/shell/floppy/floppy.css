@@ -1,0 +1,93 @@
+/* Floppy on macOS and Linux: the same balloon and line as the Windows window (floppyWindow.ts). */
+:root {
+  --balloon: #ffffe1;
+  --ink: #000;
+  --info: #2563eb;
+  --error: #d61f1f;
+  --ok: #16a34a;
+  --ai: #7c3aed;
+  --quiet: #6b7280;
+  --warn: #d97706;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+  font-size: 12px;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.floppy {
+  position: absolute;
+  bottom: 0;
+  image-rendering: pixelated;
+  cursor: pointer;
+}
+.tip {
+  position: absolute;
+  max-width: 300px;
+  cursor: pointer;
+}
+.tip-box {
+  background: var(--balloon);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  padding: 7px 12px 8px 10px;
+}
+.tip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tip-text {
+  margin-top: 3px;
+  white-space: pre-wrap;
+}
+.tip-tail {
+  width: 0;
+  height: 0;
+  margin: -1px auto 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 8px solid var(--ink);
+}
+.label {
+  position: absolute;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 280px;
+  padding: 2px 8px 3px 6px;
+  background: var(--balloon);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.label span:last-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--info);
+}
+.label .dot {
+  width: 8px;
+  height: 8px;
+}
+.dot.info { background: var(--info); }
+.dot.error { background: var(--error); }
+.dot.ok { background: var(--ok); }
+.dot.ai { background: var(--ai); }
+.dot.quiet { background: var(--quiet); }
+.dot.warn { background: var(--warn); }

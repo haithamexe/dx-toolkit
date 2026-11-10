@@ -1,11 +1,13 @@
 import { writeFileAtomic } from "../atomic.js";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { ensureDxHome } from "../config.js";
 import { isLoopbackUrl, findBrowser } from "./browser.js";
 import { detached } from "./detached.js";
 import { openUrl } from "./launch.js";
 import { encodePng, iconFile, icnsFile, ICNS_TYPES, parseColor } from "./png.js";
+import { desktopExecArg } from "./appshell.js";
 import { startupFolder, writeShortcut, type ShortcutLaunch } from "./shortcuts.js";
 
 /**
@@ -475,9 +477,45 @@ function firstLine(s: string): string {
 
 // ------------------------------------------------------------ Startup and the app window
 
-export function floppyShortcutPath(env: NodeJS.ProcessEnv = process.env): string | undefined {
+/**
+ * Where Floppy's sign-in entry goes: a shortcut in the Startup folder (Windows), a LaunchAgent
+ * (macOS), an XDG autostart entry (Linux).
+ */
+export function floppyShortcutPath(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
+  const home = env.HOME || env.USERPROFILE || os.homedir();
+  if (platform === "darwin") return path.join(home, "Library", "LaunchAgents", "dx.floppy.plist");
+  if (platform !== "win32") return path.join(env.XDG_CONFIG_HOME || path.join(home, ".config"), "autostart", "dx-floppy.desktop");
   const dir = startupFolder(env);
   return dir ? path.join(dir, "dx Floppy.lnk") : undefined;
+}
+
+const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** Floppy's LaunchAgent: node with its entry and --detach, at sign-in. */
+export function floppyLaunchAgent(launch: FloppyLaunch): string {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    "<dict>",
+    "  <key>Label</key>",
+    "  <string>dx.floppy</string>",
+    "  <key>ProgramArguments</key>",
+    "  <array>",
+    ...[launch.command, ...launch.args].map((a) => `    <string>${xml(a)}</string>`),
+    "  </array>",
+    "  <key>RunAtLoad</key>",
+    "  <true/>",
+    "</dict>",
+    "</plist>",
+    "",
+  ].join("\n");
+}
+
+/** Floppy's XDG autostart entry. */
+export function floppyAutostartEntry(launch: FloppyLaunch): string {
+  const exec = [launch.command, ...launch.args].map(desktopExecArg).join(" ").replace(/[\r\n]/g, " ");
+  return ["[Desktop Entry]", "Type=Application", "Name=dx Floppy", "Comment=Floppy shows what dx is doing", `Exec=${exec}`, "Terminal=false", "NoDisplay=true", "X-GNOME-Autostart-enabled=true", ""].join("\n");
 }
 
 export function floppyStartsWithWindows(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -488,18 +526,25 @@ export function floppyStartsWithWindows(env: NodeJS.ProcessEnv = process.env): b
 export type FloppyLaunch = ShortcutLaunch;
 
 /**
- * Adds or removes the Startup shortcut. It runs dx's own Floppy entry with node, minimised, and
- * that hands Floppy to a hidden process and exits, so nothing stays on screen. Only Windows.
+ * Adds or removes Floppy's sign-in entry. It runs dx's own Floppy entry with node, which hands
+ * Floppy to a hidden process and exits, so nothing stays on screen: a minimised shortcut in the
+ * Startup folder on Windows, a LaunchAgent on macOS (a file; it applies from the next sign-in),
+ * an XDG autostart entry on Linux.
  */
-export function setFloppyStartup(on: boolean, launch?: FloppyLaunch, env: NodeJS.ProcessEnv = process.env): { ok: boolean; message: string; path?: string } {
-  if (process.platform !== "win32") return { ok: false, message: "Starting with the computer is Windows-only for now." };
-  const file = floppyShortcutPath(env);
+export function setFloppyStartup(on: boolean, launch?: FloppyLaunch, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): { ok: boolean; message: string; path?: string } {
+  const file = floppyShortcutPath(env, platform);
   if (!file) return { ok: false, message: "Couldn't find your Startup folder (APPDATA isn't set)." };
+  const signIn = platform === "win32" ? "with Windows" : "when you sign in";
   if (!on) {
     fs.rmSync(file, { force: true });
-    return { ok: true, message: "Floppy won't start with Windows.", path: file };
+    return { ok: true, message: `Floppy won't start ${signIn}.`, path: file };
   }
   if (!launch) return { ok: false, message: "Nothing to start." };
+  if (platform !== "win32") {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, platform === "darwin" ? floppyLaunchAgent(launch) : floppyAutostartEntry(launch));
+    return { ok: true, message: `Floppy starts ${signIn}.`, path: file };
+  }
   const r = writeShortcut(file, launch, "dx Floppy", { minimised: true });
   if (!r.ok) return { ok: false, message: r.message.replace("the shortcut", "the Startup shortcut") };
   return { ok: true, message: "Floppy starts when you sign in to Windows.", path: file };

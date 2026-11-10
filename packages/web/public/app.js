@@ -1497,6 +1497,7 @@ function projectsPage(root, { only } = {}) {
                 name: `Run ${p.name}`,
               })
             : null,
+        running ? null : runAsMenu(p),
         btn("Open in editor", (e) => open(e.currentTarget, p, "editor"), { iconName: "code", small: true, name: `Open ${p.name} in editor` }),
         btn("Terminal", (e) => open(e.currentTarget, p, "shell"), { iconName: "terminal", small: true, name: `Open ${p.name} in a terminal`, title: "Open a terminal in this project's folder" }),
         moreMenu(p),
@@ -1609,6 +1610,34 @@ function projectsPage(root, { only } = {}) {
     );
   }
 
+  /**
+   * Other ways to run the project, when it has any: a production build, its own per-environment
+   * scripts and .devrc.json modes, each with its usual .env file, then the dev server with each
+   * .env.<name> file. The server checks every choice against the project's own files.
+   */
+  function runAsMenu(p) {
+    const modes = p.runModes ?? [];
+    // An env file goes over the dev server, so without one there's nothing to lay it over.
+    const envs = p.devCommand || p.stack ? (p.envFiles ?? []) : [];
+    if (!modes.length && !envs.length) return null;
+    const details = h("details", { class: "menu" });
+    const close = () => details.removeAttribute("open");
+    const item = (label, title, body) =>
+      h("button", { type: "button", role: "menuitem", title, onclick: () => (close(), startDev(null, p.dir, body)) }, icon("play"), label);
+    const devName = p.stack ? "Dev servers" : "Dev server";
+    append(
+      details,
+      h("summary", { class: "btn btn-sm", "aria-label": `Run as… (other ways to run ${p.name})` }, icon("play"), "Run as"),
+      h(
+        "div",
+        { class: "menu-list", role: "menu" },
+        modes.map((m) => item(m.envFile ? `${m.label} with ${m.envFile}` : m.label, m.command, { mode: m.id })),
+        envs.map((e) => item(`${devName} with ${e.file}`, `${plural(e.count, "value")} from ${e.file} over .env`, { env: e.file })),
+      ),
+    );
+    return details;
+  }
+
   function moreMenu(p) {
     const details = h("details", { class: "menu" });
     const close = () => details.removeAttribute("open");
@@ -1650,14 +1679,17 @@ function projectsPage(root, { only } = {}) {
     }
   }
 
-  async function startDev(button, dir) {
-    await busy(button, "Starting…", async () => {
-      await api("/api/dev/start", { method: "POST", body: { dir } });
+  /** Starts it; `button` shows "Starting…" while it does (none from a menu, whose label stays: a failure is a toast). */
+  async function startDev(button, dir, choice = {}) {
+    const start = async () => {
+      await api("/api/dev/start", { method: "POST", body: { dir, ...choice } });
       openLogs.add(dir.toLowerCase());
       setPref("openLogs", JSON.stringify([...openLogs]));
       await load();
       void updateRunningCount();
-    });
+    };
+    if (button) await busy(button, "Starting…", start);
+    else await start().catch((err) => toast(err.message, "error"));
   }
 
   async function stopDev(button, dir) {
@@ -1754,6 +1786,7 @@ function projectsPage(root, { only } = {}) {
           { class: "dev-title" },
           h("strong", null, s.snapshot ? s.project.replace("@", " @ ") : s.project),
           s.snapshot ? h("span", { class: "badge badge-accent", title: "The project as it was at a commit, run from its own folder in ~/.dx/snapshots" }, "snapshot") : null,
+          s.run ? h("span", { class: "badge badge-accent", title: s.run.envFile ? `Values from ${s.run.envFile} over .env; Restart runs it the same way` : "Restart runs it the same way" }, [s.run.mode === "dev" ? null : s.run.label, s.run.envFile].filter(Boolean).join(" · ")) : null,
           statusBadge(s.status),
           s.startedBy === "ai" ? h("span", { class: "badge badge-accent", title: "Started by an AI agent through dx's MCP tools" }, "Started by AI") : null,
           s.errorCount ? h("span", { class: "badge badge-danger" }, plural(s.errorCount, "error")) : null,
@@ -1788,7 +1821,8 @@ function projectsPage(root, { only } = {}) {
           live
             ? btn("Stop", (e) => stopDev(e.currentTarget, s.dir), { iconName: "stop", small: true })
             : [
-                btn("Run again", (e) => startDev(e.currentTarget, s.dir), { iconName: "play", small: true }),
+                // The same way it ran last time: its mode and .env file.
+                btn("Run again", (e) => startDev(e.currentTarget, s.dir, s.run ? { mode: s.run.mode, env: s.run.envFile ?? "" } : {}), { iconName: "play", small: true }),
                 btn("Dismiss", async () => {
                   await api("/api/dev/clear", { method: "POST", body: { dir: s.dir } }).catch(() => null);
                   logState.delete(key);

@@ -1,8 +1,13 @@
 // Runs the dx dashboard in the background, with no terminal: started by the MCP server when an
 // AI tool needs a dev server, or by `dx ui --background`. It stops itself after 30 minutes with
 // no dev servers running and nobody using it, or when asked (`dx ui --stop`).
-import { autoConnectAiTools, recordRun } from "@dx/core";
+import { adoptShellPath, autoConnectAiTools, recordRun } from "@dx/core";
 import { startDashboard } from "./server.js";
+
+// Started by the dx app (from the Dock, a launcher or at sign-in) or an AI app, this process has the
+// system's bare PATH on macOS and Linux: without the login shell's, npm, docker and editors aren't
+// found and Run fails. Once, before anything is started.
+await adoptShellPath().catch(() => undefined);
 
 const dashboard = await startDashboard({
   background: true,

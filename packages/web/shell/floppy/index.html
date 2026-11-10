@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:" />
+    <title>Floppy</title>
+    <link rel="stylesheet" href="floppy.css" />
+  </head>
+  <body>
+    <div id="tip" class="tip" hidden>
+      <div class="tip-box">
+        <div class="tip-head"><span class="dot" id="tip-dot"></span><strong id="tip-title"></strong></div>
+        <div id="tip-text" class="tip-text"></div>
+      </div>
+      <div class="tip-tail"></div>
+    </div>
+    <div id="label" class="label" hidden><span class="dot" id="label-dot"></span><span id="label-text"></span></div>
+    <img id="floppy" class="floppy" alt="Floppy" draggable="false" />
+    <script src="floppy.js"></script>
+  </body>
+</html>

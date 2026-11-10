@@ -166,3 +166,40 @@ test("roles from names and commands", () => {
   assert.equal(roleOf("thing", "uvicorn main:app --reload"), "backend");
   assert.equal(roleOf("css", "tailwindcss --watch"), "other");
 });
+
+test("docker-compose only: an app built from its own Dockerfile runs through compose, so Run works", () => {
+  const compose = [
+    "services:",
+    "    web:",
+    "        build: .",
+    "        ports:",
+    '            - "8080:3000"',
+    "        depends_on: [db]",
+    "    db:",
+    "        image: postgres:16",
+    "        ports:",
+    "            - 5432:5432",
+    "    debug:",
+    "        image: busybox",
+    "        profiles: [tools]",
+    "",
+  ].join("\n");
+  const c = readCompose(project({ "docker-compose.yml": compose }).dir)!;
+  assert.deepEqual(
+    c.services.map((s) => [s.name, !!s.build, s.hostPort ?? null]),
+    [["web", true, 8080], ["db", false, 5432], ["debug", false, null]],
+    "four-space indents are read too",
+  );
+  const stack = detectStack(project({ "docker-compose.yml": compose, Dockerfile: "FROM node:22\n" }))!;
+  assert.equal(stack.source, "compose");
+  assert.deepEqual(names(stack), ["web", "db"], "a service behind a profile isn't started");
+  assert.ok(stack.services.every((s) => s.kind === "docker"));
+  assert.deepEqual(waves(stack), [["db"], ["web"]], "the database first");
+  assert.equal(mainService(stack)?.name, "web", "the app is what the browser opens");
+});
+
+test("docker-compose with one built service is still a stack", () => {
+  const stack = detectStack(project({ "compose.yaml": "services:\n  api:\n    build: ./api\n    ports:\n      - 4000:4000\n" }));
+  assert.deepEqual(names(stack), ["api"]);
+  assert.equal(stack?.services[0].command, "docker compose up -d api");
+});

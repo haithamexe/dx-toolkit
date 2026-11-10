@@ -1,5 +1,6 @@
 // Floppy, running: a hidden node process that owns Floppy's window (Windows PowerShell and WPF,
-// see core's floppyWindow.ts), asks the dashboard every two seconds what's going on, and opens the
+// see core's floppyWindow.ts; on macOS and Linux the Electron dx installs for the app, running
+// web/shell/floppy), asks the dashboard every two seconds what's going on, and opens the
 // dx app (web/src/app.ts) when Floppy is clicked. Started by `dx floppy` or, with --detach, by
 // the Startup shortcut. It never keeps a background dashboard running by itself: its questions
 // carry X-DX-Quiet, and a click starts the dashboard only when it isn't there.
@@ -7,8 +8,12 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import {
   FLOPPY_WINDOW_PS,
+  findElectron,
+  installElectron,
+  linkedProgram,
   floppyErrorKey,
   floppyStartsWithWindows,
   floppyView,
@@ -32,7 +37,6 @@ if (process.argv.includes("--detach")) {
 
 const other = readFloppyInfo();
 if (other && other.pid !== process.pid) process.exit(0);
-if (process.platform !== "win32") process.exit(1);
 writeFloppyInfo();
 
 const dir = floppyDir();
@@ -52,16 +56,51 @@ try {
 
 const config = loadConfig();
 writeFloppySprites(floppySpritesDir(), config.floppy?.colourway ?? "navy");
-const script = path.join(dir, "floppy-window.ps1");
-fs.writeFileSync(script, FLOPPY_WINDOW_PS);
+const windowEnv = { DX_FLOPPY_DIR: floppySpritesDir(), DX_FLOPPY_X: config.floppy?.x !== undefined ? String(config.floppy.x) : "" };
 
-// The script is dx's own, read from ~/.dx and run with fixed arguments. Invoke-Expression runs
-// it without touching PowerShell's execution policy, which applies to script files.
-const win = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-Command", "Invoke-Expression ([IO.File]::ReadAllText($env:DX_FLOPPY_PS))"], {
-  stdio: ["pipe", "pipe", "pipe"],
-  windowsHide: true,
-  env: { ...process.env, DX_FLOPPY_PS: script, DX_FLOPPY_DIR: floppySpritesDir(), DX_FLOPPY_X: config.floppy?.x !== undefined ? String(config.floppy.x) : "" },
-});
+/** The window: dx's PowerShell script on Windows; elsewhere dx's Electron folder, installed first if it isn't there. */
+async function startWindow() {
+  if (process.platform === "win32") {
+    const script = path.join(dir, "floppy-window.ps1");
+    fs.writeFileSync(script, FLOPPY_WINDOW_PS);
+    // The script is dx's own, read from ~/.dx and run with fixed arguments. Invoke-Expression runs
+    // it without touching PowerShell's execution policy, which applies to script files.
+    return spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-Command", "Invoke-Expression ([IO.File]::ReadAllText($env:DX_FLOPPY_PS))"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      env: { ...process.env, ...windowEnv, DX_FLOPPY_PS: script },
+    });
+  }
+  let electron = findElectron();
+  if (!electron) {
+    log("installing the Electron the dx app uses (about 100 MB), once");
+    const r = await installElectron({ onLine: (line) => log(line) });
+    if (!r.ok) throw new Error(r.message);
+    electron = findElectron();
+    if (!electron) throw new Error("Electron didn't install.");
+  }
+  const env: NodeJS.ProcessEnv = { ...process.env, ...windowEnv };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.NODE_OPTIONS;
+  // Through `current` when it's there, so an update of the app doesn't leave Floppy on a removed version.
+  let program = electron.path;
+  try {
+    const linked = linkedProgram(electron);
+    if (fs.existsSync(linked)) program = linked;
+  } catch {
+    // the version's own program, then
+  }
+  return spawn(program, [fileURLToPath(new URL("../shell/floppy/main.js", import.meta.url))], { stdio: ["pipe", "pipe", "pipe"], env });
+}
+
+let win: Awaited<ReturnType<typeof startWindow>>;
+try {
+  win = await startWindow();
+} catch (err) {
+  log(`couldn't start Floppy's window: ${(err as Error).message}`);
+  clearFloppyInfo();
+  process.exit(1);
+}
 recordRun("floppy", true, "on the desktop", "web");
 
 let quitting = false;
@@ -83,7 +122,7 @@ win.on("exit", (code) => {
   quit(0);
 });
 win.on("error", (err) => {
-  log(`couldn't start PowerShell: ${err.message}`);
+  log(`couldn't start Floppy's window: ${err.message}`);
   quit(1);
 });
 win.stderr.setEncoding("utf8");
@@ -181,7 +220,7 @@ readline.createInterface({ input: win.stdout }).on("line", (line) => {
       const on = !!ev.checked;
       const r = setFloppyStartup(on, floppyLauncher());
       if (r.ok) remember((f) => (f.startup = on));
-      else send({ type: "mood", mood: current.view?.mood ?? "idle", tip: { title: "Start with Windows", text: r.message, icon: "error" }, announce: true });
+      else send({ type: "mood", mood: current.view?.mood ?? "idle", tip: { title: process.platform === "win32" ? "Start with Windows" : "Start when you sign in", text: r.message, icon: "error" }, announce: true });
       menuState();
     } else if (ev.action === "quit") {
       // Sent away: the dx app doesn't bring it back until `dx floppy`.

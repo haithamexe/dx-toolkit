@@ -114,7 +114,7 @@ It opens dx in a window of its own, where everything `dx` does is a button. The 
 
 ### The dx app
 
-dx is an app: its own window, Floppy as its icon on the taskbar (or Dock), an entry in the Start menu you can pin, and it opens when you sign in. Floppy comes with it on Windows.
+dx is an app: its own window, Floppy as its icon on the taskbar (or Dock), an entry in the Start menu you can pin, and it opens when you sign in. Floppy comes with it.
 
 - **The first `dx ui` gets it ready.** The window is [Electron](https://www.electronjs.org/), a 100 MB download (about 370 MB installed) that dx installs once into `~/.dx/app`, one pinned version, so `npm install -g dx-devkit` stays small. Until it's there, or if it can't download (set `ELECTRON_MIRROR` behind a firewall), dx opens as an Edge app window, then in your browser. It's named dx everywhere the system looks: on Windows the program is `dx.exe`, a copy of Electron's with dx's name and Floppy's icon written in (by [rcedit](https://github.com/electron/rcedit), installed with it), so Task Manager, the Startup apps list and the taskbar say dx; on macOS it's `dx.app`, with its name, id and icon set and signed again for this computer; on Linux its launcher entry (`~/.local/share/applications/dx.desktop`) names it in menus and the dock.
 - **Electron updates come with dx.** Each dx release pins the newest Electron with its security fixes; the next time dx opens, it installs that one next to the one running (in the background when the app opens by itself, in front of you with `dx ui`), and the app is on it the time after. The old one is removed once nothing runs from it. The open window never has to close for it.
@@ -127,19 +127,19 @@ dx is an app: its own window, Floppy as its icon on the taskbar (or Dock), an en
 
 ---
 
-## Floppy, on your taskbar
+## Floppy, on your desktop
 
-Floppy sits on your Windows taskbar: the save icon come alive, 48 pixels tall. It comes with [the dx app](#the-dx-app) (or `dx floppy` on its own), shows what dx is doing, and clicking it opens the app.
+Floppy sits on your desktop, just above the Windows taskbar or the macOS Dock (or at the bottom of a Linux desktop): the save icon come alive, 48 pixels tall. It comes with [the dx app](#the-dx-app) (or `dx floppy` on its own), shows what dx is doing, and clicking it opens the app.
 
 - **Its moods follow dx.** Idle, it blinks and looks around. A project starting: it watches a progress bar fill on its label, with the preparing step in its balloon. A server comes up: it hops once. An error: red eyes, a shake and a balloon naming the file and line, until you click it. An AI agent at work: it watches a sparkle. Thirty minutes with nothing happening, or **Quiet for an hour**: it sleeps (errors still wake it).
 - **A line beside it says what's going on**, so you don't have to read its face: `todo-app running`, `shop-website: Install packages…`, `todo-app: error in cart.ts:42`, `AI: Checked /health on api-gateway: 200`, `Nothing running`, with a coloured dot (green running, blue starting, red an error, purple the AI, grey quiet). Errors you've already looked at stay counted there (`todo-app running · 1 error`).
-- **Hover** it or the line for its balloon; **drag** it along the taskbar (it remembers where); **right-click** for Open dx, Quiet for an hour, Start with Windows, and Quit.
-- **It starts with Windows.** The first `dx floppy` adds a shortcut to your own Startup folder (no admin rights), and says so; `dx floppy --no-startup` or the menu removes it.
-- **It gets out of the way** while a game, a video or a presentation is full screen.
+- **Hover** it or the line for its balloon; **drag** it along the taskbar (it remembers where); **right-click** for Open dx, Quiet for an hour, Start with Windows (Open at login on macOS, Start when you sign in on Linux), and Quit.
+- **It starts when you sign in.** The first `dx floppy` adds a shortcut to your own Startup folder on Windows, a LaunchAgent on macOS (`~/Library/LaunchAgents/dx.floppy.plist`) or an autostart entry on Linux (`~/.config/autostart/dx-floppy.desktop`), none needing admin rights, and says so; `dx floppy --no-startup` or the menu removes it.
+- **It gets out of the way** while a game, a video or a presentation is full screen (on macOS it stays off full-screen spaces).
 - **It doesn't keep dx running.** It reads the dashboard's state every two seconds without counting as someone using it, so a background dashboard still stops when idle; a click starts it again.
 - `dx floppy --stop` (or **Quit** in its menu) takes it off, and the app doesn't bring it back until `dx floppy` or **Run Floppy**, the button beside the Floppy at the bottom of the dashboard's sidebar (shown while Floppy isn't on the desktop); `--colour charcoal` or `maroon` changes its colours, `--status` says whether it's running.
 
-Nothing to install: the window is Windows PowerShell and WPF, which every Windows 10 and 11 has. On macOS and Linux, `dx floppy` says it's Windows-only for now.
+On Windows there's nothing to install: the window is Windows PowerShell and WPF, which every Windows 10 and 11 has. On macOS and Linux it's a transparent window of the Electron [the dx app](#the-dx-app) uses (installed once if the app isn't there yet), with no Dock or taskbar button, that lets clicks through everywhere but Floppy, its balloon and its line. Linux needs a desktop with a compositor for the see-through part.
 
 ---
 
@@ -461,6 +461,7 @@ dx up shop
 | root scripts `dev:web`, `dev:api`, … | each one as a service |
 | npm, yarn or pnpm workspaces whose packages have a `dev` script | each package, in its own folder |
 | databases in `docker-compose.yml` (postgres, mysql, mongo, redis, …) | `docker compose up -d` for them, first; services built from your own code are left to run natively |
+| only a `docker-compose.yml` (the app itself runs in Docker, built from its Dockerfile or from an image), and no dev command | every service a plain `docker compose up` would start (not ones behind a `profile`), each with `docker compose up -d`, databases first; the browser opens the first published service that isn't a database |
 | a `stack` in `.devrc.json` | exactly that: see below |
 
 - **Start order**: databases first, then back ends (`api`, `server`, `worker`, …), then front ends, each group only once the one before is ready. A service whose dependency failed isn't started, and the dashboard says so.
@@ -487,7 +488,7 @@ dx up shop
 | `dx ui --background` / `dx ui --stop` | Start it without a terminal / stop it and the dev servers it runs |
 | `dx ui --startup` / `--no-startup` | Open dx on the taskbar (or Dock) when you sign in, or stop |
 | `dx ui --browser` | Open the dashboard in your browser instead, this once. `--remove-app` removes the app, `--app` brings it back |
-| `dx floppy` | Put Floppy on your Windows taskbar: it shows what dx is doing, and a click opens the dashboard. `--stop`, `--no-startup`, `--colour` |
+| `dx floppy` | Put Floppy on your desktop (Windows, macOS, Linux): it shows what dx is doing, and a click opens the dashboard. `--stop`, `--no-startup`, `--colour` |
 | `dx up shop` / `dx down shop` | Start a project's whole stack in the background, and print its addresses / stop it |
 | `dx logs todo-app -f` | Follow the output of a dev server running in the dashboard, one your AI agent started included |
 | `dx errors` | Errors in every running dev server, with file and line (`dx errors todo-app` for one) |
@@ -548,7 +549,8 @@ dx up shop
 `dx help <command>` shows every option.
 
 **`dx go` details:**
-- It reads the dev command from `package.json` (`dev`, then `start`, `serve`) and uses the right package manager (npm, pnpm, yarn, bun).
+- It reads the dev command from `package.json` (`dev`, then `start`, `serve`) and uses the right package manager (npm, pnpm, yarn, bun). Without one, from the project's other files: a `dev`, `run`, `start`, `serve`, `up` or `watch` target in a Makefile, justfile, Taskfile or `deno.json`; `bin/dev` or `bin/rails server` for Rails, `php artisan serve` for Laravel, `mix phx.server` for Phoenix, `python manage.py runserver` for Django, uvicorn for FastAPI, `flask run` for Flask, `dotnet watch run` for .NET; `go run .` and `cargo run` last.
+- **Run it another way**: `dx go todo-app --modes` lists them, `--mode production` builds it and runs its own server (`build` then `start`, `preview` or `serve`, with `NODE_ENV=production`), `--mode script:start:staging` runs one of its per-environment scripts (with `build:staging` first when there is one), `--mode devrc:<name>` one of its `.devrc.json` modes, and `--env .env.staging` lays that file's values over `.env` (they win over `.env` in dotenv, Vite, Next.js and `node --env-file`). A mode brings its environment's file by itself (`production` uses `.env.production`); `--env ""` runs it without one. In the dashboard, **Run as** beside Run offers the same, the card says how it runs, and Restart and Run again run it the same way.
 - If the port is already taken by this project's own server, it just opens the browser.
 - If the port is taken by something else, it offers to kill it.
 - Ctrl+C stops the server as usual.
@@ -674,6 +676,16 @@ A folder containing only a `.devrc.json` also counts as a project.
 
 `dir` runs a command in another folder, `url` says where a service listens if it doesn't print it, and `role` (`data`, `backend`, `frontend`) sets the order when there's no `dependsOn`.
 
+**Ways to run it of your own**, for **Run as** and `dx go --mode devrc:<name>`: a command (`run`), an optional `build` that runs first (the server starts only if it worked), an optional `.env.<name>` file (`env`) and variables (`vars`):
+
+```json
+{
+  "modes": {
+    "staging": { "label": "Staging build", "build": "npm run build -- --mode staging", "run": "npx serve dist", "env": ".env.staging", "vars": { "APP_ENV": "staging" } }
+  }
+}
+```
+
 **Steps of your own before Run** (see [Run gets the project ready](#run-gets-the-project-ready)), in order; `after: "db"` waits for a stack's databases. `"prepare": false` turns preparing off:
 
 ```json
@@ -704,7 +716,7 @@ Created on first run, with the code folders and editor dx found:
 - **`envAlerts`** / **`projectAlerts`**: `false` turns off the warnings when a `.env` file changes, is staged or is committed; per project (by folder), `{ "off": true }` silences its alerts and `{ "osOff": true }` only the system's notifications. Easier on the Env & secrets page.
 - **`localhostRecording`**: `false` stops dx answering at an app's usual `localhost:<port>`; the dev server then runs there itself, and only its `.localhost` address is recorded.
 - **`localDomains`** / **`localDomainsPort`**: `false` turns `*.localhost` addresses off; a number picks their port instead of 80 (or 1355).
-- **`floppy`**: `{ "startup": true, "x": 1640, "colourway": "navy" }`, whether Floppy starts with Windows, where along the taskbar you left it, and its colours; `"off": true` after you send it away, so the app doesn't bring it back. Set by `dx floppy` and Floppy's menu.
+- **`floppy`**: `{ "startup": true, "x": 1640, "colourway": "navy" }`, whether Floppy starts when you sign in, where along the bottom of the screen you left it, and its colours; `"off": true` after you send it away, so the app doesn't bring it back. Set by `dx floppy` and Floppy's menu.
 - **`dashboard`**: `{ "open": "app", "startup": true }`, whether `dx ui` opens the dx app or your browser (`"browser"` after `dx ui --remove-app`), and whether the app opens when you sign in. Set by `dx ui`.
 - **`aiToolsSeen`**: the AI tools dx has connected itself to once. A tool you disconnect stays disconnected. Set `"autoConnectAi": false` to stop dx connecting itself to new ones (`dx setup --undo` does both).
 
