@@ -69,5 +69,7 @@ test("a doctor finding dx can fix is fixed without asking: a missing editor, and
   saveConfig({ ...defaultConfig(), projectsRoots: [empty], editor: "node" });
   const added = await autoFixConfig({ home });
   assert.equal(added.length, 1);
-  assert.ok(loadConfig().projectsRoots.some((r) => r.toLowerCase() === path.join(home, "projects").toLowerCase()));
+  // Compared as the system names them (macOS's /private/var, Windows' short names).
+  const real = (d: string) => fs.realpathSync.native(d).toLowerCase();
+  assert.ok(loadConfig().projectsRoots.some((r) => fs.existsSync(r) && real(r) === real(path.join(home, "projects"))));
 });

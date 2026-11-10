@@ -108,7 +108,8 @@ test("the plan lists every kind of dx, and only dx's", async () => {
       ["local", "1.10.0"],
     ],
   );
-  assert.equal(path.resolve(plan.installs[1].dir), path.resolve(pc.repo), "a linked build is named by its repository");
+  // (macOS reaches a temp folder as /private/var/…, so both sides are resolved)
+  assert.equal(fs.realpathSync(plan.installs[1].dir), fs.realpathSync(pc.repo), "a linked build is named by its repository");
   assert.deepEqual(plan.shims.map((s) => path.basename(s)).sort(), ["dx", "dx-mcp.cmd", "dx.cmd"], "another program's dx.ps1 and tsc aren't dx's");
   assert.equal(plan.app?.dir, pc.appHome);
   assert.equal(plan.entries.length, 3, "the Start menu entry, the app's and Floppy's Startup shortcuts");

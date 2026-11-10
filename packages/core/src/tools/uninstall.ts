@@ -247,13 +247,12 @@ export async function runUninstall(options: { data: boolean; waitFor?: number; l
     (app.ok ? removed : left).push(app.ok ? "the dx app" : app.message);
     log(app.ok ? "Removed the dx app and its shortcuts." : app.message);
   }
-  if (r.platform === "win32") {
-    const floppy = floppyShortcutPath(r.env);
-    if (floppy && fs.existsSync(floppy)) {
-      fs.rmSync(floppy, { force: true });
-      removed.push("Floppy's Startup shortcut");
-      log("Removed Floppy's Startup shortcut.");
-    }
+  // Floppy's sign-in entry: a Startup shortcut (Windows), a LaunchAgent (macOS), an autostart entry (Linux).
+  const floppy = floppyShortcutPath(r.env, r.platform);
+  if (floppy && fs.existsSync(floppy)) {
+    fs.rmSync(floppy, { force: true });
+    removed.push("Floppy's sign-in entry");
+    log("Removed Floppy's sign-in entry.");
   }
 
   // The installs. A linked build loses its link only: the repository stays as it is.
@@ -356,8 +355,8 @@ export function startUninstall(options: { data: boolean; waitFor?: number; foreg
 // ------------------------------------------------------------ helpers
 
 function entryFiles(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
-  const files = [appSignInEntry(env, platform)];
-  if (platform === "win32") files.push(appStartMenuShortcut(env), floppyShortcutPath(env));
+  const files = [appSignInEntry(env, platform), floppyShortcutPath(env, platform)];
+  if (platform === "win32") files.push(appStartMenuShortcut(env));
   else if (platform !== "darwin") files.push(appLauncherEntry(env));
   return files.filter((f): f is string => !!f);
 }
