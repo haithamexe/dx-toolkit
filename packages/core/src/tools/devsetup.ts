@@ -148,7 +148,7 @@ export async function devSetupChecks(options: DevSetupOptions = {}): Promise<Che
       return f;
     }
   };
-  const nodeDirs = [...new Set(nodes.map((n) => path.dirname(options.exists ? n : real(n)).toLowerCase()))];
+  const nodeDirs = [...new Set(nodes.map((n) => (win ? path.win32 : path).dirname(options.exists ? n : real(n)).toLowerCase()))];
   checks.push({
     name: "PATH",
     status: missing.length > 3 || nodeDirs.length > 1 ? "warn" : "ok",

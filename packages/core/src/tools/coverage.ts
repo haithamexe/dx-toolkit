@@ -135,7 +135,8 @@ export function parseV8Coverage(folder: string, dir: string): Coverage | undefin
       if (!script.url?.startsWith("file://")) continue;
       let file: string;
       try {
-        file = fileURLToPath(script.url);
+        // The script's real place, to compare with the project's real place (a link, macOS' /var, a junction).
+        file = fs.realpathSync(fileURLToPath(script.url));
       } catch {
         continue;
       }
@@ -181,7 +182,7 @@ export function parseV8Coverage(folder: string, dir: string): Coverage | undefin
     if (!t) continue;
     total += t;
     covered += c;
-    files.push({ file: rel(dir, file), lines: round((c / t) * 100) });
+    files.push({ file: rel(root, file), lines: round((c / t) * 100) });
   }
   if (!total) return undefined;
   return finish((covered / total) * 100, files);
