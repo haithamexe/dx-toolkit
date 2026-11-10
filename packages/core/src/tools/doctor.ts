@@ -6,6 +6,7 @@ import { configPath, dxHome, dxPath, ensureDxHome, loadConfig } from "../config.
 import { listAiTools } from "./aiSetup.js";
 import { appHome, ELECTRON_VERSION, findElectron } from "./appshell.js";
 import { browserInstallFix, findBrowser } from "./browser.js";
+import { devSetupChecks } from "./devsetup.js";
 import { githubToken } from "./github.js";
 import { certFiles, mkcertInstallFix } from "./https.js";
 import { listListeningPorts } from "./ports.js";
@@ -218,6 +219,11 @@ export async function runDoctor(): Promise<Check[]> {
     } else {
       checks.push({ name: "dx install", status: "ok", detail: dx.local ? `linked from ${dx.local}` : dx.npm ? "dx-devkit from npm" : "not installed globally (run from a folder)" });
     }
+  }
+  // Developer setup: git's identity and line endings, long paths, the GitHub CLI, an SSH key, PATH,
+  // file watchers, WSL. Not under a test's or a demo's DX_HOME: gh asks GitHub, and these read the real machine.
+  if (!process.env.DX_HOME) {
+    checks.push(...(await devSetupChecks({ projectDirs: projects.filter((p) => p.hasGit).map((p) => p.dir), roots: config.projectsRoots })));
   }
   const electron = findElectron();
   if (electron?.current) checks.push({ name: "dx app", status: "ok", detail: `Electron ${electron.version}, in ${appHome()}` });

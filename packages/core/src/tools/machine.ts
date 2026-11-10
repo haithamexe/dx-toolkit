@@ -96,7 +96,7 @@ export interface Installed {
 export type Runner = (command: string, args: string[]) => Promise<string>;
 
 /** Runs a command we chose (never one from a request), its stdout and stderr together. */
-const defaultRunner: Runner = (command, args) =>
+export const defaultRunner: Runner = (command, args) =>
   new Promise((resolve) => {
     // .cmd shims (npm, pnpm, yarn) only run through cmd.exe on Windows.
     const [file, list] = process.platform === "win32" ? ["cmd.exe", ["/d", "/s", "/c", [command, ...args].join(" ")]] : [command, args];

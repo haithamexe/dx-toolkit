@@ -1,4 +1,5 @@
 import { readRuns, type RunRecord } from "../runs.js";
+import { agentsReadable, readAgents, type AgentNode } from "./agents.js";
 import { isProblem, readActivity, type ActivityEvent } from "./activity.js";
 import { gitRun, runGh } from "./git.js";
 import { foldPath } from "./mocks.js";
@@ -43,6 +44,18 @@ export interface ProofVisual {
   a11yFixed: number;
 }
 
+/** The AI agents that worked on the branch, from their session files and dx's own run log: counts and models only. */
+export interface ProofAgents {
+  sessions: number;
+  subagents: number;
+  /** Models they ran at, by how many agents used each, most first ("opus-5-5"). */
+  models: string[];
+  /** dx tool calls made while the branch was worked on (the AI lane's records). */
+  dxCalls: number;
+  /** Times the tests were run through dx (by you or an agent). */
+  testRuns: number;
+}
+
 export interface PrProof {
   project: string;
   branch?: string;
@@ -60,6 +73,8 @@ export interface PrProof {
   errors: ProofError[];
   visual: ProofVisual[];
   checks: ProofCheck[];
+  /** Only when an agent or an agent's dx call shows in the time the branch was worked on. */
+  agents?: ProofAgents;
   markdown: string;
 }
 
@@ -108,7 +123,7 @@ function pathOf(url: string | undefined): string | undefined {
 }
 
 /** Gathers the proof for the project's current branch. `events` and `runs` default to dx's own records (for tests). */
-export async function prProof(project: { name: string; dir: string }, options: { events?: ActivityEvent[]; runs?: RunRecord[]; visual?: VisualCommit[]; now?: number } = {}): Promise<PrProof> {
+export async function prProof(project: { name: string; dir: string }, options: { events?: ActivityEvent[]; runs?: RunRecord[]; visual?: VisualCommit[]; agents?: AgentNode[]; now?: number } = {}): Promise<PrProof> {
   const dir = project.dir;
   const now = options.now ?? Date.now();
   const branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])) || undefined;
@@ -174,6 +189,18 @@ export async function prProof(project: { name: string; dir: string }, options: {
     }))
     .filter((v) => v.changed.length || v.slower.length || v.a11yNew.length || v.a11yFixed);
 
+  // The agents: sessions (and their subagents) of this project active since the work began, and what they did through dx.
+  const agentList = options.agents ?? (agentsReadable() ? readAgents({ sinceHours: Math.min(24 * 14, Math.max(1, Math.ceil((now - Date.parse(since)) / 3_600_000))), now, projects: [{ name: project.name, dir }] }) : []);
+  const mine2 = agentList.filter((a) => a.project === project.name && a.lastAt >= since);
+  const modelCount = new Map<string, number>();
+  for (const a of mine2) if (a.model) modelCount.set(a.model.replace(/^claude-/, "").replace(/-\d{8}$/, ""), (modelCount.get(a.model.replace(/^claude-/, "").replace(/-\d{8}$/, "")) ?? 0) + 1);
+  // Every call an agent made through the MCP server (including dx_do and dx_actions).
+  const dxCalls = runs.filter((r) => r.tool.startsWith("mcp.")).length;
+  // Every test run is recorded once as "test" (by the dashboard, the CLI or an agent); the agent's call is another record.
+  const testRuns = runs.filter((r) => r.tool === "test").length;
+  const sessions = mine2.filter((a) => a.kind === "session").length;
+  const agents: ProofAgents | undefined = sessions || mine2.length || dxCalls ? { sessions, subagents: mine2.length - sessions, models: [...modelCount].sort((a, b) => b[1] - a[1]).map(([m]) => m), dxCalls, testRuns } : undefined;
+
   const proof: PrProof = {
     project: project.name,
     branch,
@@ -187,6 +214,7 @@ export async function prProof(project: { name: string; dir: string }, options: {
     errors: [...errors.values()].sort((a, b) => Number(b.open) - Number(a.open) || b.count - a.count),
     visual,
     checks: [...latest.values()].map(toCheck),
+    agents,
     markdown: "",
   };
   proof.markdown = proofMarkdown(proof);
@@ -203,6 +231,15 @@ export function proofMarkdown(p: PrProof): string {
   const out: string[] = [PROOF_START, "## How this was tested", ""];
   if (p.tests) out.push(`- ${p.tests.ok ? "✅" : "❌"} **Tests**: ${p.tests.detail} (${ago(p.tests.at)})`);
   else out.push("- ⚪ **Tests**: not run through dx on this branch");
+  if (p.agents) {
+    const a = p.agents;
+    const bits = [
+      a.sessions ? `${a.sessions === 1 ? "1 agent session" : `${a.sessions} agent sessions`}${a.subagents ? ` with ${a.subagents === 1 ? "1 subagent" : `${a.subagents} subagents`}` : ""}${a.models.length ? ` (${a.models.slice(0, 3).join(", ")})` : ""}` : a.subagents ? `${a.subagents} subagents` : "",
+      a.dxCalls ? `${a.dxCalls === 1 ? "1 call" : `${a.dxCalls} calls`} through dx` : "",
+      a.testRuns ? `tests run ${a.testRuns === 1 ? "once" : `${a.testRuns} times`} through dx` : "",
+    ].filter(Boolean);
+    if (bits.length) out.push(`- 🤖 **Built with AI**: ${bits.join(", ")}`);
+  }
   if (p.pages.length) {
     const list = p.pages.slice(0, 8).map((x) => `\`${x.path}\``).join(", ");
     out.push(`- 🖱️ **Tried by hand**: ${p.pages.length === 1 ? "1 page" : `${p.pages.length} pages`} (${list}${p.pages.length > 8 ? ", …" : ""}), ${p.calls === 1 ? "1 API call" : `${p.calls} different API calls`}`);

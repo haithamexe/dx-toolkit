@@ -151,4 +151,24 @@ test("the proof says what was tested on the branch, from dx's own records", asyn
   for (const bit of ["✅ **Tests**: 12 passed, 0 failed", "**Tried by hand**: 1 page (`/cart`)", "1 still came up after the last commit", "✅ **Gremlins**: No problems in 40 actions (#4812)", "👀 **Looks different**: /cart (the Checkout button, 4%)", "🐢 **Slower**: /cart: largest paint 200 ms → 900 ms", "1 file isn't committed yet"]) assert.ok(md.includes(bit), bit);
   assert.ok(!md.includes("other-app"));
   assert.equal(proofMarkdown(p), md);
+  // Without agents in the records, and no dx calls, there is no AI line.
+  assert.equal(p.agents, undefined);
+  assert.ok(!md.includes("Built with AI"));
+});
+
+test("the proof says how the branch was built with agents: sessions, subagents, models, dx calls and test runs", async () => {
+  const now = Date.now();
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const node = (id: string, kind: "session" | "subagent", over: Record<string, unknown> = {}) => ({ id, kind, label: id, status: "idle", lastAt: iso(now - 60_000), tools: {}, calls: 0, dxCalls: 0, depth: kind === "session" ? 0 : 1, project: "shop-website", model: "claude-opus-5-5", timeline: { from: 0, bucketMs: 1, calls: [], dx: [] }, ...over });
+  const agents = [node("s:1", "session"), node("s:2", "session", { model: "claude-sonnet-5-5" }), node("a:1:x", "subagent"), node("s:3", "session", { project: "other-app" }), node("s:4", "session", { lastAt: iso(now - 30 * 86_400_000) })];
+  const runs = [
+    { at: iso(now - 30_000), tool: "test", ok: true, detail: "shop-website: 12 passed, 0 failed", project: "shop-website" },
+    { at: iso(now - 25_000), tool: "mcp.run_tests", ok: false, detail: "shop-website: 1 failed", project: "shop-website" },
+    { at: iso(now - 20_000), tool: "mcp.start_dev_server", ok: true, detail: "Started", project: "shop-website" },
+    { at: iso(now - 10_000), tool: "mcp.check_url", ok: true, detail: "shop-website: loaded /cart", project: "shop-website" },
+    { at: iso(now - 5_000), tool: "mcp.check_url", ok: true, detail: "other-app: loaded /", project: "other-app" },
+  ];
+  const p = await prProof({ name: "shop-website", dir }, { events: [], runs, visual: [], agents: agents as never, now });
+  assert.deepEqual(p.agents, { sessions: 2, subagents: 1, models: ["opus-5-5", "sonnet-5-5"], dxCalls: 3, testRuns: 1 });
+  assert.ok(p.markdown.includes("🤖 **Built with AI**: 2 agent sessions with 1 subagent (opus-5-5, sonnet-5-5), 3 calls through dx, tests run once through dx"), p.markdown);
 });

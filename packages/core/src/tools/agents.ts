@@ -45,6 +45,27 @@ export interface AgentNode {
   calls: number;
   dxCalls: number;
   depth: number;
+  /** How long it has been going: from its first line to its last. */
+  durationMs?: number;
+  /** On one tool call with nothing written for a long time: it may be hung, or waiting for your approval. */
+  stuck?: { tool: string; minutes: number };
+  /** Calls per five minutes over the last hour (of the part that was read), oldest first, and how many were dx's. */
+  timeline: { from: number; bucketMs: number; calls: number[]; dx: number[] };
+}
+
+export const TIMELINE_BUCKET_MS = 5 * 60_000;
+export const TIMELINE_BUCKETS = 12;
+/** A call that has run this long with nothing written is flagged as stuck. */
+export const STUCK_AFTER_MS = 10 * 60_000;
+/** Tools that mean the agent is asking you something: it waits for you as soon as the call is pending. */
+const ASKS = new Set(["AskUserQuestion", "ExitPlanMode"]);
+
+/**
+ * Whether the agents' folder is one to read: Claude Code's own, or one a test gave. A test sets
+ * DX_HOME and, unless it also names a Claude folder, must not read the real one.
+ */
+export function agentsReadable(): boolean {
+  return !process.env.DX_HOME || !!process.env.CLAUDE_CONFIG_DIR;
 }
 
 /** Claude Code's folder for its sessions (`CLAUDE_CONFIG_DIR` moves it, as it does for Claude Code). */
@@ -73,6 +94,9 @@ interface Read {
   stop?: string;
   pending?: string;
   tools: Record<string, number>;
+  /** When each tool call in the tail was made (ms), and the ones that were dx's, newest last, at most 1500. */
+  stamps: number[];
+  dxStamps: number[];
   /** Ids of the Agent/Task calls in what was read: the subagents this transcript started. */
   spawned: string[];
 }
@@ -105,7 +129,7 @@ function readTranscript(file: string): Read | undefined {
   }
   const hit = cache.get(file);
   if (hit && hit.mtime === st.mtimeMs && hit.size === st.size) return hit.read;
-  const read: Read = { tools: Object.create(null) as Record<string, number>, spawned: [] };
+  const read: Read = { tools: Object.create(null) as Record<string, number>, stamps: [], dxStamps: [], spawned: [] };
   const take = (o: Record<string, unknown>, tail: boolean) => {
     if (typeof o.sessionId === "string" && !read.sessionId) read.sessionId = str(o.sessionId, 64);
     if (o.cwd !== undefined && (tail || !read.cwd) && typeof o.cwd === "string") read.cwd = o.cwd.slice(0, 500);
@@ -126,6 +150,11 @@ function readTranscript(file: string): Read | undefined {
         if (part.type !== "tool_use" || typeof part.name !== "string") continue;
         const name = part.name.slice(0, 80);
         read.tools[name] = (read.tools[name] ?? 0) + 1;
+        const at = typeof o.timestamp === "string" ? Date.parse(o.timestamp) : NaN;
+        if (!Number.isNaN(at)) {
+          read.stamps.push(at);
+          if (name.startsWith("mcp__dx__")) read.dxStamps.push(at);
+        }
         if (typeof part.id === "string") {
           pending.set(part.id, name);
           if (name === "Agent" || name === "Task") read.spawned.push(part.id);
@@ -153,6 +182,8 @@ function readTranscript(file: string): Read | undefined {
     }
   }
   // The newest call still waiting for its result is what it's doing now.
+  read.stamps = read.stamps.slice(-1500);
+  read.dxStamps = read.dxStamps.slice(-1500);
   const last = [...pending.values()].pop();
   if (last) read.pending = last;
   cache.set(file, { mtime: st.mtimeMs, size: st.size, read });
@@ -188,7 +219,9 @@ function readMeta(file: string): Meta {
 /** Working while its file moves or a tool call waits for its result; waiting for you when a session's turn ended. */
 export function agentStatus(r: { ageMs: number; pending?: string; stop?: string; lastEvent?: string; stopped?: boolean }, kind: "session" | "subagent"): AgentStatus {
   if (r.stopped) return "stopped";
-  if (r.ageMs < 45_000) return "working";
+  if (r.ageMs < 45_000 && !(r.pending && ASKS.has(r.pending) && r.ageMs >= 15_000)) return "working";
+  // A question for you, or a plan to approve: it waits for you now, not after a quiet minute.
+  if (r.pending && ASKS.has(r.pending) && r.ageMs >= 15_000 && r.ageMs < 60 * 60_000) return "waiting";
   if (r.pending && r.ageMs < 30 * 60_000) return "working";
   // Its last word was a finished turn: a session waits for you, a subagent has handed its answer back.
   if (r.stop === "end_turn" && r.lastEvent === "assistant") return kind === "session" ? (r.ageMs < 60 * 60_000 ? "waiting" : "idle") : "done";
@@ -201,6 +234,26 @@ const countTools = (tools: Record<string, number>) => ({ calls: Object.values(to
 /** The top tools by use, so a node stays small. */
 function top(tools: Record<string, number>, n = 8): Record<string, number> {
   return Object.fromEntries(Object.entries(tools).sort((a, b) => b[1] - a[1]).slice(0, n));
+}
+
+function timelineOf(stamps: number[], dxStamps: number[], now: number): AgentNode["timeline"] {
+  const from = now - TIMELINE_BUCKETS * TIMELINE_BUCKET_MS;
+  const count = (list: number[]) => {
+    const out = new Array<number>(TIMELINE_BUCKETS).fill(0);
+    for (const t of list) if (t >= from && t <= now) out[Math.min(TIMELINE_BUCKETS - 1, Math.floor((t - from) / TIMELINE_BUCKET_MS))]++;
+    return out;
+  };
+  return { from, bucketMs: TIMELINE_BUCKET_MS, calls: count(stamps), dx: count(dxStamps) };
+}
+
+const durationOf = (startedAt: string | undefined, lastMs: number): number | undefined => {
+  const t = startedAt ? Date.parse(startedAt) : NaN;
+  return Number.isNaN(t) || lastMs < t ? undefined : lastMs - t;
+};
+
+/** On one call, not asking you anything, and nothing written for a long while. */
+function stuckOf(pending: string | undefined, ageMs: number): AgentNode["stuck"] {
+  return pending && !ASKS.has(pending) && ageMs >= STUCK_AFTER_MS && ageMs < 6 * 3_600_000 ? { tool: pending, minutes: Math.floor(ageMs / 60_000) } : undefined;
 }
 
 /**
@@ -281,6 +334,9 @@ export function readAgents(options: { sinceHours?: number; now?: number; project
       calls,
       dxCalls,
       depth: 0,
+      durationMs: durationOf(r.startedAt, s.mtime),
+      stuck: stuckOf(r.pending, now - s.mtime),
+      timeline: timelineOf(r.stamps, r.dxStamps, now),
     });
 
     // Its subagents: one transcript and one meta file each.
@@ -332,6 +388,9 @@ export function readAgents(options: { sinceHours?: number; now?: number; project
         calls: c,
         dxCalls: d,
         depth: meta.depth,
+        durationMs: durationOf(read.startedAt, a.mtime),
+        stuck: meta.stopped ? undefined : stuckOf(read.pending, now - a.mtime),
+        timeline: timelineOf(read.stamps, read.dxStamps, now),
       });
     }
   }

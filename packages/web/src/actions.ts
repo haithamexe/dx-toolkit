@@ -78,7 +78,7 @@ export const DX_ACTIONS: DxAction[] = [
   A("run.clear", "Clear a dev server's output", "POST", "/api/dev/clear", { dir: DIR }),
   A("run.takeover", "Make a dev server an AI started the user's", "POST", "/api/dev/takeover", { dir: DIR }),
   A("run.check", "Load a page of a running app (loopback only) and report errors, failed requests and console; steps for a flow", "POST", "/api/check", { "url?": "an address on this computer", "dir?": DIR, "path?": "a path on the project's server", "browser?": "true for a headless browser", "steps?": "a list of steps (click, type, goto…)", "method?": "HTTP method", "headers?": "headers", "body?": "request body", "timeoutMs?": "ms", "screenshot?": "true for a screenshot" }),
-  A("run.tests", "Run a project's tests and get each failure with file, line, expected and actual", "POST", "/api/tests", { dir: DIR, "match?": "a test name pattern", "changed?": "true for tests of changed files" }),
+  A("run.tests", "Run a project's tests and get each failure with file, line, expected and actual (and, with coverage, how much of the code they run)", "POST", "/api/tests", { dir: DIR, "coverage?": "true to measure coverage too", "match?": "a test name pattern", "changed?": "true for tests of changed files" }),
   A("run.traffic", "Requests the apps made through their .localhost addresses", "GET", "/api/traffic"),
   A("run.traffic-clear", "Clear the network log of a project", "POST", "/api/traffic/clear", { "dir?": DIR }),
   A("run.ai", "What AI agents did through dx lately", "GET", "/api/ai", { "dir?": DIR, "limit?": "how many" }),
@@ -208,6 +208,8 @@ export const DX_ACTIONS: DxAction[] = [
 
   // This computer
   A("machine.tools", "Installed developer tools, newest versions and support status", "GET", "/api/machine/tools", { "refresh?": "true" }),
+  A("machine.export", "What this computer has for development (tools and versions, global npm packages, git settings, editor extensions, SSH key names), as a file for a new computer", "GET", "/api/machine/export"),
+  A("machine.restore-plan", "What this computer still needs to match a machine file from another: steps and a script to read and run yourself (nothing is run)", "POST", "/api/machine/restore-plan", { file: "the machine file's JSON text" }),
   A("machine.projects", "What each project needs next to what's installed", "GET", "/api/machine/projects"),
   A("machine.processes", "Developer processes running, with memory, CPU and ports", "GET", "/api/machine/processes"),
   A("machine.stop", "Stop a process (by PID from machine.processes)", "POST", "/api/machine/stop", { pid: "the PID" }, RISKY),

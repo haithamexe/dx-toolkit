@@ -4,6 +4,16 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+### Added
+
+- **Tell me when an agent is waiting for me**: a Claude Code session that finished its turn (or asked you a question) and has waited 90 seconds warns you with a toast and a sound, a system notification, and a line beside Floppy ("shop-website: agent waiting 4 min") until you answer. An agent stuck on one tool call for 10 minutes warns too. On by default; off in Settings, or per project (and its system notifications alone).
+- **Where agents spend their effort**: on the Agents page, how long each session and subagent has run, a bar chart of tool calls over the last hour (calls through dx in the accent), a list of how long each subagent ran, and a stuck flag. Metadata only.
+- **Agent runs in the proof for the pull request**: "Built with AI" says how many agent sessions and subagents worked on the branch, their models, the calls they made through dx and how many times the tests were run.
+- **Offer to clone on import**: a project in your dx state file that isn't on this computer shows **Clone it here** (and `dx state import <file> --yes --clone`). It clones from the project's repository address and installs nothing.
+- **`dx machine export` and `dx machine restore`**: what this computer has for development (tools and versions, global npm packages, git settings, editor extensions, SSH key names; no secrets) in one file, and what another computer still needs to match it, as commands to run yourself or a script (`--script`). Also on the Machine page and for AI agents (`machine.export`, `machine.restore-plan`).
+- **Developer setup checks in `dx doctor`**: git's name and email, line endings, long paths on Windows, the GitHub CLI signed in, an SSH key for ssh remotes, PATH folders that don't exist or two Nodes, the Linux file-watch limit and projects on the Windows drive under WSL, each with the command that fixes it.
+- **Coverage in `dx test`**: `dx test --coverage` (also the `coverage` option of `run_tests` and a menu item on the Projects page) measures how much of the code the tests run: vitest with a coverage provider, jest, node:test, pytest-cov and go, as percentages with the least covered files first.
+
 ## 1.9.0 (2026-11-09)
 
 Several APIs per project, an Agents page that shows what your AI agents are doing, and dx's MCP server with resources and prompts, so Claude can develop dx too. Update with `npm install -g dx-devkit@latest`.

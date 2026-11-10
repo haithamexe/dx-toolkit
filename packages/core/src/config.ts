@@ -57,6 +57,8 @@ export interface DxConfig {
   visualDiff?: boolean;
   /** Warn (a sound in the dashboard, and a notification from the system) when a project's .env file changes, is staged or is committed (default true). */
   envAlerts?: boolean;
+  /** Warn when an AI agent is waiting for your reply, or stuck on one tool call (default true). */
+  agentAlerts?: boolean;
   /**
    * Per project (by its folder, lower case): `off` silences all of dx's alerts for it (.env warnings
    * and its tools' watches), `osOff` only the system's notifications. Both are on when not set.

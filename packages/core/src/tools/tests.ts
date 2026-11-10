@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordRun } from "../runs.js";
+import { parseCoverageSummary, parseGoCover, parsePytestCoverage, parseV8Coverage, type Coverage } from "./coverage.js";
 import type { Project } from "./projects.js";
 
 /**
@@ -41,6 +42,10 @@ export interface TestRun {
   outputTail: string[];
   /** Why there's no usable report: no test command, timed out, … */
   error?: string;
+  /** How much of the code the tests ran, when coverage was asked for and the framework could say. */
+  coverage?: Coverage;
+  /** Why there's no coverage when it was asked for, and what to do about it. */
+  coverageNote?: string;
 }
 
 export interface TestOptions {
@@ -50,6 +55,8 @@ export interface TestOptions {
   files?: string[];
   /** Only tests related to files changed since the last commit (vitest and jest). */
   changed?: boolean;
+  /** Also measure how much of the code the tests run (vitest with a coverage provider, jest, node:test, pytest-cov, go). */
+  coverage?: boolean;
   timeoutMs?: number;
   source?: string;
 }
@@ -85,6 +92,13 @@ export async function runTests(project: Pick<Project, "name" | "dir" | "packageM
   const pm = project.packageManager ?? "npm";
   const runScript = pm === "npm" ? "npm test --" : `${pm} test`;
   const files = (options.files ?? []).map(quote).join(" ");
+  // Coverage goes to a folder next to the report; each framework's flags are added only when it can actually produce it.
+  const covDir = path.join(path.dirname(report), "coverage");
+  let covFile: string | undefined;
+  let covKind: "summary" | "pytest" | "go" | "v8" | undefined;
+  let coverageNote: string | undefined;
+  const wantCoverage = options.coverage === true;
+  const hasPackage = (name: string) => fs.existsSync(path.join(project.dir, "node_modules", ...name.split("/")));
   let command: string;
   let env: NodeJS.ProcessEnv = { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" };
   // Set when dx itself runs under node --test; a child node --test would then report to it instead.
@@ -92,9 +106,22 @@ export async function runTests(project: Pick<Project, "name" | "dir" | "packageM
   switch (found.framework) {
     case "vitest":
       command = `npx --no-install vitest run ${files} --reporter=json --outputFile=${quote(report)}${options.match ? ` -t ${quote(options.match)}` : ""}${options.changed ? " --changed" : ""}`;
+      if (wantCoverage) {
+        // vitest stops at once without a coverage provider, so it's only asked for when one is installed.
+        if (hasPackage("@vitest/coverage-v8") || hasPackage("@vitest/coverage-istanbul")) {
+          command += ` --coverage --coverage.reporter=json-summary --coverage.reportsDirectory=${quote(covDir)}`;
+          covFile = path.join(covDir, "coverage-summary.json");
+          covKind = "summary";
+        } else coverageNote = "vitest needs a coverage provider: npm install -D @vitest/coverage-v8, then run again.";
+      }
       break;
     case "jest":
       command = `npx --no-install jest ${files} --json --outputFile=${quote(report)} --testLocationInResults${options.match ? ` -t ${quote(options.match)}` : ""}${options.changed ? " --onlyChanged" : ""}`;
+      if (wantCoverage) {
+        command += ` --coverage --coverageReporters=json-summary --coverageDirectory=${quote(covDir)}`;
+        covFile = path.join(covDir, "coverage-summary.json");
+        covKind = "summary";
+      }
       break;
     case "node":
       // The project's own script, with the TAP reporter added through NODE_OPTIONS.
@@ -111,15 +138,35 @@ export async function runTests(project: Pick<Project, "name" | "dir" | "packageM
           .join(" ")
           .trim(),
       };
+      // node's own coverage flag can't be set through NODE_OPTIONS, but V8 writes its raw coverage to a folder on request.
+      if (wantCoverage) {
+        env.NODE_V8_COVERAGE = covDir;
+        covKind = "v8";
+      }
       break;
     case "pytest":
       command = `${(await pythonCommand()) ?? "python"} -m pytest ${files} -q --junitxml=${quote(report)}${options.match ? ` -k ${quote(options.match)}` : ""}`;
+      if (wantCoverage) {
+        // pytest fails on --cov when pytest-cov isn't installed, so it's only asked for when the project lists it.
+        if (/pytest-cov|\bcoverage\b/.test(read(path.join(project.dir, "pyproject.toml")) + read(path.join(project.dir, "requirements.txt")) + read(path.join(project.dir, "requirements-dev.txt")))) {
+          covFile = path.join(covDir, "coverage.json");
+          fs.mkdirSync(covDir, { recursive: true });
+          command += ` --cov=. --cov-report=json:${quote(covFile)}`;
+          covKind = "pytest";
+        } else coverageNote = "pytest needs pytest-cov: pip install pytest-cov, then run again.";
+      }
       break;
     case "go":
       command = `go test -json ${files || "./..."}${options.match ? ` -run ${quote(options.match)}` : ""}`;
+      if (wantCoverage) {
+        covFile = path.join(path.dirname(report), "cover.out");
+        command += ` -coverprofile=${quote(covFile)}`;
+        covKind = "go";
+      }
       break;
     default:
       command = runScript;
+      if (wantCoverage) coverageNote = "This project's own test script can't be measured by dx. Run its coverage command (for example npx c8 npm test) yourself.";
   }
 
   const result = await run(command, project.dir, env, options.timeoutMs ?? 600_000);
@@ -138,6 +185,17 @@ export async function runTests(project: Pick<Project, "name" | "dir" | "packageM
     if (!result.ok && !out.error) out.error = found.framework === "script" ? undefined : "The tests didn't produce a report; the output below says why.";
   }
   out.ok = result.ok && out.failed === 0 && !out.error;
+  if (wantCoverage) {
+    try {
+      if (covKind === "summary" && covFile) out.coverage = parseCoverageSummary(read(covFile), project.dir);
+      else if (covKind === "pytest" && covFile) out.coverage = parsePytestCoverage(read(covFile), project.dir);
+      else if (covKind === "go" && covFile) out.coverage = parseGoCover(read(covFile));
+      else if (covKind === "v8") out.coverage = parseV8Coverage(covDir, project.dir);
+    } catch {
+      // an unreadable coverage file: the note below says there's none
+    }
+    if (!out.coverage) out.coverageNote = coverageNote ?? "The tests ran but wrote no coverage report.";
+  }
   fs.rmSync(path.dirname(report), { recursive: true, force: true });
   recordRun("test", out.ok, `${project.name}: ${out.passed} passed, ${out.failed} failed`, options.source ?? "cli", { project: project.name, ms: out.ms });
   return out;
@@ -363,6 +421,8 @@ function decode(s: string): string {
 }
 
 function quote(s: string): string {
+  // cmd.exe doesn't honour a backslash before a quote, so on Windows a value that could end the quoted text or start another command is refused.
+  if (process.platform === "win32" && /["%&|<>^`\r\n]/.test(s)) throw new Error(`A test name or file can't hold any of \" % & | < > ^ on Windows: ${s.slice(0, 40)}`);
   return process.platform === "win32" ? `"${s.replace(/"/g, '\\"')}"` : `'${s.replace(/'/g, "'\\''")}'`;
 }
 

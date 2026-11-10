@@ -306,6 +306,8 @@ export interface FloppySnapshot {
   ai?: { active: boolean; text?: string; project?: string };
   /** A custom tool's watch (with `floppy` on) matched something in the last two minutes. */
   alert?: { key: string; project: string; tool: string; text: string; at: string };
+  /** Sessions of AI agents waiting for your reply (the one waiting least first), until you answer. */
+  waiting?: { key: string; project?: string; minutes: number }[];
 }
 
 export interface FloppyTip {
@@ -345,6 +347,8 @@ export interface FloppyMemory {
   lastError?: string;
   /** The watch match said last, so a new one is announced once. */
   lastAlert?: string;
+  /** The waiting agents already said, so each is announced once. */
+  saidWaiting?: string[];
 }
 
 export const FLOPPY_SLEEP_MS = 30 * 60_000;
@@ -426,6 +430,18 @@ export function floppyView(snapshot: FloppySnapshot, memory: FloppyMemory, now =
     const quiet = !!mem.quietUntil;
     return done({ mood: quiet ? "sleep" : base === "sleep" ? "idle" : base, tip: { title: `${alert.project}: ${alert.tool}`, text: alert.text, icon: "info" }, status: { text: `${alert.tool}: ${alert.text}`, icon: "warn" }, announce: fresh && !quiet });
   }
+  // An agent waiting for your reply stays on the line, with how long, until you answer it.
+  const waiting = snapshot.waiting?.[0];
+  if (waiting) {
+    const keys = snapshot.waiting!.map((w) => w.key);
+    const fresh = !(mem.saidWaiting ?? []).includes(waiting.key);
+    mem.saidWaiting = keys;
+    const quiet = !!mem.quietUntil;
+    const who = waiting.project ?? "An agent";
+    const more = snapshot.waiting!.length > 1 ? ` (+${snapshot.waiting!.length - 1})` : "";
+    return done({ mood: quiet ? "sleep" : base === "sleep" ? "idle" : base, tip: { title: `${who}: an agent is waiting`, text: `It has waited ${waiting.minutes} min for your reply. Click me to see the agents.`, icon: "ai" }, status: { text: `${who}: agent waiting ${waiting.minutes} min${more}`, icon: "warn" }, announce: fresh && !quiet });
+  }
+  if (!snapshot.waiting?.length) delete mem.saidWaiting;
   if (base === "ai") {
     const text = snapshot.ai?.text ? firstLine(snapshot.ai.text) : undefined;
     const status: FloppyStatus = { text: text ? `AI: ${text}` : `AI agent${snapshot.ai?.project ? ` on ${snapshot.ai.project}` : " at work"}`, icon: "ai" };

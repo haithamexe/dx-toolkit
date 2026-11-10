@@ -120,3 +120,9 @@ test("reads go test -json, keeping the failing subtest rather than its parent", 
   assert.equal(r.failed, 1);
   assert.deepEqual({ name: r.failures[0].name, file: r.failures[0].file, line: r.failures[0].line, message: r.failures[0].message }, { name: "TestCart/total", file: "cart_test.go", line: 14, message: "got 5, want 6" });
 });
+
+test("on Windows a test name or file with a quote or a shell character is refused, since cmd.exe would run what follows", { skip: process.platform !== "win32" }, async () => {
+  const dir = project({ "package.json": JSON.stringify({ name: "x", devDependencies: { vitest: "^3" }, scripts: { test: "vitest" } }) });
+  for (const match of ['x" & echo INJECTED & "', "a|b", "50%", "a^b"]) await assert.rejects(runTests({ name: "x", dir, packageManager: "npm" }, { match, source: "test" }), /can't hold any of/);
+  await assert.rejects(runTests({ name: "x", dir, packageManager: "npm" }, { files: ['a" & calc & "b.test.ts'], source: "test" }), /can't hold any of/);
+});

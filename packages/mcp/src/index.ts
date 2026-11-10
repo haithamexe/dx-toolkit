@@ -1173,13 +1173,14 @@ server.registerTool(
       match: z.string().optional().describe("Only tests whose name matches (vitest/jest -t, pytest -k, go -run, node --test-name-pattern)"),
       files: z.array(z.string()).optional().describe("Only these test files, relative to the project (not for node:test scripts)"),
       changed: z.boolean().optional().describe("Only tests related to uncommitted changes (vitest and jest)"),
+      coverage: z.boolean().optional().describe("Also measure how much of the code the tests run (vitest with a coverage provider, jest, node:test, pytest-cov, go): percentages and the files with the least"),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
-  async ({ project: name, match, files, changed }) => {
+  async ({ project: name, match, files, changed, coverage }) => {
     const project = pickProject(name);
     if (typeof project === "string") return failure(project);
-    const r = await runTests(project, { match, files, changed, source: "mcp" });
+    const r = await runTests(project, { match, files, changed, coverage, source: "mcp" });
     const head = `${project.name}: ${r.passed} passed, ${r.failed} failed${r.skipped ? `, ${r.skipped} skipped` : ""} in ${(r.ms / 1000).toFixed(1)}s (${r.framework})`;
     const parts = [r.ok ? `${head}. All tests pass.` : head];
     for (const f of r.failures.slice(0, 30)) {
@@ -1189,6 +1190,10 @@ server.registerTool(
       parts.push(`- ${f.name}${where}\n    ${f.message.split("\n").slice(0, 8).join("\n    ")}${ea}${stack}`);
     }
     if (r.failures.length > 30) parts.push(`…and ${r.failures.length - 30} more.`);
+    if (r.coverage) {
+      const k = r.coverage;
+      parts.push(`Coverage: lines ${k.lines}%${k.statements !== undefined ? `, statements ${k.statements}%` : ""}${k.functions !== undefined ? `, functions ${k.functions}%` : ""}${k.branches !== undefined ? `, branches ${k.branches}%` : ""} across ${k.fileCount} files${k.note ? ` (${k.note})` : ""}.\nLeast covered:\n${k.files.filter((f) => f.lines < 100).slice(0, 8).map((f) => `  ${f.lines}% ${f.file}`).join("\n") || "  none: everything is fully covered"}`);
+    } else if (r.coverageNote) parts.push(`No coverage: ${r.coverageNote}`);
     if (r.error || (!r.ok && !r.failures.length)) parts.push(`${r.error ?? "The command failed."}\nEnd of its output:\n${r.outputTail.join("\n")}`);
     const result = text(parts.join("\n\n"));
     return r.ok ? result : { ...result, isError: true };

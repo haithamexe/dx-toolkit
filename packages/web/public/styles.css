@@ -2803,6 +2803,32 @@ summary.error-row {
 .agent-waiting .agent-dot {
   fill: var(--warn);
 }
+.agent-waiting .agent-now,
+.agent-stuck .agent-now {
+  fill: var(--warn);
+}
+.agent-stuck .agent-card {
+  stroke: var(--warn);
+  stroke-width: 2;
+}
+.agent-spark,
+.agent-runs {
+  margin-top: var(--s4);
+}
+.agent-spark-bar {
+  fill: var(--text-dim);
+  opacity: 0.55;
+}
+.agent-spark-dx {
+  fill: var(--accent);
+}
+.agent-spark-note {
+  margin-top: var(--s1);
+  font-size: 12px;
+}
+.tool-bar.tool-bar-warn {
+  background: var(--warn);
+}
 .agent-done .agent-dot {
   fill: var(--ok);
 }

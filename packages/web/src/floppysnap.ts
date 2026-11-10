@@ -3,6 +3,7 @@ import { aiLane } from "./ai.js";
 import { devErrors, listDevServers } from "./dev.js";
 import { toolAlert } from "./toolsapi.js";
 import { envAlertsSince } from "./envwatch.js";
+import { agentsWaiting } from "./agentwatch.js";
 
 /**
  * What Floppy needs to pick its mood, in one small answer: the dev servers dx runs (not
@@ -36,5 +37,8 @@ export function floppySnapshot(): FloppySnapshot {
   const envAsAlert = env ? { key: `env|${env.id}`, project: env.project, tool: ".env", text: env.kind === "changed" ? `${env.files[0]} changed` : env.kind === "staged" ? `${env.files[0]} is staged` : `${env.files[0]} was committed`, at: env.at } : undefined;
   const newest = [alert, envAsAlert].filter((a) => !!a).sort((a, b) => Date.parse(b!.at) - Date.parse(a!.at))[0];
   if (newest) snapshot.alert = newest;
+  // Sessions waiting for your reply stay on the line until you answer.
+  const waiting = agentsWaiting();
+  if (waiting.length) snapshot.waiting = waiting.slice(0, 9).map((w) => ({ key: w.id, project: w.project, minutes: w.minutes }));
   return snapshot;
 }

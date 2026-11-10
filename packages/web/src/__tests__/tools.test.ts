@@ -250,3 +250,17 @@ test("dx's state goes out and comes back through the dashboard: the page's prefe
   assert.equal(await count(), before);
   await api("/api/state/undo", {});
 });
+
+test("cloning a project of an import file: only one the file has, that isn't here, with a repository to clone from", async () => {
+  const file = (projects: unknown[]) => JSON.stringify({ format: "dx-state", version: 1, exportedAt: "2026-11-01T00:00:00.000Z", settings: {}, sites: [], journal: [], summaries: [], templates: [], projects });
+  const note = { text: "a", by: "you", at: "2026-11-01T00:00:00.000Z" };
+  const here = file([{ name: "shop-website", note }, { name: "no-remote", note }]);
+  assert.equal((await call("/api/state/import/clone", { file: here, index: 0 })).status, 409, "already here");
+  assert.equal((await call("/api/state/import/clone", { file: here, index: 1 })).status, 400, "no repository address");
+  assert.equal((await call("/api/state/import/clone", { file: here, index: 5 })).status, 404);
+  assert.equal((await call("/api/state/import/clone", { file: here, index: "x" })).status, 400);
+  assert.equal((await call("/api/state/import/clone", { file: "{}", index: 0 })).status, 400, "a file that isn't one");
+  const far = JSON.parse(file([{ name: "far-away", remote: "github.com/octocat/far-away", note }]));
+  const plan = await api("/api/state/import/check", { file: JSON.stringify(far) });
+  assert.equal(plan.projects[0].cloneUrl, "https://github.com/octocat/far-away.git");
+});

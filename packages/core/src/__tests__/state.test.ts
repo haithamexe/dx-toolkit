@@ -219,3 +219,15 @@ test("an imported journal entry doesn't land between an entry and the lines unde
   fs.writeFileSync(file, first + `${a} ${b} octocat <octocat@example.com> 2 +0000\tcommit: add .env\n${b} ${c} octocat <octocat@example.com> 3 +0000\trebase (finish): returning to refs/heads/main\n${c} ${a} octocat <octocat@example.com> 4 +0000\tcheckout: moving from main to old\n`);
   assert.deepEqual(commitsInReflog(file, Buffer.byteLength(first), fs.statSync(file).size), [b], "the commit before a rebase and a checkout");
 });
+
+test("a project that isn't here but has a remote can be offered for cloning: https only, never with credentials, only for addresses that look like one", async () => {
+  const { stateCloneUrl } = core;
+  assert.equal(stateCloneUrl("github.com/octocat/shop-website"), "https://github.com/octocat/shop-website.git");
+  assert.equal(stateCloneUrl("gitlab.example.com/team/sub/api-gateway"), "https://gitlab.example.com/team/sub/api-gateway.git");
+  assert.equal(stateCloneUrl("git.example.com:8443/octocat/shop"), "https://git.example.com:8443/octocat/shop.git");
+  for (const bad of [undefined, "", "github.com/octocat", "octocat:pw@github.com/octocat/shop", "github.com/../x/y", "-oProxyCommand=x/a/b", "github.com/octo cat/shop", "file:///srv/git/shop"]) assert.equal(stateCloneUrl(bad as string), undefined, String(bad));
+  const base = { format: "dx-state", version: 1, exportedAt: "2026-11-01T00:00:00.000Z", settings: {}, sites: [], journal: [], summaries: [], templates: [] };
+  const state = core.readState(JSON.stringify({ ...base, projects: [{ name: "far-away", remote: "github.com/octocat/far-away", note: { text: "a", by: "you", at: "2026-11-01T00:00:00.000Z" } }, { name: "local-only", note: { text: "b", by: "you", at: "2026-11-01T00:00:00.000Z" } }] }));
+  const plan = await core.planStateImport(state, core.scanProjects(core.loadConfig()));
+  assert.deepEqual(plan.projects.map((p) => [p.name, p.match, p.cloneUrl]), [["far-away", undefined, "https://github.com/octocat/far-away.git"], ["local-only", undefined, undefined]]);
+});

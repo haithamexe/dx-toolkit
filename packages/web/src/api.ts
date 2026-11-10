@@ -124,7 +124,11 @@ import {
   parseSince,
   terminalIds,
   checkProjectNeeds,
+  captureMachine,
   checkTools,
+  readMachine,
+  restorePlan,
+  restoreScript,
   dockerInfo,
   dockerPrune,
   dockerStop,
@@ -539,6 +543,7 @@ const routes: Record<string, Handler> = {
     runTests(knownProject(req.body.dir), {
       match: typeof req.body.match === "string" && req.body.match ? req.body.match : undefined,
       changed: req.body.changed === true,
+      coverage: req.body.coverage === true,
       source: "web",
     }),
   "GET /api/env": (req) => checkEnv(knownProject(req.query.get("dir")).dir),
@@ -910,6 +915,18 @@ const routes: Record<string, Handler> = {
   // ------------------------------------------------------------ ports
   // The Machine page: the tools on this computer, what each project needs, and what runs in the background.
   "GET /api/machine/tools": (req) => checkTools({ refresh: req.query.get("refresh") === "1" }),
+  // Moving to a new computer: what this one has for development, and what another still needs to match a file made on it.
+  "GET /api/machine/export": async () => captureMachine(),
+  "POST /api/machine/restore-plan": async (req) => {
+    let file;
+    try {
+      file = readMachine(req.body.file);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+    const plan = restorePlan(file, await captureMachine());
+    return { ...plan, script: restoreScript(plan) };
+  },
   "GET /api/machine/projects": async () => projectNeeds(),
   "GET /api/machine/processes": () => listDevProcesses({ projects: scanProjects(loadConfig()), ownerPids: dxOwnedPids() }),
   "POST /api/machine/stop": async (req) => {
@@ -1161,6 +1178,7 @@ const routes: Record<string, Handler> = {
     }
     if (typeof req.body.activity === "boolean") config.activity = req.body.activity;
     if (typeof req.body.envAlerts === "boolean") config.envAlerts = req.body.envAlerts;
+    if (typeof req.body.agentAlerts === "boolean") config.agentAlerts = req.body.agentAlerts;
     if (typeof req.body.localhostRecording === "boolean") config.localhostRecording = req.body.localhostRecording;
     if (typeof req.body.visualDiff === "boolean") config.visualDiff = req.body.visualDiff;
     if (req.body.activityDays !== undefined) config.activityDays = clampInt(req.body.activityDays, 1, 365, config.activityDays ?? 7);

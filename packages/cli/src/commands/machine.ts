@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import { parseArgs } from "node:util";
 import {
+  captureMachine,
   checkProjectNeeds,
   checkTools,
   dockerInfo,
@@ -8,7 +11,11 @@ import {
   latestVersions,
   listDevProcesses,
   loadConfig,
+  MACHINE_FILE_MAX,
+  readMachine,
   recordRun,
+  restorePlan,
+  restoreScript,
   scanProjects,
   stopDevProcess,
   supportedNodeLines,
@@ -34,6 +41,10 @@ export const machineCommand: Command = {
     "dx machine processes       dev servers, watchers and tools running, with memory and CPU",
     "dx machine docker          containers and the space Docker can free",
     "dx machine --stop <pid>    stop a process from the list (asks first)",
+    "dx machine export [file]   what this computer has for development (tools, global npm packages, git settings,",
+    "                           editor extensions, SSH key names; no secrets) in one file for a new computer",
+    "dx machine restore <file>  what this computer still needs to match that file, as commands to run yourself;",
+    "                           --script <out> writes them as a script (PowerShell on Windows, sh elsewhere)",
     "  --all       list everything, not only what needs attention",
     "  --offline   don't look up the newest versions",
     "  --json      machine-readable output",
@@ -49,6 +60,8 @@ export const machineCommand: Command = {
         offline: { type: "boolean" },
         json: { type: "boolean" },
         stop: { type: "string" },
+        script: { type: "string" },
+        force: { type: "boolean" },
       },
     });
     const owners = await dxPids();
@@ -67,6 +80,46 @@ export const machineCommand: Command = {
       return;
     }
 
+    if (positionals[0] === "export") {
+      const file = path.resolve(positionals[1] ?? `dx-machine-${new Date().toISOString().slice(0, 10)}.json`);
+      const snapshot = await captureMachine();
+      try {
+        fs.writeFileSync(file, JSON.stringify(snapshot, null, 1) + "\n", { mode: 0o600, flag: values.force ? "w" : "wx" });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new UsageError(`${file} is already there. Give another name, or add --force to replace it.`);
+        throw err;
+      }
+      recordRun("machine", true, `exported ${snapshot.tools.length} tools, ${snapshot.npmGlobals.length} global packages, ${snapshot.extensions.length} extensions`, "cli");
+      ok(`Saved ${file}: ${snapshot.tools.length} tools, ${snapshot.npmGlobals.length} global npm packages, ${snapshot.extensions.length} editor extensions, ${snapshot.sshKeys.length} SSH key name${snapshot.sshKeys.length === 1 ? "" : "s"}.`);
+      console.log(c.dim("It holds your git name and email, and no key, token, password or path. On the new computer: dx machine restore <file>"));
+      return;
+    }
+    if (positionals[0] === "restore") {
+      if (!positionals[1]) throw new UsageError("Which file? dx machine restore <file>");
+      const file = path.resolve(positionals[1]);
+      if (fs.statSync(file).size > MACHINE_FILE_MAX) throw new UsageError("A dx machine file is at most 512 KB.");
+      let wanted;
+      try {
+        wanted = readMachine(fs.readFileSync(file, "utf8"));
+      } catch (err) {
+        throw new UsageError((err as Error).message);
+      }
+      const plan = restorePlan(wanted, await captureMachine());
+      if (values.json) return void console.log(JSON.stringify({ ...plan, script: restoreScript(plan) }, null, 2));
+      console.log(c.bold(`From ${plan.from} to ${plan.to}`) + c.dim(`  ${plan.have} already match`));
+      if (!plan.steps.length) return ok("This computer already has everything in the file.");
+      for (const s of plan.steps) {
+        console.log(`${c.yellow("•")} ${s.label}`);
+        console.log(`    ${s.command ? c.cyan(s.command) : c.dim(s.advice ?? "")}`);
+      }
+      if (values.script) {
+        const out = path.resolve(values.script);
+        // Windows PowerShell 5.1 reads a .ps1 without a byte order mark as ANSI, which would mangle a name like José.
+        fs.writeFileSync(out, (process.platform === "win32" ? "\uFEFF" : "") + restoreScript(plan), { mode: 0o700, flag: values.force ? "w" : "wx" });
+        return ok(`Wrote ${out}. Read it, then run it yourself: dx doesn't.`);
+      }
+      return console.log(c.dim("\ndx doesn't install anything itself. Add --script <file> to get these as a script to read and run."));
+    }
     const wanted = positionals[0] as Section | undefined;
     if (wanted && !SECTIONS.includes(wanted)) throw new UsageError(`Unknown part "${wanted}". Use ${SECTIONS.join(", ")}.`);
     const show = (s: Section) => !wanted || wanted === s;

@@ -61,3 +61,10 @@ test("how far back is the caller's to choose, within limits; the token is needed
   const res = await fetch(new URL("/api/agents", dashboard.url));
   assert.equal(res.status, 401);
 });
+
+test("GET /api/agents/alerts: the warnings since a moment (the session here is working, so none)", async () => {
+  const r = await get("/api/agents/alerts?since=2020-01-01T00:00:00Z");
+  assert.equal(r.status, 200);
+  assert.deepEqual(JSON.parse(r.text), { alerts: [] });
+  assert.equal((await fetch(new URL("/api/agents/alerts", dashboard.url))).status, 401);
+});

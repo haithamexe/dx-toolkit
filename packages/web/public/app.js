@@ -1456,17 +1456,32 @@ function projectsPage(root, { only } = {}) {
     }
   }
 
-  async function runTestsOf(p) {
+  async function runTestsOf(p, coverage = false) {
     const key = p.dir.toLowerCase();
     testRuns.set(key, { running: true });
     renderList();
     try {
-      testRuns.set(key, await api("/api/tests", { method: "POST", body: { dir: p.dir } }));
+      testRuns.set(key, await api("/api/tests", { method: "POST", body: { dir: p.dir, coverage } }));
     } catch (err) {
       testRuns.delete(key);
       toast(err.message, "error");
     }
     renderList();
+  }
+
+  /** How much of the code the tests ran, and the files that ran least. */
+  function coveragePanel(r) {
+    if (!r.coverage) return r.coverageNote ? h("p", { class: "dev-errors-empty", role: "status" }, icon("warn"), `No coverage: ${r.coverageNote}`) : null;
+    const k = r.coverage;
+    const bits = [`lines ${k.lines}%`, k.statements !== undefined && `statements ${k.statements}%`, k.functions !== undefined && `functions ${k.functions}%`, k.branches !== undefined && `branches ${k.branches}%`].filter(Boolean);
+    const low = k.files.filter((f) => f.lines < 100).slice(0, 8);
+    return h(
+      "div",
+      { class: "coverage" },
+      h("p", { class: "dev-errors-empty" }, icon(k.lines >= 80 ? "check" : "warn"), h("strong", null, "Coverage "), `${bits.join(", ")} across ${plural(k.fileCount, "file")}`),
+      low.length ? h("ul", { class: "tool-bars" }, low.map((f) => h("li", null, h("span", { class: "tool-bar-label mono" }, f.file), h("span", { class: "tool-bar-track" }, h("span", { class: `tool-bar${f.lines < 50 ? " tool-bar-warn" : ""}`, style: { width: `${f.lines}%` } })), h("span", { class: "tool-bar-value" }, `${f.lines}%`)))) : null,
+      k.note ? h("p", { class: "field-hint" }, k.note) : null,
+    );
   }
 
   /** A test run under a project's row: each failure with where it is and expected against actual. */
@@ -1489,6 +1504,7 @@ function projectsPage(root, { only } = {}) {
       { class: "project-panel", "aria-live": "polite" },
       h("div", { class: "page-check-head" }, h("p", { class: "dev-errors-empty" }, icon(r.ok ? "check" : "warn"), r.error && !r.failures.length ? `${summary}. ${r.error}` : summary), close),
       items.length ? h("ul", { class: "dev-error-list" }, items) : null,
+      coveragePanel(r),
       !r.ok && !items.length && r.outputTail.length ? h("pre", { class: "log-snippet" }, r.outputTail.slice(-20).join("\n")) : null,
     );
   }
@@ -1547,6 +1563,7 @@ function projectsPage(root, { only } = {}) {
         item("Show in folder", "folder", () => open(null, p, "folder")),
         item(p.session?.note ? "Change the note…" : "Leave a note…", "journal", () => leaveNote(p)),
         item("Run tests", "check", () => runTestsOf(p)),
+        item("Run tests with coverage", "check", () => runTestsOf(p, true)),
         item("Check .env and secrets", "deps", () => checkEnvOf(p)),
         item("Save as template…", "template", () => saveTemplate(p)),
       ),
@@ -4289,6 +4306,54 @@ const DOCKER_PRUNE = {
   "build-cache": ["the build cache", "Docker's next build of each project starts from scratch, which takes longer once."],
 };
 
+/** Moving to a new computer: export what this one has, or see what this one still needs to match a file from another. */
+function machineMoveCard() {
+  const result = h("div", { "aria-live": "polite" });
+  const input = h("input", { type: "file", accept: ".json,application/json", id: "machine-restore-file", class: "visually-hidden" });
+  async function exportIt(button) {
+    const data = await busy(button, "Looking…", () => api("/api/machine/export"));
+    if (!data) return;
+    downloadJson(`dx-machine-${new Date().toISOString().slice(0, 10)}.json`, data);
+    toast(`Saved ${plural(data.tools.length, "tool")}, ${plural(data.npmGlobals.length, "global package")} and ${plural(data.extensions.length, "editor extension")}`);
+  }
+  input.addEventListener("change", async () => {
+    const f = input.files?.[0];
+    input.value = "";
+    if (!f) return;
+    if (f.size > 512 * 1024) return toast("A dx machine file is at most 512 KB.", "error");
+    let plan;
+    try {
+      plan = await api("/api/machine/restore-plan", { method: "POST", body: { file: await f.text() } });
+    } catch (err) {
+      return toast(err.message, "error");
+    }
+    fill(
+      result,
+      h(
+        "div",
+        { class: "section" },
+        h("p", { class: "dim" }, `From ${plan.from || "another computer"} to ${plan.to}: ${plan.have} already match.`),
+        plan.steps.length
+          ? h(
+              "ul",
+              { class: "state-lines" },
+              plan.steps.map((s) => h("li", null, h("strong", null, s.label), h("div", { class: "mono" }, s.command ?? s.advice ?? ""), s.command ? copyButton(s.command, "Copy") : null)),
+            )
+          : h("p", null, "This computer already has everything in the file."),
+        plan.steps.length ? h("div", { class: "toolbar" }, copyButton(plan.script, "Copy all as a script"), h("span", { class: "field-hint" }, "dx doesn't run any of it: read the commands, then run them in a terminal.")) : null,
+      ),
+    );
+  });
+  return h(
+    "div",
+    { class: "card card-pad" },
+    h("p", { class: "dim" }, "Export what this computer has for development: tools and their versions, global npm packages, git's name, email and settings, editor extensions and the names of your SSH keys (never a key, token, password or path). On the new computer, choose that file to see what's still missing, as commands to run yourself. Your projects, journal and tools move with Settings, Your dx on another computer."),
+    h("div", { class: "toolbar" }, btn("Export this computer", (ev) => exportIt(ev.currentTarget), { iconName: "save" }), btn("What does this computer still need? Choose a file…", () => input.click(), { kind: "ghost" })),
+    input,
+    result,
+  );
+}
+
 function machinePage(root) {
   let projectsShow = pref("machineProjects", "problems");
   let tools = null;
@@ -4333,6 +4398,7 @@ function machinePage(root) {
       btn("Refresh", (ev) => busy(ev.currentTarget, "Refreshing…", loadProcesses), { iconName: "refresh", kind: "ghost", small: true }),
     ),
     section("machine-docker", "Docker", "Containers, and the space Docker keeps on disk.", dockerHolder),
+    section("machine-move", "Move to a new computer", "Carry your development setup across, and see what the other computer is missing.", machineMoveCard()),
     section("machine-services", "Services", "Databases and Docker installed as services can start with the computer and use memory when no project needs them.", servicesHolder),
   );
 
@@ -4926,7 +4992,7 @@ function envPage(root) {
       h(
         "div",
         { class: "env-alerts-options" },
-        h("label", { class: "check", for: "env-alerts-on" }, on, "Warn me when a .env file changes, is staged or is committed, and when this project's tools say something"),
+        h("label", { class: "check", for: "env-alerts-on" }, on, "Warn me when a .env file changes, is staged or is committed, when this project's tools say something, and when an agent working here is waiting for me"),
         h("label", { class: "check", for: "env-alerts-os" }, os, "Also as a notification from the system, outside dx"),
       ),
       s.everywhere ? null : h("p", { class: "dim" }, "Alerts are off for every project in ", h("a", { href: "#/health" }, "Settings"), "."),
@@ -10835,6 +10901,14 @@ function agentToolName(name) {
   const m = /^mcp__(.+?)__(.+)$/.exec(name ?? "");
   return m ? `${m[1]} · ${m[2]}` : (name ?? "");
 }
+/** "45 s", "12 min", "2 h 5 min". */
+function agentDuration(ms) {
+  if (ms === undefined || ms === null || ms < 0) return "";
+  const s = Math.round(ms / 1000);
+  if (s < 90) return `${s} s`;
+  const m = Math.round(s / 60);
+  return m < 90 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+}
 const clipText = (s, n) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : (s ?? ""));
 const shortModel = (m) => (m ? m.replace(/^claude-/, "").replace(/-\d{8}$/, "") : "");
 
@@ -10880,6 +10954,39 @@ function activeAgents(agents) {
     for (let n = a; n && !keep.has(n.id); n = n.parent ? byId.get(n.parent) : undefined) keep.add(n.id);
   }
   return agents.filter((a) => keep.has(a.id));
+}
+
+/** Calls per five minutes over the last hour, as bars (dx's own calls in the accent). */
+function agentTimeline(n) {
+  const t = n.timeline;
+  if (!t || !t.calls.some((c) => c > 0)) return null;
+  const max = Math.max(1, ...t.calls);
+  const w = 12 * 14;
+  const bars = t.calls.map((c, i) => {
+    const total = Math.round((c / max) * 34);
+    const dx = Math.round(((t.dx[i] ?? 0) / max) * 34);
+    return [agentSvg("rect", { class: "agent-spark-bar", x: i * 14 + 1, y: 36 - total, width: 11, height: Math.max(total, c ? 2 : 0), rx: 2 }), dx ? agentSvg("rect", { class: "agent-spark-dx", x: i * 14 + 1, y: 36 - dx, width: 11, height: dx, rx: 2 }) : null];
+  });
+  return h(
+    "div",
+    { class: "agent-spark" },
+    h("div", { class: "field-label" }, "Tool calls in the last hour"),
+    agentSvg("svg", { viewBox: `0 0 ${w} 38`, width: w, height: 38, role: "img", "aria-label": `Tool calls per five minutes over the last hour, ${t.calls.join(", ")}` }, ...bars.flat().filter(Boolean)),
+    h("div", { class: "dim agent-spark-note" }, "Five-minute steps, oldest on the left; the accent part went through dx. Only what dx read of the session counts."),
+  );
+}
+
+/** How long each subagent ran, longest first. */
+function agentRuns(kids) {
+  const list = kids.filter((k) => k.durationMs !== undefined).sort((a, b) => b.durationMs - a.durationMs).slice(0, 8);
+  if (!list.length) return null;
+  const max = Math.max(1, list[0].durationMs);
+  return h(
+    "div",
+    { class: "agent-runs" },
+    h("div", { class: "field-label" }, "How long each subagent ran"),
+    h("ul", { class: "tool-bars" }, list.map((k) => h("li", null, h("span", { class: "tool-bar-label" }, clipText(k.label, 28)), h("span", { class: "tool-bar-track" }, h("span", { class: `tool-bar${k.stuck ? " tool-bar-warn" : ""}`, style: { width: `${(k.durationMs / max) * 100}%` } })), h("span", { class: "tool-bar-value" }, agentDuration(k.durationMs))))),
+  );
 }
 
 function agentsPage(root) {
@@ -10942,9 +11049,10 @@ function agentsPage(root) {
       statTile(count("waiting"), "waiting for you"),
       statTile(sessions, sessions === 1 ? "session" : "sessions"),
       statTile(list.length - sessions, list.length - sessions === 1 ? "subagent" : "subagents"),
+      statTile(list.filter((a) => a.stuck).length, "stuck"),
       statTile(list.reduce((n, a) => n + a.dxCalls, 0), "calls through dx"),
     );
-    const next = JSON.stringify(list.map((a) => [a.id, a.status, a.tool, a.calls, a.parent, a.label])) + selected;
+    const next = JSON.stringify(list.map((a) => [a.id, a.status, a.tool, a.calls, a.parent, a.label, a.stuck?.minutes])) + selected;
     if (next !== sig) {
       sig = next;
       drawGraph(list);
@@ -10978,12 +11086,12 @@ function agentsPage(root) {
       });
     const nodes = L.nodes.map((n) => {
       const sub = n.kind === "subagent";
-      const doing = n.status === "working" ? (n.tool ? `Running ${agentToolName(n.tool)}` : "Working") : n.status === "waiting" ? "Waiting for you" : `${AGENT_STATUS[n.status]} · ${relativeTime(Date.parse(n.lastAt))}`;
+      const doing = n.stuck ? `Stuck on ${agentToolName(n.stuck.tool)} · ${n.stuck.minutes} min` : n.status === "working" ? (n.tool ? `Running ${agentToolName(n.tool)}` : "Working") : n.status === "waiting" ? `Waiting for you · ${agentDuration(Date.now() - Date.parse(n.lastAt))}` : `${AGENT_STATUS[n.status]} · ${relativeTime(Date.parse(n.lastAt))}`;
       // A session names its project first; a subagent its type.
       const meta = [sub ? n.agentType : (n.project ?? n.app), shortModel(n.model), n.effort].filter(Boolean).join(" · ");
       const g = agentSvg(
         "g",
-        { class: `agent-node agent-${n.status}${sub ? " agent-sub" : ""}${n.id === selected ? " agent-selected" : ""}`, transform: `translate(${n.x} ${n.y})`, tabindex: "0", role: "button", "aria-label": `${sub ? "Subagent" : "Session"} ${n.label}, ${AGENT_STATUS[n.status].toLowerCase()}`, "aria-pressed": String(n.id === selected) },
+        { class: `agent-node agent-${n.status}${n.stuck ? " agent-stuck" : ""}${sub ? " agent-sub" : ""}${n.id === selected ? " agent-selected" : ""}`, transform: `translate(${n.x} ${n.y})`, tabindex: "0", role: "button", "aria-label": `${sub ? "Subagent" : "Session"} ${n.label}, ${AGENT_STATUS[n.status].toLowerCase()}`, "aria-pressed": String(n.id === selected) },
         agentSvg("title", {}, `${n.label}\n${doing}${n.project ? `\n${n.project}` : ""}`),
         agentSvg("rect", { class: "agent-card", width: AGENT_NODE.w, height: AGENT_NODE.h, rx: 10 }),
         n.status === "working" ? agentSvg("circle", { class: "agent-pulse", cx: 18, cy: 20, r: 6 }) : null,
@@ -11024,13 +11132,17 @@ function agentsPage(root) {
           fact("Model", [shortModel(n.model), n.effort && `effort ${n.effort}`].filter(Boolean).join(", ")),
           fact("Runs in", [n.app, n.permissionMode && `${n.permissionMode} permissions`].filter(Boolean).join(", ")),
           fact("Started", n.startedAt ? `${new Date(n.startedAt).toLocaleString()} (${relativeTime(Date.parse(n.startedAt))})` : null),
+          fact("Ran for", n.durationMs !== undefined ? agentDuration(n.durationMs) : null),
+          fact("Stuck", n.stuck ? `On ${agentToolName(n.stuck.tool)} for ${n.stuck.minutes} min with nothing new: it may be hung, or waiting for you to approve it` : null),
           fact("Last activity", relativeTime(Date.parse(n.lastAt))),
           fact("Started by", parent ? h("a", { href: "#/agents", onclick: (e) => (e.preventDefault(), (selected = parent.id), (sig = ""), draw()) }, parent.label) : null),
           fact("Subagents", kids.length ? `${kids.length} (${kids.filter((k) => k.status === "working").length} working)` : null),
           fact("Tool calls", n.calls ? `${n.calls}${n.dxCalls ? `, ${n.dxCalls} through dx` : ""} in what dx read` : null),
         ),
+        agentTimeline(n),
+        agentRuns(kids),
         Object.keys(n.tools).length
-          ? h("ul", { class: "tool-bars" }, Object.entries(n.tools).map(([name, c]) => h("li", null, h("span", { class: "tool-bar-label mono" }, agentToolName(name)), h("span", { class: "tool-bar-track" }, h("span", { class: "tool-bar", style: { width: `${(c / max) * 100}%` } })), h("span", { class: "tool-bar-value" }, String(c)))))
+          ? h("div", { class: "agent-runs" }, h("div", { class: "field-label" }, "Tools used"), h("ul", { class: "tool-bars" }, Object.entries(n.tools).map(([name, c]) => h("li", null, h("span", { class: "tool-bar-label mono" }, agentToolName(name)), h("span", { class: "tool-bar-track" }, h("span", { class: "tool-bar", style: { width: `${(c / max) * 100}%` } })), h("span", { class: "tool-bar-value" }, String(c))))))
           : null,
       ),
     );
@@ -11085,6 +11197,7 @@ function healthPage(root) {
     const localhostOn = h("input", { type: "checkbox", id: "cfg-localhost", checked: config.localhostRecording !== false });
     const visualOn = h("input", { type: "checkbox", id: "cfg-visual", checked: config.visualDiff !== false });
     const envAlertsOn = h("input", { type: "checkbox", id: "cfg-env-alerts", checked: config.envAlerts !== false });
+    const agentAlertsOn = h("input", { type: "checkbox", id: "cfg-agent-alerts", checked: config.agentAlerts !== false });
     const activityDays = h("select", { id: "cfg-activity-days" }, [1, 3, 7, 14, 30, 90].map((d) => h("option", { value: d, selected: d === (config.activityDays ?? 7) }, plural(d, "day"))));
     const activityMax = h("select", { id: "cfg-activity-max" }, [100, 250, 500, 1000, 2000, 5000].map((mb) => h("option", { value: mb, selected: mb === (config.activityMaxMB ?? 500) }, mb >= 1000 ? `${mb / 1000} GB` : `${mb} MB`)));
     const activityUse = h("span", { class: "field-hint" });
@@ -11104,7 +11217,7 @@ function healthPage(root) {
         class: "card card-pad section",
         onsubmit: async (e) => {
           e.preventDefault();
-          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, envAlerts: envAlertsOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
+          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, envAlerts: envAlertsOn.checked, agentAlerts: agentAlertsOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
           const r = await busy(save, "Saving…", () => api("/api/config", { method: "POST", body }));
           if (r) toast("Settings saved");
         },
@@ -11153,6 +11266,7 @@ function healthPage(root) {
           { class: "field" },
           h("span", { class: "field-label" }, "Alerts"),
           h("label", { class: "check", for: "cfg-env-alerts" }, envAlertsOn, "Warn me, with a sound and a system notification, when a project's .env file changes, is staged or is committed"),
+          h("label", { class: "check", for: "cfg-agent-alerts" }, agentAlertsOn, "Warn me, with a sound and a system notification, when an AI agent is waiting for my reply or stuck on one tool call"),
           h("span", { class: "field-hint" }, "Each project can turn its own alerts, or just the system notifications, off on its Env & secrets page."),
         ),
       ),
@@ -11241,9 +11355,13 @@ function healthPage(root) {
       toast(`Exported ${plural(data.projects.length, "project")}${data.left?.length ? `; left out: ${data.left.join("; ")}` : ""}`);
     }
 
+    let stateText = "";
+    let stateFile;
     async function checkFile(f) {
       if (f.size > 25 * 1024 * 1024) return toast("A dx state file can be at most 25 MB.", "error");
       const text = await f.text();
+      stateText = text;
+      stateFile = f;
       let plan;
       try {
         plan = await api("/api/state/import/check", { method: "POST", body: { file: text } });
@@ -11301,7 +11419,7 @@ function healthPage(root) {
                   h(
                     "li",
                     null,
-                    h("div", null, h("strong", null, p.name), p.match ? h("span", { class: "dim" }, p.match.by === "remote" ? " · same repository" : " · same name") : h("span", { class: "badge badge-warn" }, "not found here"), h("div", { class: "tool-badges" }, brings(p.has))),
+                    h("div", null, h("strong", null, p.name), p.match ? h("span", { class: "dim" }, p.match.by === "remote" ? " · same repository" : " · same name") : h("span", { class: "badge badge-warn" }, "not found here"), h("div", { class: "tool-badges" }, brings(p.has)), !p.match && p.cloneUrl ? h("div", { class: "toolbar" }, btn("Clone it here", (ev) => cloneIt(ev.currentTarget, p), { small: true }), h("span", { class: "field-hint" }, p.cloneUrl)) : null),
                     h("label", { class: "toolbar", for: el.id }, h("span", { class: "field-hint" }, "Goes to"), el),
                   ),
                 ),
@@ -11313,6 +11431,17 @@ function healthPage(root) {
           h("div", { class: "form-actions" }, go, btn("Cancel", () => fill(panel), { kind: "ghost" })),
         ),
       );
+    }
+
+    // A project of the file that isn't here: cloned on a click, from the address its remote gives, without installing anything.
+    async function cloneIt(button, p) {
+      const ok = await confirmDialog({ title: `Clone ${p.name}?`, text: `dx will run git clone ${p.cloneUrl} into your first projects folder. Nothing is installed or run: set it up from All projects afterwards.`, confirm: "Clone it" });
+      if (!ok) return;
+      const r = await busy(button, "Cloning…", () => api("/api/state/import/clone", { method: "POST", body: { file: stateText, index: p.index } }));
+      if (!r) return;
+      toast(`Cloned ${r.name}`);
+      await loadProjectList();
+      void checkFile(stateFile);
     }
 
     async function undo(button, last) {
@@ -11599,12 +11728,23 @@ async function runFloppy(button) {
 let toolAlertsAfter = ""; // the newest activity id the page has seen, as text ("" until the first ask)
 let toolAlertsFor = "";
 let envAlertsSince = new Date().toISOString();
+let agentAlertsSince = new Date().toISOString();
 async function checkToolAlerts() {
   try {
     const { alerts: env } = await api(`/api/env/alerts?since=${encodeURIComponent(envAlertsSince)}`);
     if (env.length) {
       envAlertsSince = env[env.length - 1].at;
       for (const a of env.slice(-3)) toast(h("span", null, h("strong", null, a.title), ` ${a.text}`), "warn");
+      warningSound();
+    }
+  } catch {
+    // the dashboard went away; the page says so elsewhere
+  }
+  try {
+    const { alerts: agents } = await api(`/api/agents/alerts?since=${encodeURIComponent(agentAlertsSince)}`);
+    if (agents.length) {
+      agentAlertsSince = agents[agents.length - 1].at;
+      for (const a of agents.slice(-3)) toast(h("span", null, h("strong", null, a.title), ` ${a.text} `, h("a", { href: "#/agents" }, "Open Agents")), "warn");
       warningSound();
     }
   } catch {
