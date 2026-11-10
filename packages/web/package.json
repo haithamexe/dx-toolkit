@@ -1,6 +1,6 @@
 {
   "name": "@dx/web",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "license": "MIT",
   "private": true,
   "description": "The dx dashboard: a local web interface for every dx tool, opened with `dx ui`.",

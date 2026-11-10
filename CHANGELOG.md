@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.10.0 (2026-11-10)
+
+dx tells you when an AI agent is waiting for you, shows where agents spend their effort, and puts agents in your pull request's proof; moving to a new computer gets `dx machine export` and clone-on-import; `dx doctor` checks your developer setup and `dx test` measures coverage. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **Tell me when an agent is waiting for me**: a Claude Code session that finished its turn (or asked you a question) and has waited 90 seconds warns you with a toast and a sound, a system notification, and a line beside Floppy ("shop-website: agent waiting 4 min") until you answer. An agent stuck on one tool call for 10 minutes warns too. On by default; off in Settings, or per project (and its system notifications alone).
