@@ -815,3 +815,15 @@ test("recorded sites and the dx browser: sites are validated, addresses must be 
     page.close();
   }
 });
+
+test("Remove dx: refused for a DX_HOME copy, which never looks at the computer's own dx, and the dashboard stays up", async () => {
+  const plan = await api("/api/uninstall");
+  assert.equal(plan.status, 200);
+  assert.match(plan.json.blocked, /DX_HOME is set/);
+  assert.equal(plan.json.installs, undefined, "the real machine's installs aren't listed");
+  const r = await api("/api/uninstall", { method: "POST", body: { data: true } });
+  assert.equal(r.status, 409);
+  assert.match(r.json.error, /DX_HOME is set/);
+  assert.equal((await api("/api/ping")).status, 200, "still running");
+  assert.ok(fs.existsSync(path.join(home, "config.json")), "nothing was removed");
+});

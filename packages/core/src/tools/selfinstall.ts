@@ -191,6 +191,20 @@ function norm(p: string): string {
 }
 
 /** The npm package's own folder, left behind by a failed uninstall. Never a link: that would reach into what it points at. */
+export function removeInstallDir(dir: string): void {
+  removeDir(dir);
+}
+
+/** The link to a repository: only the link goes, never anything inside it. */
+export function removeInstallLink(link: string): void {
+  removeLink(link);
+}
+
+/** A folder, only when nothing is left in it. */
+export function removeFolderIfEmpty(dir: string): void {
+  removeIfEmpty(dir);
+}
+
 function removeDir(dir: string): void {
   try {
     if (fs.lstatSync(dir).isSymbolicLink()) return removeLink(dir);

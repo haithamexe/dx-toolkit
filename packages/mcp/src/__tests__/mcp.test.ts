@@ -294,11 +294,51 @@ test("dx_do answers with structured content as well as text; the dev tools are t
   assert.deepEqual(agents.agents, []);
 });
 
-test("tool descriptions stay short enough for an agent to read all 49, and come in the same order every time", async () => {
+test("tool descriptions stay short enough for an agent to read all 51, and come in the same order every time", async () => {
   const first = (await client.listTools()).tools;
   const second = (await client.listTools()).tools;
   assert.deepEqual(first.map((t) => t.name), second.map((t) => t.name), "a fixed order, so a client can cache the list");
   const long = first.filter((t) => (t.description ?? "").length > 520).map((t) => `${t.name} (${t.description?.length})`);
   assert.deepEqual(long, [], "put the detail in the parameters' descriptions, and the when-to-use sentence first");
   assert.ok(first.every((t) => (t.description ?? "").length > 40), "none left too thin to say when to use it");
+});
+
+test("every client is told when to prefer dx's tools, and the ones allowed without asking exist and change nothing risky", async () => {
+  const instructions = client.getInstructions() ?? "";
+  for (const word of ["start_dev_server", "run_tests", "dx_verify", "dx_status", "dx_do_risky"]) assert.ok(instructions.includes(word), word);
+  const { tools } = await client.listTools();
+  const byName = new Map(tools.map((t) => [t.name, t]));
+  const { DX_ALLOWED_TOOLS } = await import("@dx/core");
+  for (const t of DX_ALLOWED_TOOLS) {
+    assert.ok(byName.has(t), `${t} is allowed in a project's Claude settings but isn't a tool`);
+    assert.notEqual(byName.get(t)?.annotations?.destructiveHint, true, `${t} can be destructive: it should ask`);
+  }
+});
+
+test("dx_status says where a project stands in one call, and dx_verify gives one verdict with only what failed", { skip: findBrowser() ? false : "no Chrome, Edge, Chromium or Brave here" }, async () => {
+  // Earlier tests may have left the app running with an error: start from nothing.
+  await call("stop_dev_server", { project: "tiny-shop" });
+  const before = await call("dx_status", { project: "tiny-shop" });
+  assert.ok(before.text.includes("tiny-shop") && /Not running/.test(before.text) && /Tests: none run through dx yet/.test(before.text), before.text);
+  assert.ok((await call("dx_status", { project: "no-such-project-xyz" })).isError);
+
+  const started = await call("start_dev_server", { project: "tiny-shop" });
+  assert.ok(!started.isError, started.text);
+  try {
+    const running = await call("dx_status", { project: "tiny-shop" });
+    assert.match(running.text, /tiny-shop: ready|running/i);
+    assert.match(running.text, /No errors\./);
+
+    const good = await call("dx_verify", { project: "tiny-shop", path: "/" });
+    assert.ok(!good.isError, good.text);
+    assert.match(good.text, /tiny-shop: verified/);
+    assert.match(good.text, /No tests found to run/, "a project with no tests says so instead of failing");
+
+    const bad = await call("dx_verify", { project: "tiny-shop", path: "/broken", skip_tests: true });
+    assert.ok(bad.isError, "a page that throws is not verified");
+    assert.match(bad.text, /not verified, 1 problem/);
+    assert.match(bad.text, /Cannot read properties of null|items/);
+  } finally {
+    await call("stop_dev_server", { project: "tiny-shop" });
+  }
 });

@@ -58,3 +58,38 @@ test("each page opens in a real browser without a script error", { skip: findBro
   }
   assert.deepEqual(problems, [], "a page threw, didn't load, or didn't draw");
 });
+
+test("the palette opens from its button, finds a page by typing, and goes there with Enter", { skip: findBrowser() ? false : "no Chrome, Edge, Chromium or Brave here", timeout: 90_000 }, async () => {
+  const r = await checkPage({
+    url: `${dashboard.url}#/ports`,
+    steps: [{ click: "#palette-open" }, { type: "agents", into: ".palette-input" }, { press: "Enter" }, { waitFor: "url=/agents" }],
+    timeoutMs: 60_000,
+  });
+  assert.equal(r.error, undefined, JSON.stringify(r.error));
+  assert.deepEqual(r.exceptions, []);
+  assert.match(r.title ?? "", /^Agents/, `the page after Enter: ${r.title}`);
+});
+
+test("the skip link is handled: it focuses the page and doesn't change the route to #main", () => {
+  const source = fs.readFileSync(path.join(publicDir, "app.js"), "utf8");
+  const handler = /querySelector\("\.skip-link"\)\?\.addEventListener\("click", \(e\) => \{\s*e\.preventDefault\(\);\s*main\.focus\(\);/;
+  assert.match(source, handler);
+  assert.ok(fs.readFileSync(path.join(publicDir, "index.html"), "utf8").includes('class="skip-link" href="#main"'));
+});
+
+test("a long list of changes on the Code page is folded by folder, each with a Stage button", { skip: findBrowser() ? false : "no Chrome, Edge, Chromium or Brave here", timeout: 90_000 }, async () => {
+  const { execFileSync } = await import("node:child_process");
+  const dir = path.join(root, "busy-app");
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "busy-app" }));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir, stdio: "ignore" });
+  for (let i = 0; i < 24; i++) fs.writeFileSync(path.join(dir, "src", `part-${i}.ts`), `export const n = ${i};\n`);
+  for (let i = 0; i < 12; i++) fs.writeFileSync(path.join(dir, "docs", `page-${i}.md`), `# ${i}\n`);
+  fs.writeFileSync(path.join(dir, "README.md"), "# busy\n");
+  const r = await checkPage({ url: `${dashboard.url}#/git?dir=${encodeURIComponent(dir)}`, steps: [{ waitFor: ".git-group" }], timeoutMs: 60_000 });
+  assert.equal(r.error, undefined, JSON.stringify(r.error));
+  assert.deepEqual(r.exceptions, []);
+  const text = r.text ?? "";
+  assert.ok(text.includes("src/") && text.includes("docs/") && text.includes("Project root"), text.slice(0, 400));
+});

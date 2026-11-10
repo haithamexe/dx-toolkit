@@ -12,6 +12,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./hook": {
+      "types": "./dist/tools/hookrules.d.ts",
+      "import": "./dist/tools/hookrules.js",
+      "default": "./dist/tools/hookrules.js"
     }
   },
   "files": [

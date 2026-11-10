@@ -38,7 +38,7 @@ Run one test file: `node --test packages/core/dist/__tests__/summary.test.js` (a
 - **Tests** use `node:test` and `node:assert/strict`, live in `packages/<pkg>/src/__tests__/*.test.ts`, and never touch real data: they set `DX_HOME` to a temp folder before importing anything that reads config, and build fixture projects in `os.tmpdir()`.
 - **Everything dx stores is under `~/.dx`**, or `DX_HOME` when set. Use `dxHome()` / `dxPath(...)` from `core/src/config.ts`; never hard-code the path.
 - **Record runs.** Anything that changes something calls `recordRun(tool, ok, detail, source, extra)` so it shows in `dx runs`.
-- **A new tool** goes in core first, then the CLI command, then optionally MCP, the dashboard and Raycast. The steps are in README, *Adding a new tool*.
+- **A new tool** goes in core first, then the CLI command, then optionally MCP, the dashboard and Raycast. The steps are in [docs/development.md](docs/development.md), *Adding a new tool*.
 - **Shell commands** run through `child_process` with arguments as arrays where possible. Where `shell: true` is needed (dev commands, `npm`), the command comes from the project's own `package.json` or `.devrc.json`, never from a request body.
 - **Preparing before Run** (`prepare.ts`) runs only commands made of fixed words (package managers, migration tools) and the project's own script names and `.devrc.json` steps. Migrations run only against a database on this computer and never through a script that resets, drops or seeds; keep both guards when adding a tool.
 
@@ -123,5 +123,5 @@ This repo is public and open source. Never commit real names, emails, usernames,
 ## Before you finish
 
 - `npm test` passes.
-- README updated if a command, option, page or MCP tool changed.
+- The docs updated if a command, option, page or MCP tool changed: [docs/cli.md](docs/cli.md) (commands and settings), [docs/features.md](docs/features.md) (pages and tools), [docs/ai-tools.md](docs/ai-tools.md) (MCP). The README stays a short front page.
 - `docs/MEMORY.md` updated if a decision was made or the backlog changed.

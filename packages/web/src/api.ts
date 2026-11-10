@@ -4,6 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import {
   addJournalEntry,
+  applyClaudeSetup,
+  claudeSetupState,
+  undoClaudeSetup,
+  planUninstall,
+  startUninstall,
+  uninstallBlocked,
   alertSettings,
   auditDependencies,
   buildSummary,
@@ -190,6 +196,9 @@ import { dxVersion } from "./link.js";
 import { stateRoutes } from "./stateapi.js";
 import { agentsRoutes } from "./agentsapi.js";
 import { devToolsRoutes } from "./devtoolsapi.js";
+import { autoNoticesSince } from "./autosetup.js";
+import { navRoutes } from "./navapi.js";
+import { noteGitViewed } from "./gitfetch.js";
 import { envAlertsSince } from "./envwatch.js";
 import { chaosRoutes } from "./chaosapi.js";
 import { dataRoutes } from "./dataapi.js";
@@ -208,6 +217,7 @@ import {
   waitForDevServer,
   type StartedBy,
 } from "./dev.js";
+import { requestShutdown } from "./shutdown.js";
 import { aiLane, interruptAi } from "./ai.js";
 import { floppySnapshot } from "./floppysnap.js";
 import { floppySupported, readFloppyInfo, runFloppy } from "./floppy.js";
@@ -351,7 +361,8 @@ const routes: Record<string, Handler> = {
     const since = raw ? parseSince(raw) : undefined;
     if (raw && !since) throw new HttpError(400, "since takes 30m, 2h, 3d, today, yesterday or a date.");
     flushActivity();
-    return { entries: activityOverview({ since }), sites: siteViews(), browser: dxBrowserStatus() };
+    // `on`: whether the history is being kept at all, so the page can say so when it's empty because it's off.
+    return { entries: activityOverview({ since }), sites: siteViews(), browser: dxBrowserStatus(), on: activitySettings().on };
   },
   "GET /api/activity/usage": () => {
     const s = activitySettings();
@@ -587,6 +598,22 @@ const routes: Record<string, Handler> = {
     const since = Date.parse(req.query.get("since") ?? "");
     return { alerts: envAlertsSince(Number.isNaN(since) ? Date.now() - 60_000 : since).map(({ id, at, project, kind, files, title, text }) => ({ id, at, project, kind, files, title, text })) };
   },
+  // What dx did by itself (a new project's .gitignore rules…), since a moment: said once, in a toast.
+  "GET /api/auto/notices": (req) => {
+    const since = Date.parse(req.query.get("since") ?? "");
+    return { notices: autoNoticesSince(Number.isNaN(since) ? Date.now() - 60_000 : since) };
+  },
+  // Pointing a project's Claude Code sessions at dx (core/agentsetup.ts): local files only, undoable.
+  "GET /api/claude": (req) => claudeSetupState(knownProject(req.query.get("dir")).dir),
+  "POST /api/claude": (req) => {
+    const project = knownProject(req.body.dir);
+    try {
+      const changed = req.body.undo === true ? undoClaudeSetup(project, "web") : applyClaudeSetup(project, "web");
+      return { changed, ...claudeSetupState(project.dir) };
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  },
   "GET /api/env/project": async (req) => {
     const project = knownProject(req.query.get("dir"));
     return { name: project.name, ...(await auditEnvAsync(project.dir, { secrets: true })) };
@@ -770,6 +797,8 @@ const routes: Record<string, Handler> = {
       const r = await gitCall(() => applyFix(project.dir, fix));
       forgetFix(req.body.id);
       recordRun("fix", true, `${project.name}: applied Claude's fix to ${plural(r.files.length, "file")}`, "web", { project: project.name });
+      // The journal keeps what you did, so the weekly summary says it without being told.
+      addJournalEntry(`Applied an AI fix in ${project.name} (${plural(r.files.length, "file")})`);
       return r;
     } catch (err) {
       recordRun("fix", false, `${project.name}: Claude's fix wasn't applied`, "web", { project: project.name });
@@ -1164,6 +1193,20 @@ const routes: Record<string, Handler> = {
   "POST /api/ai-tools/connect": (req) => connectAiTools(aiIds(req.body.ids)),
   "POST /api/ai-tools/disconnect": (req) => disconnectAiTools(aiIds(req.body.ids)),
 
+  // ------------------------------------------------------------ removing dx
+  // What would go, read only, then the removal itself: a boolean is all it takes from the request.
+  // It runs from a copy of core in a temp folder, since the install it removes is this one; this
+  // dashboard closes once it has answered (its dev servers with it), and the copy carries on.
+  "GET /api/uninstall": async () => (uninstallBlocked() ? { blocked: uninstallBlocked() } : { ...(await planUninstall()), servers: listDevServers().filter((s) => s.status !== "stopped" && s.status !== "failed").map((s) => s.project) }),
+  "POST /api/uninstall": (req) => {
+    const blocked = uninstallBlocked();
+    if (blocked) throw new HttpError(409, blocked);
+    const data = req.body.data === true;
+    const { log } = startUninstall({ data, waitFor: process.pid, from: "web" });
+    requestShutdown(300);
+    return { ok: true, log };
+  },
+
   // ------------------------------------------------------------ health and settings
   "GET /api/health": async () => ({
     checks: await runDoctor(),
@@ -1241,7 +1284,7 @@ export function mergeRoutes(tables: Record<string, Record<string, Handler>>): Re
 let allRoutes: Record<string, Handler> | undefined;
 /** All of the dashboard's API routes, built once. */
 export function apiRoutes(): Record<string, Handler> {
-  return (allRoutes ??= mergeRoutes({ routes, labRoutes, chaosRoutes, dataRoutes, phoneRoutes, teamRoutes, toolRoutes, stateRoutes, agentsRoutes, devToolsRoutes }));
+  return (allRoutes ??= mergeRoutes({ routes, labRoutes, chaosRoutes, dataRoutes, phoneRoutes, teamRoutes, toolRoutes, stateRoutes, agentsRoutes, devToolsRoutes, navRoutes }));
 }
 
 export async function handleApi(req: ApiRequest): Promise<unknown> {
@@ -1303,7 +1346,9 @@ const GIT_ACTIONS: Record<string, GitActionFn> = {
   "tag-create": (d, b, s) => gitCreateTag(d, s(b.name), { at: s(b.at) || undefined, message: s(b.message) }),
   "tag-delete": (d, b, s) => gitDeleteTag(d, s(b.name)),
   // A GitHub release on the button: the tag is checked like any new tag, the notes go to gh on stdin.
-  "release-create": (d, b, s) => gitCreateRelease(d, { tag: s(b.tag), title: s(b.title), notes: s(b.notes), draft: b.draft === true, prerelease: b.prerelease === true }),
+  // Into the journal on its own: a release is something you did.
+  "release-create": (d, b, s) =>
+    gitCreateRelease(d, { tag: s(b.tag), title: s(b.title), notes: s(b.notes), draft: b.draft === true, prerelease: b.prerelease === true }).then((released) => (addJournalEntry(`Released ${s(b.tag)} of ${path.basename(d)}`), released)),
   merge: (d, b, s) => gitMerge(d, s(b.branch), MERGE_MODES.includes(s(b.mode) as MergeMode) ? (s(b.mode) as MergeMode) : "merge"),
   rebase: (d, b, s) => gitRebase(d, s(b.onto)),
   continue: (d) => gitContinue(d),
@@ -1380,6 +1425,7 @@ function siteViews() {
 function gitProject(dir: unknown): Project {
   const project = knownProject(dir);
   if (!project.hasGit) throw new HttpError(400, `${project.name} isn't a git repository.`);
+  noteGitViewed(project.dir);
   return project;
 }
 

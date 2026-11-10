@@ -201,6 +201,8 @@ export const DX_ACTIONS: DxAction[] = [
   A("env.check", "Committed keys and missing .env values", "GET", "/api/env", { dir: DIR }),
   A("env.read", "Read a .env file's values (secrets go to the AI)", "GET", "/api/env/file", { dir: DIR, name: "the file name, e.g. .env" }, RISKY),
   A("env.write", "Save a .env file whole", "POST", "/api/env/file", { dir: DIR, name: "the file name", content: "the whole text" }, RISKY),
+  A("projects.claude-status", "Whether a project's Claude Code sessions are pointed at dx (note, allowed tools, hint hook)", "GET", "/api/claude", { dir: DIR }),
+  A("projects.claude-setup", "Point a project's Claude Code sessions at dx (CLAUDE.local.md, allowed dx tools, a hint hook; local files excluded from git), or undo it", "POST", "/api/claude", { dir: DIR, "undo?": "true to take it back out" }, RISKY),
   A("env.create", "Create .env from the example file", "POST", "/api/env/create", { dir: DIR }),
   A("env.gitignore", "Add the missing secret rules to .gitignore", "POST", "/api/env/gitignore", { dir: DIR, "patterns?": "which rules" }),
   A("env.alerts", "The project's alert settings", "GET", "/api/alerts/project", { dir: DIR }),

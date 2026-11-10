@@ -9,7 +9,9 @@ import { certCovers, dxPath, ensureCert, loadConfig, projectHostNames, type Cert
 import { releaseAll } from "./intercept.js";
 import { flushCache, listMockServers, startMockServer, stopAllMockServers } from "./mocks.js";
 import { prunePhones, stopAllPhones } from "./phone.js";
+import { startAutoSetup } from "./autosetup.js";
 import { startEnvWatch } from "./envwatch.js";
+import { startGitFetch } from "./gitfetch.js";
 import { startAgentWatch } from "./agentwatch.js";
 import { anyDevServerRunning, setLocalDomainsPort, stopAllDevServers } from "./dev.js";
 import { DOMAIN_PORTS, startLocalDomains, type LocalDomains, type TlsOptions } from "./proxy.js";
@@ -234,6 +236,10 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   // .env files changed, staged or committed in any project: a warning, with a sound and the system's notification.
   const stopEnvWatch = startEnvWatch();
   const stopAgentWatch = startAgentWatch();
+  // A project dx hasn't seen before gets what it needs (its secret rules in .gitignore), and the page says so.
+  const stopAutoSetup = startAutoSetup();
+  // Remote branches kept current for the projects you work in, so "behind" is true (fetch only: never a merge or pull).
+  const stopGitFetch = startGitFetch();
 
   // A route (the dev tools' restart) can stop this dashboard after answering.
   const shutdownHere = () => void close();
@@ -248,6 +254,8 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       stopHeadWatch();
       stopEnvWatch();
       stopAgentWatch();
+      stopAutoSetup();
+      stopGitFetch();
       clearDashboardInfo();
       // Anything held in Intercept goes on as it was; the cache's last answers are written down.
       releaseAll();

@@ -31,7 +31,7 @@ $env:DX_HOME = "$env:TEMP\dx-scratch"; dx ui   # Windows PowerShell
 
 ## How the code is laid out
 
-Every tool lives once in `packages/core` and is reached from the dashboard (`packages/web`), the CLI (`packages/cli`), the MCP server (`packages/mcp`) and Raycast (`packages/raycast`). The README's *Adding a new tool* section lists the steps, and [CLAUDE.md](CLAUDE.md) has the conventions in one place, for people and AI assistants alike.
+Every tool lives once in `packages/core` and is reached from the dashboard (`packages/web`), the CLI (`packages/cli`), the MCP server (`packages/mcp`) and Raycast (`packages/raycast`). [docs/development.md](docs/development.md) lists the steps (*Adding a new tool*), and [CLAUDE.md](CLAUDE.md) has the conventions in one place, for people and AI assistants alike.
 
 The short version:
 
@@ -50,7 +50,7 @@ This is a public repository. Don't commit your name, email, username, machine pa
 
 1. Branch from `main`, keep the change focused, and write the commit message as what it does: "Add yarn support to dx deps".
 2. Add or update tests for what you changed.
-3. Update the README if a command, option, dashboard page or MCP tool changed, and `CHANGELOG.md` under *Unreleased*.
+3. Update the docs (`docs/cli.md`, `docs/features.md`, `docs/ai-tools.md`) if a command, option, dashboard page or MCP tool changed, and `CHANGELOG.md` under *Unreleased*.
 4. `npm test` passes. CI runs it on Windows, macOS and Linux with Node 22 and 24, so say in the pull request which system you tried it on.
 
 By contributing, you agree that your contribution is licensed under the [MIT License](LICENSE).

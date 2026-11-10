@@ -52,6 +52,8 @@ import {
   leaveNote,
   resumeInfo,
   runTests,
+  detectTestFramework,
+  readRuns,
   queryDatabase,
   buildYearStory,
   formatYearReview,
@@ -77,7 +79,17 @@ import { ACTION_GROUPS, DX_ACTIONS, actionRequest, dxAction } from "@dx/web/acti
 import { callRecord, recordCall, type CallResult } from "./calls.js";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-const server = new McpServer({ name: "dx", version });
+/** Shown to the model by clients that support it: why these tools, and when to prefer them to a shell. */
+const INSTRUCTIONS = [
+  "dx runs the user's dev servers and watches them; the user sees the same servers, tests and errors in the dx dashboard.",
+  "For a project dx knows (list_projects), prefer its tools to raw shell commands: start_dev_server, not `npm run dev` (dx already runs it, so don't start a second copy);",
+  "run_tests, not `npm test`, vitest, jest or pytest (failures come back with file, line, expected and actual);",
+  "after an edit, dx_verify (waits for the rebuild, runs the tests related to your changes, checks the page: one verdict), or wait_for_rebuild and dev_errors;",
+  "check_url to try a page or an API route; dx_status for where things stand (server, errors, last tests, unsaved work).",
+  "Anything that could lose work or leave this computer (a commit, a delete, a push, .env values) goes through dx_do_risky, which asks the user first.",
+].join(" ");
+
+const server = new McpServer({ name: "dx", version }, { instructions: INSTRUCTIONS });
 
 const text = (value: unknown) => ({
   content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
@@ -1141,6 +1153,25 @@ server.registerTool(
   },
 );
 
+/** A test run as text: the totals, then each failure with where, why, and expected against actual. */
+function testSummary(project: Project, r: Awaited<ReturnType<typeof runTests>>): string {
+  const head = `${project.name}: ${r.passed} passed, ${r.failed} failed${r.skipped ? `, ${r.skipped} skipped` : ""} in ${(r.ms / 1000).toFixed(1)}s (${r.framework})`;
+  const parts = [r.ok ? `${head}. All tests pass.` : head];
+  for (const f of r.failures.slice(0, 30)) {
+    const where = f.file ? ` at ${f.file}${f.line ? `:${f.line}` : ""}` : "";
+    const ea = f.expected !== undefined || f.actual !== undefined ? `\n    expected: ${f.expected ?? "?"}\n    actual:   ${f.actual ?? "?"}` : "";
+    const stack = f.stack?.length ? `\n    ${f.stack.join("\n    ")}` : "";
+    parts.push(`- ${f.name}${where}\n    ${f.message.split("\n").slice(0, 8).join("\n    ")}${ea}${stack}`);
+  }
+  if (r.failures.length > 30) parts.push(`…and ${r.failures.length - 30} more.`);
+  if (r.coverage) {
+    const k = r.coverage;
+    parts.push(`Coverage: lines ${k.lines}%${k.statements !== undefined ? `, statements ${k.statements}%` : ""}${k.functions !== undefined ? `, functions ${k.functions}%` : ""}${k.branches !== undefined ? `, branches ${k.branches}%` : ""} across ${k.fileCount} files${k.note ? ` (${k.note})` : ""}.\nLeast covered:\n${k.files.filter((f) => f.lines < 100).slice(0, 8).map((f) => `  ${f.lines}% ${f.file}`).join("\n") || "  none: everything is fully covered"}`);
+  } else if (r.coverageNote) parts.push(`No coverage: ${r.coverageNote}`);
+  if (r.error || (!r.ok && !r.failures.length)) parts.push(`${r.error ?? "The command failed."}\nEnd of its output:\n${r.outputTail.join("\n")}`);
+  return parts.join("\n\n");
+}
+
 server.registerTool(
   "run_tests",
   {
@@ -1162,22 +1193,105 @@ server.registerTool(
     const project = pickProject(name);
     if (typeof project === "string") return failure(project);
     const r = await runTests(project, { match, files, changed, coverage, source: "mcp" });
-    const head = `${project.name}: ${r.passed} passed, ${r.failed} failed${r.skipped ? `, ${r.skipped} skipped` : ""} in ${(r.ms / 1000).toFixed(1)}s (${r.framework})`;
-    const parts = [r.ok ? `${head}. All tests pass.` : head];
-    for (const f of r.failures.slice(0, 30)) {
-      const where = f.file ? ` at ${f.file}${f.line ? `:${f.line}` : ""}` : "";
-      const ea = f.expected !== undefined || f.actual !== undefined ? `\n    expected: ${f.expected ?? "?"}\n    actual:   ${f.actual ?? "?"}` : "";
-      const stack = f.stack?.length ? `\n    ${f.stack.join("\n    ")}` : "";
-      parts.push(`- ${f.name}${where}\n    ${f.message.split("\n").slice(0, 8).join("\n    ")}${ea}${stack}`);
-    }
-    if (r.failures.length > 30) parts.push(`…and ${r.failures.length - 30} more.`);
-    if (r.coverage) {
-      const k = r.coverage;
-      parts.push(`Coverage: lines ${k.lines}%${k.statements !== undefined ? `, statements ${k.statements}%` : ""}${k.functions !== undefined ? `, functions ${k.functions}%` : ""}${k.branches !== undefined ? `, branches ${k.branches}%` : ""} across ${k.fileCount} files${k.note ? ` (${k.note})` : ""}.\nLeast covered:\n${k.files.filter((f) => f.lines < 100).slice(0, 8).map((f) => `  ${f.lines}% ${f.file}`).join("\n") || "  none: everything is fully covered"}`);
-    } else if (r.coverageNote) parts.push(`No coverage: ${r.coverageNote}`);
-    if (r.error || (!r.ok && !r.failures.length)) parts.push(`${r.error ?? "The command failed."}\nEnd of its output:\n${r.outputTail.join("\n")}`);
-    const result = text(parts.join("\n\n"));
+    const result = text(testSummary(project, r));
     return r.ok ? result : { ...result, isError: true };
+  },
+);
+
+server.registerTool(
+  "dx_status",
+  {
+    title: "Where a project stands",
+    description:
+      "One call for a project: whether its dev server runs (and where), the errors it shows now, how the last test run went and when, " +
+      "and uncommitted or unpushed work. Use it first when you pick a project up, and instead of several separate looks.",
+    inputSchema: { project: z.string().describe("Project name, or part of it") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const parts = [`${project.name} (${project.dir})`];
+    const client = await findDashboard();
+    const list = client ? await client.get<DevInfo[]>("/api/dev") : [];
+    const server = list.find((s) => s.dir.toLowerCase() === project.dir.toLowerCase() && s.status !== "stopped");
+    parts.push(describe(server));
+    if (client && server && server.errorCount) {
+      const r = await client.get<{ project: string; errors: DevError[] }[]>(`/api/dev/errors?dir=${encodeURIComponent(project.dir)}`);
+      const errors = r.flatMap((x) => x.errors);
+      parts.push(`Errors now (${errors.length}):\n${formatErrors(errors.slice(0, 5))}${errors.length > 5 ? `\n…and ${errors.length - 5} more (dev_errors lists them).` : ""}`);
+    } else if (server) parts.push("No errors.");
+    const lastTests = readRuns(400).reverse().find((x) => x.tool === "test" && x.project === project.name);
+    parts.push(lastTests ? `Last tests: ${lastTests.detail?.replace(`${project.name}: `, "") ?? (lastTests.ok ? "passed" : "failed")} (${lastTests.ok ? "all passing" : "failing"}), ${lastTests.at}` : "Tests: none run through dx yet (run_tests).");
+    if (project.hasGit) {
+      const [w] = await findUnsavedWork({ projects: [project] });
+      const bits: string[] = [];
+      if (w?.changed) bits.push(`${w.changed} changed file(s)`);
+      if (w?.untracked) bits.push(`${w.untracked} untracked`);
+      if (w?.unpushed) bits.push(`${w.unpushed} unpushed commit(s)`);
+      if (w?.noRemote) bits.push("no remote");
+      parts.push(bits.length ? `Unsaved: ${bits.join(", ")}${w?.branch ? ` (on ${w.branch})` : ""}.` : "Everything is committed and pushed.");
+    }
+    return text(parts.join("\n"));
+  },
+);
+
+server.registerTool(
+  "dx_verify",
+  {
+    title: "Check a change in one call",
+    description:
+      "After editing a project: waits for its dev server to rebuild, runs the tests related to your changes (all of them where the framework " +
+      "can't tell), and, with a path, loads that page in a headless browser. One short verdict with only what failed. Use it instead of " +
+      "wait_for_rebuild, run_tests and check_url in a row.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      path: z.string().optional().describe("A page to load in a headless browser, e.g. /checkout"),
+      match: z.string().optional().describe("Only tests whose name matches"),
+      skip_tests: z.boolean().optional().describe("Only the rebuild and the page"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ project: name, path, match, skip_tests }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const problems: string[] = [];
+    const fine: string[] = [];
+    const notes: string[] = [];
+    const client = await findDashboard();
+    const list = client ? await client.get<DevInfo[]>("/api/dev") : [];
+    const server = list.find((s) => s.dir.toLowerCase() === project.dir.toLowerCase() && s.status !== "stopped");
+    if (client && server) {
+      try {
+        const r = await client.post<WaitResult>("/api/dev/wait", { dir: project.dir, after: seen.get(project.dir) ?? 0, until: "quiet", timeoutMs: 20_000 }, 30_000);
+        if (r.server) seen.set(project.dir, r.server.lastLine);
+        if (r.newErrors.length) problems.push(`The app has new errors:\n${formatErrors(r.newErrors)}`);
+        else if (r.errors.length) problems.push(`The app still shows errors:\n${formatErrors(r.errors)}`);
+        else fine.push(r.sawOutput ? "the app rebuilt with no errors" : "the app shows no errors");
+      } catch (err) {
+        problems.push(`Couldn't wait for the app: ${(err as Error).message}`);
+      }
+    } else notes.push("The dev server isn't running in dx (start_dev_server runs it), so the rebuild and the page weren't checked.");
+    if (!skip_tests) {
+      if (!detectTestFramework(project.dir)) notes.push("No tests found to run.");
+      else {
+        const r = await runTests(project, { match, changed: true, source: "mcp" });
+        if (r.ok) fine.push(`${r.passed} test(s) pass (${r.framework})`);
+        else problems.push(testSummary(project, r));
+      }
+    }
+    if (path && client && server) {
+      try {
+        const r = await client.post<CheckResult>("/api/check", { dir: project.dir, path, browser: true }, 90_000);
+        if (r.error || r.page?.error || (r.page && !r.page.ok)) problems.push((pageReport(r).content[0] as { text: string }).text);
+        else fine.push(`${path} loads with no browser errors`);
+      } catch (err) {
+        problems.push(`Couldn't check ${path}: ${(err as Error).message}`);
+      }
+    }
+    const head = problems.length ? `${project.name}: not verified, ${problems.length} problem${problems.length === 1 ? "" : "s"}.` : `${project.name}: verified${fine.length ? `: ${fine.join("; ")}` : ""}.`;
+    const result = text([head, ...problems, ...notes].join("\n\n"));
+    return problems.length ? { ...result, isError: true } : result;
   },
 );
 

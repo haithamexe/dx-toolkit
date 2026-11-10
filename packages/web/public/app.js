@@ -10,8 +10,11 @@ const nav = document.getElementById("nav");
 // One banner says when dx has stopped or restarted, instead of every poll failing quietly in its own way.
 const offlineBanner = document.getElementById("offline");
 let connection = "ok";
+/** Set once Settings' Remove dx has started: the dashboard going away is expected then. */
+let dxRemoved = false;
 function setConnection(next) {
-  if (next === connection) return;
+  // dx was removed from Settings on purpose: "run dx ui to open it again" would be wrong.
+  if (next === connection || dxRemoved) return;
   const was = connection;
   connection = next;
   offlineBanner.hidden = next === "ok";
@@ -155,6 +158,23 @@ function pollWhileVisible(fn, ms) {
   return timer;
 }
 
+/**
+ * Keeps a page's data live: runs `fn` every `ms` while the window is visible, and once when it
+ * becomes visible again. Returns the function that stops it (a page returns it from its render).
+ * This is why dx has no Refresh buttons: a page that has to be refreshed by hand is out of date.
+ */
+function livePoll(fn, ms) {
+  const run = () => {
+    if (!document.hidden) void Promise.resolve(fn()).catch(() => {});
+  };
+  const timer = setInterval(run, ms);
+  document.addEventListener("visibilitychange", run);
+  return () => {
+    clearInterval(timer);
+    document.removeEventListener("visibilitychange", run);
+  };
+}
+
 function btn(label, onclick, { kind = "", iconName, small = false, disabled = false, title, type = "button", name } = {}) {
   return h(
     "button",
@@ -182,11 +202,23 @@ async function busy(button, busyLabel, fn) {
   }
 }
 
-function toast(message, kind = "ok", { ms } = {}) {
+/**
+ * A message that slides in and goes by itself (staying while the pointer is on it). `action` adds a button
+ * for the obvious next step: { label: "Push", run }.
+ */
+function toast(message, kind = "ok", { ms, action } = {}) {
   // An error is announced at once (role=alert); the rest wait their turn in the polite region.
-  const el = h("div", { class: `toast ${kind === "error" ? "toast-error" : kind === "warn" ? "toast-warn" : ""}`, role: kind === "error" ? "alert" : undefined }, h("div", null, message));
+  const el = h(
+    "div",
+    { class: `toast ${kind === "error" ? "toast-error" : kind === "warn" ? "toast-warn" : ""}`, role: kind === "error" ? "alert" : undefined },
+    kind === "ok" ? icon("check") : null,
+    h("div", { class: "toast-message" }, message),
+    action ? h("button", { type: "button", class: "btn btn-sm toast-action", onclick: () => (el.remove(), action.run()) }, action.label) : null,
+  );
   document.getElementById("toasts").append(el);
-  setTimeout(() => el.remove(), ms ?? (kind === "ok" ? 4500 : 9000));
+  let timer = setTimeout(() => el.remove(), ms ?? (action || kind !== "ok" ? 9000 : 4500));
+  el.addEventListener("mouseenter", () => clearTimeout(timer));
+  el.addEventListener("mouseleave", () => (timer = setTimeout(() => el.remove(), 3000)));
 }
 
 /** Two short tones for a warning, made in the page (nothing to load). Browsers may hold it until the page has been clicked once. */
@@ -237,8 +269,14 @@ function stateView(title, text, ...actions) {
   return h("div", { class: "state" }, h("p", { class: "state-title" }, title), text ? h("p", null, text) : null, actions.length ? h("div", { class: "toolbar" }, actions) : null);
 }
 
+/** What a section shows while it loads: the caption with a spinner, and grey bars where the content will be, so the page doesn't jump when it arrives. */
 function loadingView(text) {
-  return h("div", { class: "state", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), h("p", null, text));
+  return h(
+    "div",
+    { class: "state state-loading", role: "status" },
+    h("p", { class: "state-loading-text" }, h("span", { class: "spinner", "aria-hidden": "true" }), text),
+    h("div", { class: "skeleton", "aria-hidden": "true" }, h("span", { class: "skeleton-bar" }), h("span", { class: "skeleton-bar" }), h("span", { class: "skeleton-bar" })),
+  );
 }
 
 function errorView(err, retry) {
@@ -254,7 +292,7 @@ function pageHead(title, sub, ...actions) {
   return h(
     "div",
     { class: "page-head" },
-    h("div", null, h("h1", { class: "page-title" }, title), sub ? h("p", { class: "page-sub" }, sub) : null),
+    h("div", null, h("h1", { class: "page-title" }, title), sub ? (Array.isArray(sub) ? h("p", { class: "page-sub", title: sub[1] }, sub[0]) : h("p", { class: "page-sub" }, sub)) : null),
     actions.length ? h("div", { class: "toolbar" }, actions) : null,
   );
 }
@@ -885,7 +923,7 @@ function claudeCanFix() {
 }
 
 const FIX_TITLE =
-  "Claude Code (claude -p) looks at this error and the code around it, and proposes a patch for you to review. This sends the error, nearby code and your uncommitted changes to your Claude account, and only when you click. Nothing changes in your files until you apply it.";
+  "Sends the error and nearby code to your Claude account, only when you click.";
 
 /** Each error's panel, by "dir|place": it outlives the list redrawing as new output comes in. */
 const fixPanels = new Map();
@@ -952,7 +990,7 @@ function drawFix(state, dir, source, errorId, r) {
     explanation,
     liveDetail(diffBlock(r.patch)),
     h("div", { class: "toolbar" }, apply, again, dismiss),
-    h("p", { class: "dim fix-hint" }, "Nothing has changed in your files yet. Applied, the fix shows on the Git page as changes you can stage, commit or undo."),
+    h("p", { class: "dim fix-hint" }, ""),
   );
 }
 
@@ -985,7 +1023,7 @@ function closeFix(state) {
 
 /**
  * Which terminal projects open in: the installed ones, saved to the settings on change. Used on
- * the Projects page and in Health & settings.
+ * the Projects page and in Settings.
  */
 function terminalSelect({ withLabel = false } = {}) {
   const select = h("select", {
@@ -1014,7 +1052,7 @@ function terminalSelect({ withLabel = false } = {}) {
     }
   })();
   if (!withLabel) return h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Terminal projects open in"), select);
-  return h("label", { class: "field", for: "cfg-terminal" }, h("span", { class: "field-label" }, "Terminal"), select, h("span", { class: "field-hint" }, "Where the Terminal buttons and Run in a terminal window open. Only terminals on this computer are listed."));
+  return h("label", { class: "field", for: "cfg-terminal" }, h("span", { class: "field-label" }, "Terminal"), select);
 }
 
 // ------------------------------------------------------------------ router
@@ -1025,18 +1063,20 @@ function terminalSelect({ withLabel = false } = {}) {
  * is a tab of another (its nav item lights up), and route ids are the old ones, so links keep working.
  */
 const pages = [
-  { id: "overview", label: "Overview", icon: "map", render: overviewPage, project: true },
-  { id: "git", label: "Code", title: "Code", icon: "git", render: gitPage, project: true },
-  { id: "requests", label: "API", icon: "requests", render: requestsPage, project: true },
-  { id: "activity", label: "Activity", icon: "activity", render: activityPage, project: true },
-  { id: "tools", label: "Tools", icon: "template", render: toolsPage, project: true },
-  { id: "data", label: "Data", icon: "data", render: dataPage, project: true },
-  { id: "chaos", label: "Break it", icon: "chaos", render: chaosPage, project: true },
-  { id: "env", label: "Env & secrets", icon: "key", render: envPage, project: true },
-  { id: "projects", label: "All projects", icon: "projects", render: projectsPage, group: "everything" },
-  { id: "agents", label: "Agents", icon: "ai", render: agentsPage, group: "everything" },
-  { id: "machine", label: "This computer", icon: "machine", render: machinePage, group: "everything", tab: "Machine" },
-  { id: "summary", label: "Look back", icon: "summary", render: summaryPage, group: "everything", tab: "Summary" },
+  // Projects: this project's overview and the list of all of them are two tabs of one nav item.
+  { id: "overview", label: "Overview", icon: "map", render: overviewPage, project: true, under: "projects", tab: "This project" },
+  { id: "projects", label: "Projects", icon: "projects", render: projectsPage, main: true, tab: "All projects", aka: "all projects new clone" },
+  { id: "git", label: "Git", title: "Git", icon: "git", render: gitPage, project: true, main: true, wide: true, aka: "code commit branch release" },
+  { id: "requests", label: "Requests", title: "Requests", icon: "requests", render: requestsPage, project: true, main: true, tab: "API", aka: "api spec mocks rules repeater intercept" },
+  { id: "activity", label: "Activity", icon: "activity", render: activityPage, project: true, wide: true, under: "requests" },
+  // Shown only when they have something in them (see navState): a page you're on always stays.
+  { id: "chaos", label: "Stress test", title: "Stress test", icon: "chaos", render: chaosPage, project: true, main: true, when: "running", aka: "break it chaos gremlins clock weak phone languages" },
+  { id: "tools", label: "Tools", icon: "template", render: toolsPage, project: true, main: true, when: "tools" },
+  { id: "data", label: "Data", icon: "data", render: dataPage, project: true, main: true, when: "data" },
+  { id: "env", label: "Secrets", title: "Secrets", icon: "key", render: envPage, project: true, main: true, when: "env", aka: "env secrets .env" },
+  { id: "agents", label: "Agents", icon: "ai", render: agentsPage, group: "everything", when: "agents" },
+  { id: "machine", label: "Computer", title: "Computer", icon: "machine", render: machinePage, group: "everything", tab: "Machine", aka: "this computer tools docker processes" },
+  { id: "summary", label: "Summary", icon: "summary", render: summaryPage, group: "everything", tab: "Summary", aka: "look back week year" },
   { id: "ports", label: "Ports", icon: "ports", render: portsPage, under: "machine" },
   { id: "cleanup", label: "Cleanup", icon: "cleanup", render: cleanupPage, under: "machine" },
   { id: "deps", label: "Dependencies", icon: "deps", render: depsPage, under: "machine" },
@@ -1049,23 +1089,102 @@ const MOVED = { tour: "overview" };
 
 let leaveCurrent = () => {};
 
+// "Skip to content" moves focus to the page; as a plain #main link it changed the route to one that doesn't exist.
+document.querySelector(".skip-link")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  main.focus();
+});
+
+// One behaviour for every "More" menu: Esc closes it and gives focus back to its button, the arrow keys move
+// between its items, and tabbing out of it closes it.
+document.addEventListener("keydown", (e) => {
+  const menu = e.target instanceof Element ? e.target.closest("details.menu") : null;
+  if (!menu?.open) return;
+  if (e.key === "Escape") {
+    menu.removeAttribute("open");
+    menu.querySelector("summary")?.focus();
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const items = [...menu.querySelectorAll(".menu-list button:not(:disabled)")];
+    if (!items.length) return;
+    e.preventDefault();
+    const at = items.indexOf(document.activeElement);
+    const next = e.key === "ArrowDown" ? (at + 1) % items.length : (at <= 0 ? items.length - 1 : at - 1);
+    items[next].focus();
+  }
+});
+document.addEventListener("focusout", (e) => {
+  const menu = e.target instanceof Element ? e.target.closest("details.menu") : null;
+  if (menu?.open && !(e.relatedTarget instanceof Node && menu.contains(e.relatedTarget))) menu.removeAttribute("open");
+});
+
+// A box that scrolls sideways (a wide table, the agent graph) can be scrolled with the arrow keys once it can take focus.
+function focusableScrollers() {
+  for (const el of main.querySelectorAll(".table-wrap, .agent-graph")) {
+    if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
+      if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+    } else if (el.getAttribute("tabindex") === "0") el.removeAttribute("tabindex");
+  }
+}
+let scrollersQueued = false;
+new MutationObserver(() => {
+  if (scrollersQueued) return;
+  scrollersQueued = true;
+  requestAnimationFrame(() => ((scrollersQueued = false), focusableScrollers()));
+}).observe(main, { childList: true, subtree: true });
+window.addEventListener("resize", focusableScrollers);
+
+/**
+ * What decides which optional pages the sidebar shows: counts from `GET /api/nav` for the chosen
+ * project, and whether its dev server runs. A page with `when` shows only while its key is true
+ * (or while you're on it); everything stays reachable from Jump to… (Ctrl+K) and by link.
+ */
+let navState = { agents: 0, tools: 0, data: false, env: 0 };
+let navSig = "";
+let navActive = "";
+async function loadNavState() {
+  try {
+    const next = await api(`/api/nav?dir=${encodeURIComponent(currentProject())}`);
+    const sig = JSON.stringify([next, currentProject()]);
+    if (sig === navSig) return;
+    navSig = sig;
+    navState = next;
+    if (navActive) renderNav(navActive);
+  } catch {
+    // the dashboard went away; the page says so elsewhere
+  }
+}
+
+function pageShown(p, lit) {
+  if (!p.when || p.id === lit) return true;
+  if (p.when === "running") return projectServers.some((x) => sameDir(x.dir, currentProject()) && x.status !== "stopped");
+  return !!navState[p.when];
+}
+
 function renderNav(active) {
+  navActive = active;
   const page = pages.find((p) => p.id === active);
   const lit = page?.under ?? active;
+  const hasProject = !!currentProject();
   const link = (p) =>
     h(
       "a",
-      { href: `#/${p.id}`, "aria-current": p.id === lit ? "page" : undefined, dataset: { page: p.id } },
+      // Projects opens the chosen project's overview; its other tab is the list of them all.
+      { href: `#/${p.id === "projects" && hasProject ? "overview" : p.id}`, "aria-current": p.id === lit ? "page" : undefined, title: p.label, dataset: { page: p.id } },
       icon(p.icon),
       h("span", { class: "nav-label" }, p.label),
       p.id === "projects" ? h("span", { class: "count", id: "running-count", hidden: true }) : null,
+      p.id === "env" && navState.env ? h("span", { class: "count count-warn", title: `${plural(navState.env, "thing")} to look at` }, String(navState.env)) : null,
     );
-  const hasProject = !!currentProject();
+  const mainPages = pages.filter((p) => p.main && (!p.project || hasProject) && pageShown(p, lit));
+  const morePages = pages.filter((p) => p.group === "everything" && pageShown(p, lit));
   nav.replaceChildren(
-    h("div", { class: "nav-group", role: "group", "aria-label": projectName() ? `Project ${projectName()}` : "Project" }, pages.filter((p) => p.project && hasProject).map(link)),
-    h("div", { class: "nav-group", role: "group", "aria-labelledby": "nav-everything" }, h("span", { class: "nav-heading", id: "nav-everything" }, "Everything"), pages.filter((p) => p.group === "everything").map(link)),
+    h("div", { class: "nav-group", role: "group", "aria-label": projectName() ? `Project ${projectName()}` : "Projects" }, mainPages.map(link)),
+    h("div", { class: "nav-group", role: "group", "aria-label": "This computer and what you did" }, morePages.map(link)),
     h("div", { class: "nav-group nav-settings" }, pages.filter((p) => p.group === "settings").map(link)),
   );
+  // In the narrow bar (a row that scrolls sideways) the page you're on is brought into view.
+  const here = nav.querySelector('[aria-current="page"]');
+  if (here && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = Math.max(0, here.offsetLeft - (nav.clientWidth - here.offsetWidth) / 2);
 }
 
 /** The tabs of a page that has others under it (This computer, Look back), as links. */
@@ -1091,9 +1210,10 @@ function route() {
   leaveCurrent();
   leaveCurrent = () => {};
   renderNav(page.id);
+  void loadNavState();
   drawSwitcher();
   document.title = `${page.project && projectName() ? `${page.title ?? page.label} · ${projectName()}` : page.label} · dx`;
-  const container = h("div", { class: "page" });
+  const container = h("div", { class: page.wide ? "page page-wide" : "page" });
   main.replaceChildren(container);
   const tabs = pageTabs(page);
   if (tabs) container.append(tabs);
@@ -1189,6 +1309,14 @@ async function updateRunningCount() {
     projectServers = servers;
     drawSwitcher();
     const running = servers.filter((s) => s.status === "starting" || s.status === "ready").length;
+    // Floppy at the foot of the sidebar shows how things are: starting something, something wrong, apps running, or quiet.
+    const floppy = document.querySelector(".sidebar-floppy");
+    if (floppy) {
+      const live = servers.filter((s) => s.status !== "stopped");
+      const mood = live.some((s) => s.errorCount > 0 || s.status === "failed") ? "error" : live.some((s) => s.status === "starting") ? "working" : live.length ? "ok" : "idle";
+      floppy.className = `sidebar-floppy mood-${mood}`;
+      floppy.title = { error: "Floppy: something's wrong in a running app", working: "Floppy: starting something…", ok: "Floppy: your apps are running", idle: "Floppy: nothing running" }[mood];
+    }
     const el = document.getElementById("running-count");
     if (el) {
       el.hidden = running === 0;
@@ -1247,8 +1375,7 @@ function pinnedTools(dir) {
  * or the running app's usual address), what uses it, and where to give or change it.
  */
 function specCard(dir) {
-  const title = h("h2", { class: "section-title", id: "spec-title" }, "API spec");
-  const el = h("section", { class: "section", "aria-labelledby": "spec-title" }, title, loadingView("Looking for its API spec…"));
+  const el = h("section", { class: "section", "aria-label": "API spec" }, h("div", { class: "card card-pad spec-line" }, h("strong", null, "API spec"), h("span", { class: "dim" }, "Looking…")));
   let timer = 0;
   let stopped = false;
   const toApiPage = (label, kind) => h("a", { class: `btn btn-sm${kind ? ` btn-${kind}` : ""}`, href: "#/requests", onclick: () => setPref("labTab", "api") }, label);
@@ -1257,49 +1384,29 @@ function specCard(dir) {
     try {
       r = await api(`/api/lab/spec?dir=${encodeURIComponent(dir)}`);
     } catch (err) {
-      return fill(el, title, h("div", { class: "card card-pad" }, errorView(err, load)));
+      return fill(el, h("div", { class: "card card-pad" }, errorView(err, load)));
     }
     if (stopped) return;
     const specs = r.specs ?? [];
     const several = specs.length > 1;
-    fill(
-      el,
-      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "spec-title" }, several ? "API specs" : "API spec"), specs.length ? toApiPage(several ? "Open on the API page" : "Open on the API page") : null),
-      h(
-        "div",
-        { class: "card card-pad section" },
-        specs.length
-          ? [
-              ...specs.map((s) => {
-                const called = s.endpoints.filter((e) => e.calls).length;
-                const mismatched = s.endpoints.filter((e) => e.issues.length).length;
-                return h(
-                  "div",
-                  { class: "spec-api" },
-                  h("p", null, h("strong", null, several ? s.name : `${s.title}${s.version ? ` ${s.version}` : ""}`), several && s.name !== s.title ? h("span", { class: "dim" }, ` ${s.title}${s.version ? ` ${s.version}` : ""}`) : null, h("span", { class: "dim" }, ` · ${s.kind}, ${specSourceText(s.source)}${s.found ? ", found by dx" : ""}${s.service ? `, service ${s.service}` : ""}${s.mount ? `, served at ${s.mount}` : ""}`)),
-                  h(
-                    "div",
-                    { class: "machine-badges" },
-                    h("span", { class: "badge" }, plural(s.endpoints.length, "endpoint")),
-                    h("span", { class: "badge" }, `${called} called this week`),
-                    mismatched ? h("span", { class: "badge badge-warn" }, `${plural(mismatched, "endpoint")} answering differently`) : null,
-                  ),
-                );
-              }),
-              r.undocumented?.length ? h("div", { class: "machine-badges" }, h("span", { class: "badge badge-warn" }, `${plural(r.undocumented.length, "call")} no API has`)) : null,
-              r.overlaps?.length ? h("p", { class: "note note-warn" }, icon("warn"), h("span", null, `${plural(r.overlaps.length, "endpoint")} in more than one API (${r.overlaps.slice(0, 2).map((o) => `${o.method} ${o.path} in ${o.apis.join(" and ")}`).join("; ")}${r.overlaps.length > 2 ? "…" : ""}). Say which service each is, or where it's served, on the API page, so their calls and mocks stay apart.`)) : null,
-              h("p", { class: "dim" }, "Activity names each call by its endpoint and API, the tour lists them, mocks and Break it's unused routes start from them, and AI agents get them through dx."),
-            ]
-          : r.looking
-            ? loadingView("Looking for its API spec on the running app…")
-            : r.removed
-              ? [h("p", null, "You removed its API spec, so dx doesn't look for one by itself."), h("div", { class: "toolbar" }, toApiPage("Give it one on the API page", "primary"))]
-              : [
-                  h("p", null, "No API spec yet. dx looks for openapi or swagger files in the project, and at /openapi.json and the other usual addresses while dx runs it."),
-                  h("div", { class: "toolbar" }, toApiPage("Add one: a file, an address or pasted", "primary")),
-                ],
-      ),
-    );
+    const line = (...children) => fill(el, h("div", { class: "card card-pad spec-line" }, h("strong", null, several ? "API specs" : "API spec"), ...children));
+    if (!specs.length) {
+      line(h("span", { class: "dim" }, r.looking ? "Looking…" : r.removed ? "Removed." : "None found."), r.looking ? null : toApiPage("Add", "primary"));
+    } else {
+      // One line: how many endpoints, how many were called this week, and only what's wrong.
+      const endpoints = specs.reduce((n, sp) => n + sp.endpoints.length, 0);
+      const called = specs.reduce((n, sp) => n + sp.endpoints.filter((e) => e.calls).length, 0);
+      const mismatched = specs.reduce((n, sp) => n + sp.endpoints.filter((e) => e.issues.length).length, 0);
+      line(
+        h("span", { class: "dim" }, several ? specs.map((sp) => sp.name).join(", ") : `${specs[0].title}${specs[0].version ? ` ${specs[0].version}` : ""}`),
+        h("span", { class: "badge" }, plural(endpoints, "endpoint")),
+        h("span", { class: "badge" }, `${called} called this week`),
+        mismatched ? h("span", { class: "badge badge-warn" }, `${mismatched} answering differently`) : null,
+        r.undocumented?.length ? h("span", { class: "badge badge-warn" }, `${plural(r.undocumented.length, "call")} no API has`) : null,
+        r.overlaps?.length ? h("span", { class: "badge badge-warn", title: "The same method and path in more than one API: say which service each is, or where it's served, on the API page." }, `${r.overlaps.length} shared`) : null,
+        toApiPage("Open"),
+      );
+    }
     if (r.looking) timer = setTimeout(load, 4000);
   }
   void load();
@@ -1334,7 +1441,6 @@ function projectsPage(root, { only } = {}) {
       renderList();
     },
   });
-  const terminalPicker = terminalSelect();
   const devSection = h("section", { class: "section", "aria-labelledby": "dev-title", hidden: true });
   const unsavedSection = h("section", { class: "section", "aria-label": "Work that isn't backed up", hidden: true });
   const listSection = h("section", { class: "section", "aria-label": "All projects" });
@@ -1344,14 +1450,12 @@ function projectsPage(root, { only } = {}) {
   append(
     root,
     only
-      ? pageHead(projectName() || "Overview", "Run it, watch its output and errors, and what it is.", terminalPicker, btn("Refresh", () => (load(), loadUnsaved()), { iconName: "refresh", kind: "ghost" }))
+      ? pageHead(projectName() || "Overview", "")
       : pageHead(
           "All projects",
-          "Every project in your projects folders: run one here, or open it.",
+          "",
           search,
-          terminalPicker,
           h("a", { class: "btn", href: "#/new" }, icon("new"), "New project"),
-          btn("Refresh", () => (load(), loadUnsaved()), { iconName: "refresh", kind: "ghost" }),
         ),
     // On Overview the project comes first and its server under it; on All projects the running ones lead.
     ...(only ? [listSection, devSection, unsavedSection] : [devSection, unsavedSection, listSection]),
@@ -1393,8 +1497,13 @@ function projectsPage(root, { only } = {}) {
 
   function renderUnsaved() {
     const list = (unsaved ?? []).filter((w) => !only || sameDir(w.dir, only));
-    unsavedSection.hidden = list.length === 0;
-    if (!list.length) return;
+    unsavedSection.hidden = list.length === 0 && unsaved === null;
+    if (!list.length) {
+      // Nothing to save: nothing to show.
+      unsavedSection.replaceChildren();
+      unsavedSection.hidden = true;
+      return;
+    }
     const risky = list.filter((w) => w.unpushed || w.noRemote).length;
     const details = h(
       "details",
@@ -1427,6 +1536,7 @@ function projectsPage(root, { only } = {}) {
       w.unpushedBranches.length && w.unpushedBranches.some((b) => b !== w.branch)
         ? h("span", { class: "dim" }, `on ${w.unpushedBranches.join(", ")}`)
         : null,
+      w.dir ? h("a", { class: "btn btn-sm unsaved-review", href: "#/git", onclick: () => setPref("project", w.dir), "aria-label": `Review ${w.project} on the Code page` }, "Review") : null,
     );
   }
 
@@ -1473,6 +1583,15 @@ function projectsPage(root, { only } = {}) {
           p.stack ? h("span", null, `${plural(p.stack.services.length, "service")}, started in order`) : p.devCommand ? h("span", { class: "mono" }, p.devCommand) : h("span", null, "No dev command"),
           h("span", { class: "mono" }, tildify(p.dir)),
         ),
+        running && p.dev.services?.length > 1
+          ? h(
+              "div",
+              { class: "service-chips", role: "group", "aria-label": `Services of ${p.name}` },
+              p.dev.services.map((svc) =>
+                h("span", { class: `badge ${{ ready: "badge-ok", starting: "badge-warn", failed: "badge-danger" }[svc.status] ?? ""}`, title: `${svc.service}: ${svc.status === "ready" ? "running" : svc.status}` }, h("span", { class: `dot ${svc.status === "starting" ? "dot-pulse" : ""}` }), svc.service),
+              ),
+            )
+          : null,
         p.session?.note
           ? h(
               "p",
@@ -1498,8 +1617,9 @@ function projectsPage(root, { only } = {}) {
               })
             : null,
         running ? null : runAsMenu(p),
-        btn("Open in editor", (e) => open(e.currentTarget, p, "editor"), { iconName: "code", small: true, name: `Open ${p.name} in editor` }),
-        btn("Terminal", (e) => open(e.currentTarget, p, "shell"), { iconName: "terminal", small: true, name: `Open ${p.name} in a terminal`, title: "Open a terminal in this project's folder" }),
+        // On All projects, 22 rows of four labelled buttons is noise: Run is the one with a label, the others are icons (their names stay for screen readers and tooltips).
+        btn(only ? "Open in editor" : null, (e) => open(e.currentTarget, p, "editor"), { iconName: "code", small: true, name: `Open ${p.name} in editor`, title: "Open in your editor" }),
+        btn(only ? "Terminal" : null, (e) => open(e.currentTarget, p, "shell"), { iconName: "terminal", small: true, name: `Open ${p.name} in a terminal`, title: "Open a terminal in this project's folder" }),
         moreMenu(p),
       ),
       testRuns.has(p.dir.toLowerCase()) ? testPanel(p, testRuns.get(p.dir.toLowerCase())) : null,
@@ -1642,13 +1762,13 @@ function projectsPage(root, { only } = {}) {
     const details = h("details", { class: "menu" });
     const close = () => details.removeAttribute("open");
     const item = (label, iconName, fn, disabled = false) =>
-      h("button", { type: "button", disabled, onclick: async () => (close(), fn()) }, icon(iconName), label);
+      h("button", { type: "button", role: "menuitem", disabled, onclick: async () => (close(), fn()) }, icon(iconName), label);
     append(
       details,
       h("summary", { class: "btn btn-sm", "aria-label": `More actions for ${p.name}` }, icon("more"), "More"),
       h(
         "div",
-        { class: "menu-list" },
+        { class: "menu-list", role: "menu" },
         item("Open in browser", "external", () => open(null, p, "browser", p.dev?.localUrl ?? p.dev?.url ?? p.url), !(p.dev?.localUrl ?? p.dev?.url ?? p.url)),
         item("Run in a terminal window", "terminal", () => open(null, p, "terminal"), !p.devCommand),
         item("Show in folder", "folder", () => open(null, p, "folder")),
@@ -1656,10 +1776,22 @@ function projectsPage(root, { only } = {}) {
         item("Run tests", "check", () => runTestsOf(p)),
         item("Run tests with coverage", "check", () => runTestsOf(p, true)),
         item("Check .env and secrets", "deps", () => checkEnvOf(p)),
+        item("Set up Claude to use dx", "ai", () => claudeSetup(p, false)),
+        item("Undo the Claude setup", "ai", () => claudeSetup(p, true)),
         item("Save as template…", "template", () => saveTemplate(p)),
       ),
     );
     return details;
+  }
+
+  // Points the project's Claude Code sessions at dx (CLAUDE.local.md, allowed dx tools, a hint hook), or takes that back out.
+  async function claudeSetup(p, undo) {
+    try {
+      const r = await api("/api/claude", { method: "POST", body: { dir: p.dir, undo } });
+      toast(r.changed.length ? `${p.name}: ${undo ? "removed" : "added"} ${r.changed.join(", ")}. A new Claude Code session picks it up.` : undo ? `${p.name}: nothing of dx's to remove` : `${p.name}: Claude already uses dx here`);
+    } catch (err) {
+      toast(err.message, "error");
+    }
   }
 
   async function open(button, p, action, url) {
@@ -1931,7 +2063,7 @@ function projectsPage(root, { only } = {}) {
           { class: "phone-info" },
           h("strong", null, sess.joined ? "Your phone is connected" : "Scan with your phone's camera"),
           h("p", { class: "dim" }, sess.joined ? `${sess.address} · ${plural(mins, "minute")} left` : `Or type ${sess.url} on the phone. The link works once; ${plural(mins, "minute")} left.`),
-          h("p", { class: "dim" }, "The phone must be on the same Wi-Fi. Calls the page makes to localhost addresses won't reach your computer from the phone; same-site calls do."),
+          h("p", { class: "dim" }, "The phone must be on the same Wi-Fi."),
           h(
             "div",
             { class: "toolbar" },
@@ -2200,8 +2332,10 @@ function projectsPage(root, { only } = {}) {
   }, 3000);
   load();
   loadUnsaved();
+  const stopLive = livePoll(loadUnsaved, 30_000);
   return () => {
     stopped = true;
+    stopLive();
     clearTimeout(timer);
     clearInterval(statusTimer);
     abort.abort();
@@ -2212,7 +2346,7 @@ function projectsPage(root, { only } = {}) {
 
 function newProjectPage(root) {
   const holder = h("div", null, loadingView("Loading templates and projects…"));
-  append(root, pageHead("New project", "Start from one of your templates or a copy of an existing project."), holder);
+  append(root, pageHead("New project", "From a template or a copy."), holder);
 
   async function load() {
     let data;
@@ -2376,7 +2510,7 @@ function newProjectPage(root) {
       "section",
       { class: "section", "aria-labelledby": "clone-title" },
       h("h2", { class: "section-title", id: "clone-title" }, "Clone a repository"),
-      h("p", { class: "dim" }, "Clones it into your first projects folder, installs its packages with the tool it uses, and creates .env from .env.example."),
+      h("p", { class: "dim" }, ""),
       form,
       result,
     );
@@ -2393,16 +2527,20 @@ function portsPage(root) {
     root,
     pageHead(
       "Ports",
-      "What's listening on this computer, and what started it.",
-      h("label", { class: "check" }, h("input", { type: "checkbox", onchange: (e) => ((showAll = e.target.checked), load()) }), "Include system ports"),
-      btn("Refresh", () => load(), { iconName: "refresh" }),
+      "What's listening, and who started it.",
+      h("label", { class: "check" }, h("input", { type: "checkbox", onchange: (e) => ((showAll = e.target.checked), (lastSig = ""), load()) }), "Include system ports"),
     ),
     holder,
   );
 
+  let lastSig = "";
   async function load() {
     try {
       const entries = await api(`/api/ports${showAll ? "?all=1" : ""}`);
+      // Redrawn only when something started or stopped listening.
+      const sig = entries.map((e) => `${e.port}:${e.pid}`).join(",");
+      if (sig === lastSig) return;
+      lastSig = sig;
       if (!entries.length) {
         holder.replaceChildren(stateView("Nothing is listening", showAll ? "No listening ports." : "No program is listening on ports 1024 and up."));
         return;
@@ -2434,6 +2572,7 @@ function portsPage(root) {
         ),
       );
     } catch (err) {
+      lastSig = "";
       holder.replaceChildren(errorView(err, load));
     }
   }
@@ -2452,6 +2591,7 @@ function portsPage(root) {
     });
   }
   load();
+  return livePoll(load, 5000);
 }
 
 // ------------------------------------------------------------------ Requests
@@ -2467,10 +2607,10 @@ function openLab(dir, tab, draft) {
 
 // The spec comes first: it's what the API page is about. Then what changes requests in flight.
 const LAB_TABS = [
-  ["api", "Spec & mocks"],
-  ["repeater", "Repeater"],
-  ["rules", "Rules"],
-  ["intercept", "Intercept"],
+  ["api", "API docs"],
+  ["repeater", "Resend a request"],
+  ["rules", "Change requests"],
+  ["intercept", "Pause requests"],
 ];
 const LAB_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const MOCK_SOURCES = { recorded: "recorded", cache: "cached", spec: "spec example", generated: "made up", ai: "AI" };
@@ -2525,8 +2665,30 @@ function parseJsonEditsText(text) {
  * is, how to run it, its pages and the calls each one makes, which file answers them, its data,
  * its settings and where the work happens.
  */
+/**
+ * Long lists and tables show their first five rows, with "Show all N" for the rest (a page that printed 184
+ * endpoints, 59 commits and 50 names was eleven screens tall). Works on tables in a .table-wrap, .tour-list and ul.bullets.
+ */
+function foldRows(container, n = 5) {
+  for (const box of container.querySelectorAll(".table-wrap, .tour-list, ul.bullets")) {
+    const rows = [...(box.classList.contains("table-wrap") ? box.querySelectorAll("tbody tr") : box.children)];
+    if (rows.length <= n || !box.parentNode) continue;
+    rows.slice(n).forEach((r) => r.classList.add("row-extra"));
+    box.after(btn(`Show all ${rows.length}`, (ev) => (box.classList.add("all"), ev.currentTarget.remove()), { small: true, kind: "ghost" }));
+  }
+}
+
 function tourSection(dir) {
-  const holder = h("section", { class: "section", "aria-labelledby": "tour-title" });
+  // Closed until opened (and only then read: it takes a moment); open again next time if it was.
+  const holder = h("details", { class: "card tour", open: pref("tourOpen", "") === "1" || undefined });
+  const body = h("div", { class: "tour-body section" });
+  let loaded = false;
+  holder.append(h("summary", { class: "tour-head" }, h("strong", null, "About this project")), body);
+  holder.addEventListener("toggle", () => {
+    setPref("tourOpen", holder.open ? "1" : "");
+    if (holder.open && !loaded) ((loaded = true), void load());
+  });
+  if (holder.open) ((loaded = true), queueMicrotask(() => void load()));
 
   // A file of the project, with its line when there is one, as a button that opens it in the editor.
   const openFile = (file, line) =>
@@ -2541,28 +2703,36 @@ function tourSection(dir) {
     const m = /^(.*\.[a-z0-9]+):(\d+)$/i.exec(from);
     return m ? openFile(m[1], Number(m[2])) : openFile(from);
   };
-  const section = (title, ...children) => h("div", { class: "card card-pad section" }, h("strong", null, title), ...children);
+  // Each part folds; they all start closed.
+  const section = (title, ...children) =>
+    h(
+      "details",
+      { class: "tour-fold", open: pref(`tourFold:${title}`, "") === "1" || undefined, ontoggle: (e) => setPref(`tourFold:${title}`, e.currentTarget.open ? "1" : "") },
+      h("summary", null, h("strong", null, title)),
+      h("div", { class: "section" }, ...children),
+    );
+  // The first five rows, then "Show all N".
+  const FEW = 5;
+  const capLists = (container) => foldRows(container);
 
   async function load() {
-    const title = h("h2", { class: "section-title", id: "tour-title" }, "About this project");
-    fill(holder, title, loadingView("Reading the project and its history…"));
+    fill(body, loadingView("Reading the project…"));
     let d;
     try {
       d = await api(`/api/tour?dir=${encodeURIComponent(dir)}`);
     } catch (err) {
-      return fill(holder, title, errorView(err, load));
+      return fill(body, errorView(err, () => load()));
     }
     const t = d.tour;
     const pagesUsed = t.pages.filter((p) => p.visits || p.calls.length || p.file);
     fill(
-      holder,
-      h("div", { class: "section-head" }, title, h("div", { class: "toolbar" }, copyButton(d.markdown, "Copy the tour as Markdown"))),
+      body,
+      h("div", { class: "toolbar" }, copyButton(d.markdown, "Copy as Markdown")),
       h(
         "div",
-        { class: "card card-pad section" },
-        t.about ? h("p", null, t.about) : h("p", { class: "dim" }, "No README paragraph says what the project is yet: the first paragraph after a README's title shows here."),
+        { class: "section" },
+        t.about ? h("p", null, t.about) : null,
         t.tech.length ? h("div", { class: "machine-badges" }, t.tech.map((x) => h("span", { class: "badge" }, x))) : null,
-        h("p", { class: "dim" }, t.history.events ? `The pages and calls below come from ${plural(t.history.events, "recorded event")} of the last ${plural(t.history.days, "day")}, and the routes in the code.` : "Nothing is recorded for it yet, so pages and calls come from the code alone. Use the app through dx and they fill in."),
       ),
       section(
         "Running it",
@@ -2572,10 +2742,8 @@ function tourSection(dir) {
           : t.run.command
             ? h("p", null, "Start it with ", h("code", { class: "mono" }, t.run.command), t.run.url ? `, then open ${t.run.url}` : "")
             : h("p", { class: "dim" }, "No dev command found."),
-        h("p", { class: "dim" }, "Or ", h("code", { class: "mono" }, `dx go ${t.project}`), ", which gets it ready and starts it."),
         t.tests ? h("p", null, `Tests: ${t.tests.framework}, `, h("code", { class: "mono" }, t.tests.command)) : null,
       ),
-      t.env.length ? section("Settings it needs", h("p", { class: "dim" }, `Names only, from ${[...new Set(t.env.map((e) => e.file))].join(", ")}. The values stay in the .env files.`), h("div", { class: "machine-badges" }, t.env.map((e) => h("span", { class: "badge mono" }, e.name)))) : null,
       pagesUsed.length
         ? section(
             "Pages, and the calls each one makes",
@@ -2650,10 +2818,11 @@ function tourSection(dir) {
       ),
       t.data ? section("Data", h("p", { class: "dim" }, `From ${t.data.file}.`), h("div", { class: "machine-badges" }, t.data.tables.map((x) => h("span", { class: "badge" }, `${x.name}${x.links.length ? ` → ${x.links.join(", ")}` : ""}`)))) : null,
       t.folders.some((f) => f.what) ? section("Where things are", h("ul", { class: "tour-list" }, t.folders.filter((f) => f.what).map((f) => h("li", null, h("code", { class: "mono" }, `${f.path}/`), ` ${f.what} `, h("span", { class: "dim" }, `(${plural(f.files, "file")})`))))) : null,
-      t.busy.length ? section("Where the work happens", h("p", { class: "dim" }, "Changed most in the last 90 days."), h("ul", { class: "tour-list" }, t.busy.map((b) => h("li", null, openFile(b.file), h("span", { class: "dim" }, ` ${plural(b.commits, "commit")}`))))) : null,
+      t.busy.length ? section("Where the work happens", h("ul", { class: "tour-list" }, t.busy.map((b) => h("li", null, openFile(b.file), h("span", { class: "dim" }, ` ${plural(b.commits, "commit")}`))))) : null,
     );
+    capLists(body);
   }
-  void load();
+  if (!holder.open) holder.dataset.idle = "1";
   return holder;
 }
 
@@ -2665,7 +2834,7 @@ function dataPage(root) {
   const holder = h("div", { class: "section" });
   append(
     root,
-    pageHead("Data", "Believable, connected data for your development database in one click, edge cases included, and named scenes to switch between in seconds."),
+    pageHead("Data", "Realistic data for development."),
     holder,
   );
 
@@ -2819,7 +2988,7 @@ function dataPage(root) {
       { class: "dim" },
       on
         ? `Since ${relativeTime(Date.parse(r.since))}, every statement ${r.service} ran is matched to the request it was answering. Values are taken out as they're read (they show as ?).${r.kind === "mysql" ? " MySQL applies the setting to new connections: restart the app's dev server if nothing shows up." : ""}`
-        : "dx switches on the database's own statement log (in the Postgres or MySQL your docker-compose runs) and matches each query to the request that caused it: a page running 40 nearly identical queries (N+1), or one slow query, shows up next to the call. Nothing changes in your code; switching it off puts the setting back.",
+        : "Matches each query to its request, to spot N+1 and slow queries. Switching it off restores the setting.",
     );
     if (!on || !r) return h("div", { class: "card card-pad section" }, head, about);
     const findings = r.findings.length
@@ -2932,13 +3101,13 @@ function dataPage(root) {
 
 const CHAOS_TABS = [
   ["chaos", "Chaos mode"],
-  ["gremlins", "Gremlins"],
-  ["clock", "Clock"],
-  ["phone", "Weak phone"],
-  ["languages", "Languages"],
-  ["env", "Missing values"],
-  ["behaviour", "Behaviour diff"],
-  ["graveyard", "Graveyard"],
+  ["gremlins", "Click everything"],
+  ["clock", "Another date"],
+  ["phone", "Slow phone"],
+  ["languages", "Long text"],
+  ["env", "Missing .env values"],
+  ["behaviour", "Compare versions"],
+  ["graveyard", "Unused code"],
   ["security", "Security"],
 ];
 const FINDING_KIND = { blank: "Blank page", uncaught: "Uncaught error", stuck: "Stuck loading", double: "Sent twice", server: "Server error", exception: "Exception", console: "Console error", network: "Request failed", overlay: "Error overlay" };
@@ -2977,7 +3146,7 @@ function chaosPage(root) {
     root,
     pageHead(
       "Break it",
-      "Break your app on purpose, before your users do: failing calls, a careless user, another clock, a weak phone, a missing setting. Then see what changed between versions, and what nobody uses.",
+      "Break your app on purpose.",
     ),
     h("div", { class: "card card-pad toolbar" }, tabs),
     holder,
@@ -3082,7 +3251,7 @@ function chaosPage(root) {
         "div",
         { class: "card card-pad section" },
         h("div", { class: "section-head" }, h("label", { class: "check chaos-switch" }, onBox, h("strong", null, "Chaos mode")), c.on ? h("span", { class: "badge badge-danger" }, `Breaking calls · #${c.seed}`) : h("span", { class: "badge" }, "Off")),
-        h("p", { class: "dim" }, `${project()?.name ?? "The project"}'s API calls through dx (its .localhost address, or the address dx records) are broken the way real networks and servers break them. Pages, scripts and styles always load. Seeded, so #${c.seed} breaks the same calls the same way again.`),
+        h("p", { class: "dim", title: `Calls through dx (the .localhost address, or the address dx records). Pages, scripts and styles always load. Seeded: #${c.seed} breaks the same calls the same way again.` }, `Breaks ${project()?.name ?? "the project"}'s API calls the way networks and servers do.`),
         levels,
         h("p", { class: "dim" }, level.about),
         h("fieldset", { class: "lab-set" }, h("legend", null, "What can go wrong"), h("div", { class: "chaos-faults" }, faultBoxes)),
@@ -3099,7 +3268,6 @@ function chaosPage(root) {
           where() ? h("a", { class: "btn btn-ghost", href: where(), target: "_blank", rel: "noopener" }, icon("external"), "Open the app") : null,
         ),
       ),
-      h("h2", { class: "section-title" }, "What broke"),
       report,
     );
     const poll = async () => {
@@ -3116,6 +3284,8 @@ function chaosPage(root) {
   }
 
   function drawReport(el, r) {
+    // Nothing to report yet: nothing is drawn (a row of zeros says nothing), only a line while chaos is on.
+    if (!r.calls && !r.findings.length && !r.broken) return fill(el, state.config.on ? h("p", { class: "dim" }, "Waiting for calls from the app…") : null);
     const stats = h(
       "div",
       { class: "stats" },
@@ -3147,7 +3317,7 @@ function chaosPage(root) {
           ),
         )
       : h("div", { class: "card" }, stateView(r.calls ? "Nothing broke yet" : "No calls yet", r.calls ? "The app took everything chaos threw at it so far. Keep clicking, or let Gremlins loose." : "Use the app at its .localhost address (or let Gremlins loose): its calls show up here as they're broken."));
-    fill(el, stats, faults.length ? h("div", { class: "machine-badges" }, faults.map(([k, n]) => h("span", { class: "badge" }, `${k} ×${n}`))) : null, list);
+    fill(el, h("h2", { class: "section-title" }, "What broke"), stats, faults.length ? h("div", { class: "machine-badges" }, faults.map(([k, n]) => h("span", { class: "badge" }, `${k} ×${n}`))) : null, list);
   }
 
   // ---------------------------------------------------------------- jobs
@@ -3211,7 +3381,7 @@ function chaosPage(root) {
       h(
         "div",
         { class: "card card-pad section" },
-        h("p", { class: "dim" }, "A headless browser goes through the app by itself, like an impatient person: clicks whatever it finds, types nonsense into fields, double-clicks submit, presses Enter, goes back halfway. Only on this computer. Each problem comes with the steps that led to it. With Chaos mode on, its calls are broken too."),
+        h("p", { class: "dim" }, "Clicks and types at random, like an impatient person. Only on this computer."),
         h(
           "div",
           { class: "lab-grid" },
@@ -3313,7 +3483,7 @@ function chaosPage(root) {
         "div",
         { class: "card card-pad section" },
         h("div", { class: "section-head" }, h("strong", null, "The page's clock"), on ? h("span", { class: "badge badge-warn" }, `${c.at ? new Date(c.at).toLocaleString() : "Now"}${c.timeZone ? ` · ${c.timeZone}` : ""}${c.frozen ? " · frozen" : ""}`) : h("span", { class: "badge" }, "Real time")),
-        h("p", { class: "dim" }, "Pages loaded through dx see another time and time zone: Date, Date.now() and date formatting. Timers keep their pace, and the dev server keeps the real time. Reload the app's pages after a change."),
+        h("p", { class: "dim" }, "Pages loaded through dx see another date and zone."),
         h("div", { class: "machine-badges" }, CLOCK_PRESETS.map(([label, make]) => btn(label, () => {
           const p = make();
           at.value = p.at ? (p.at.endsWith("Z") ? local(p.at, p.timeZone) : p.at) : "";
@@ -3345,7 +3515,7 @@ function chaosPage(root) {
         "div",
         { class: "card card-pad section" },
         h("label", { class: "check chaos-switch" }, box, h("strong", null, "Weak phone in a tunnel")),
-        h("p", { class: "dim" }, "Every tab of the dx browser, and Gremlins from this page, as a cheap phone: what the app is like for someone without a fast laptop."),
+        h("p", { class: "dim" }, "The app as seen on a cheap phone."),
         h(
           "div",
           { class: "stats" },
@@ -3378,7 +3548,7 @@ function chaosPage(root) {
       h(
         "div",
         { class: "card card-pad section" },
-        h("p", { class: "dim" }, "Which .env values actually matter. dx starts the app on a port of its own once as it is, then once per value with only that value blank, checks a page each time and compares. Your running dev server keeps running, and .env isn't changed. About 15 seconds a value."),
+        h("p", { class: "dim" }, "Starts the app once per blank value (about 15 s each) and compares. Your .env isn't changed."),
         h("div", { class: "lab-grid" }, field("Page to check", path, "A path on the app")),
         h("div", { class: "toolbar" }, btn("Try each value missing", (ev) => start("env", "/api/chaos/env", { path: path.value || "/" }, ev.currentTarget), { kind: "primary", iconName: "play" })),
       ),
@@ -3428,7 +3598,7 @@ function chaosPage(root) {
       h(
         "div",
         { class: "card card-pad section" },
-        h("p", { class: "dim" }, "Your working copy and an earlier commit side by side: the same pages loaded on both, and the calls they made, their errors and warnings compared. A regression test nobody had to write. The commit runs as a snapshot (Run any commit), on a port of its own."),
+        h("p", { class: "dim" }, "Your working copy against an earlier commit: the same pages, with calls, errors and warnings compared."),
         h("div", { class: "lab-grid" }, field("Compare with", commit, "A commit hash; empty for the last one"), field("Pages", pages, "Paths separated by commas, at most 3")),
         h(
           "div",
@@ -3474,7 +3644,7 @@ function chaosPage(root) {
       h(
         "div",
         { class: "card card-pad section" },
-        h("p", { class: "dim" }, "A friendly attack on your own app, on this computer only: the requests and pages in its history are tried against its dev server for script that comes back unescaped, records another id opens, calls that work without signing in or from another site, CORS, cookie flags, security headers, stack traces and SQL errors, and logins with no rate limit. It sends a few test records and wrong passwords to your development database."),
+        h("p", { class: "dim" }, "Tries the history's requests against your dev server for common weaknesses. Sends test records to your development database."),
         h(
           "div",
           { class: "lab-grid" },
@@ -3509,7 +3679,7 @@ function chaosPage(root) {
               ),
             ),
           )
-        : h("div", { class: "card" }, stateView("Nothing found", "None of the checks found a weakness in what the history covers. Use more of the app (and sign in) so there's more to try.")),
+        : h("div", { class: "card" }, stateView("Nothing found", "Nothing found.")),
     );
   }
 
@@ -3540,7 +3710,7 @@ function chaosPage(root) {
         { class: "card card-pad section" },
         h("div", { class: "section-head" }, h("strong", null, "In your browser"), l.pseudo || l.rtl ? h("span", { class: "badge badge-warn" }, [l.pseudo ? "Pseudo text" : "", l.rtl ? "Right to left" : ""].filter(Boolean).join(" · ")) : h("span", { class: "badge" }, "Off")),
         h("p", { class: "dim" }, `${project()?.name ?? "The app"}'s pages through dx (its .localhost address, or the address dx records) as other languages would make them. Nothing in the project changes. Reload the app's pages after a change.`),
-        h("label", { class: "check" }, toggle("pseudo", "Pseudo text", "Pseudo text on: reload the app's pages"), h("span", null, h("strong", null, "Pseudo text"), h("span", { class: "dim" }, " — every text longer and accented, as German or Finnish run: “Save” becomes “[Šàṽé ~~~~]”. A missing ] means something cut it off."))),
+        h("label", { class: "check" }, toggle("pseudo", "Pseudo text", "Pseudo text on: reload the app's pages"), h("span", null, h("strong", null, "Pseudo text"), h("span", { class: "dim" }, " — longer, accented text; a missing ] means it was cut off."))),
         h("label", { class: "check" }, toggle("rtl", "Right to left", "Right to left on: reload the app's pages"), h("span", null, h("strong", null, "Right to left"), h("span", { class: "dim" }, " — the page flipped, as Arabic and Hebrew readers see it."))),
         where() ? h("div", { class: "toolbar" }, h("a", { class: "btn btn-ghost btn-sm", href: where(), target: "_blank", rel: "noopener" }, "Open the app")) : null,
       ),
@@ -3548,7 +3718,7 @@ function chaosPage(root) {
         "div",
         { class: "card card-pad section" },
         h("strong", null, "Check the pages"),
-        h("p", { class: "dim" }, "A headless browser loads each page three ways: as it is, with pseudo text, and right to left. It reports text that's cut off or spills out of its box, and text that isn't in the project's translation files, so it would never be translated (text from the app's own API answers is data, and left out)."),
+        h("p", { class: "dim" }, "Loads each page as it is, with pseudo text, and right to left, and reports cut-off text."),
         h("div", { class: "lab-grid" }, field("Pages", paths, "Paths on the project's dev server, separated by commas")),
         h("label", { class: "check" }, rtl, "Right to left too"),
         h(
@@ -3594,7 +3764,7 @@ function chaosPage(root) {
       ? `Compared with ${plural(r.files.length, "translation file")}${r.library ? ` (${r.library})` : ""}: ${plural(r.translated, "text")} found in them, ${plural(r.fromData, "text")} from the app's data.`
       : r.library
         ? `${r.library} is installed, but no translation files were found in folders like locales/ or messages/, so every text counts as not translated.`
-        : "No translation library or files: the project isn't set up for other languages yet, so every text on these pages is written into the code.";
+        : "No translation files: every text is written into the code.";
     const failed = r.pages.filter((p) => p.error);
     return h(
       "div",
@@ -3613,7 +3783,7 @@ function chaosPage(root) {
   function graveyardTab() {
     const out = h("div", { class: "section" }, loadingView("Reading the code and the history…"));
     fill(holder, 
-      h("div", { class: "card card-pad" }, h("p", { class: "dim" }, "Routes and pages the code declares (and mocks kept for it) that nothing used while dx was watching: dead code found from what actually ran. It's only as long as the history dx keeps (Health & settings, activity days).")),
+      h("div", { class: "card card-pad" }, h("p", { class: "dim" }, "Routes and pages nothing used while dx was watching.")),
       out,
     );
     (async () => {
@@ -3681,7 +3851,7 @@ function requestsPage(root) {
     root,
     pageHead(
       "API",
-      "Its API spec, and what your app sends and gets back: hold requests to edit them, resend them, set rules, and give the app a mock server of its own.",
+      "Spec, mocks and requests.",
     ),
     h("div", { class: "card card-pad toolbar" }, tabs),
     holder,
@@ -3719,7 +3889,7 @@ function requestsPage(root) {
       { class: "card" },
       stateView(
         "Nothing is held",
-        "A rule with Hold set catches matching requests (or their answers) here, to edit before they go on. Held ones go on by themselves after a minute, so the app never hangs.",
+        "Held requests go on by themselves after a minute.",
         btn("Make a rule", () => ((tab = "rules"), setPref("labTab", "rules"), tabs.querySelector('[data-v="rules"]')?.click()), { iconName: "new" }),
       ),
     );
@@ -3828,7 +3998,7 @@ function requestsPage(root) {
     const warnHidden = () => {
       const has = headers.value.includes("•••") || body.value.includes("•••");
       hidden.replaceChildren(
-        ...(has ? [h("div", { class: "note note-warn" }, icon("warn"), h("p", null, "Values shown as ••• were hidden by dx when it recorded them (tokens, cookies, passwords). Type the real ones before sending."))] : []),
+        ...(has ? [h("div", { class: "note note-warn" }, icon("warn"), h("p", null, "Values shown as ••• were hidden when recorded: type the real ones before sending."))] : []),
       );
     };
     headers.addEventListener("input", warnHidden);
@@ -3918,7 +4088,7 @@ function requestsPage(root) {
       h(
         "div",
         { class: "section-head" },
-        h("p", { class: "dim" }, "Rules change requests to the dev server and its answers as they pass through dx (at the project's .localhost address, or the address dx records). Mocked calls don't reach them."),
+        h("p", { class: "dim" }, ""),
         btn("New rule", () => edit({ on: true, method: draft?.draft?.method ?? "GET", path: draft?.draft?.path ?? "/api/" }), { kind: "primary", iconName: "new" }),
       ),
       editor,
@@ -3927,7 +4097,7 @@ function requestsPage(root) {
     const load = async () => {
       try {
         const rules = await api(`/api/lab/rules?${q()}`);
-        if (!rules.length) return list.replaceChildren(stateView("No rules yet", "A rule can change a header or a JSON field, replace a body, change a status, add a delay, make a call fail, or hold it in Intercept."));
+        if (!rules.length) return list.replaceChildren(stateView("No rules yet", "Change a header, body, status or timing, make a call fail, or hold it."));
         list.replaceChildren(
           h(
             "div",
@@ -4109,7 +4279,7 @@ function requestsPage(root) {
       return h(
         "div",
         { class: "section api-add" },
-        first ? h("p", { class: "dim" }, "An OpenAPI (Swagger) spec maps every endpoint, checks real answers against it, and makes a mock server that answers from the first call. A project can have several: each is its own API, and its endpoints and mocks know which.") : null,
+        first ? h("p", { class: "dim" }, "") : null,
         files.length ? h("div", { class: "section" }, h("p", null, first ? "Found in the project:" : "Also in the project:"), h("div", { class: "toolbar" }, files.map((f) => btn(f, (ev) => useSpec(ev.currentTarget, { file: f, ...extra() }), { small: true, iconName: "check" })))) : first ? h("p", { class: "dim" }, "No openapi.json, openapi.yaml or swagger file in the project.") : null,
         h("div", { class: "toolbar" }, btn("Read it from the running app", (ev) => useSpec(ev.currentTarget, extra()), { small: true, iconName: "external", disabled: !s.running, title: s.running ? `Looks at ${s.urls.slice(0, 4).join(", ")}…` : "Start the project's dev server first" })),
         h("label", { class: "field" }, h("span", { class: "field-label" }, "Or paste it"), paste),
@@ -4246,7 +4416,7 @@ function requestsPage(root) {
         h(
           "div",
           { class: "section-head" },
-          h("div", null, h("h2", { class: "section-title" }, "Mock server"), h("p", { class: "dim" }, "The project's mocks at an address of their own: they answer from the first call, with or without the dev server, like a Postman mock server.")),
+          h("div", null, h("h2", { class: "section-title" }, "Mock server"), h("p", { class: "dim" }, "")),
           btn(s ? "Stop" : "Start the mock server", async (ev) => {
             const b = ev.currentTarget;
             const r = await busy(b, "…", () => api("/api/mocks/server", { method: "POST", body: { dir, on: !s } }));
@@ -4258,7 +4428,7 @@ function requestsPage(root) {
               "div",
               { class: "section" },
               h("div", { class: "toolbar" }, h("span", { class: "badge badge-ok" }, "Running"), h("a", { class: "mono", href: s.url, target: "_blank", rel: "noreferrer" }, s.url), copyButton(s.url), h("span", { class: "dim" }, "or"), h("span", { class: "mono" }, `http://${s.host}`)),
-              h("p", { class: "dim" }, "Pick an answer per request like Postman: the header x-mock-response-code: 404, or x-mock-response-name: <example>. Pages on this computer can call it (CORS); sites elsewhere can't."),
+              h("p", { class: "dim" }, ""),
             )
           : null,
         h(
@@ -4275,13 +4445,13 @@ function requestsPage(root) {
               Object.entries(bySource).map(([src, n]) =>
                 btn(`Purge ${n} ${MOCK_SOURCES[src] ?? src}`, async (ev) => {
                   const b = ev.currentTarget;
-                  if (!(await confirmDialog({ title: `Remove the ${plural(n, `${MOCK_SOURCES[src] ?? src} mock`)}?`, text: "They're deleted from the project's mocks, edited ones too. The mock server and mock mode stop answering with them.", confirm: "Purge" }))) return;
+                  if (!(await confirmDialog({ title: `Remove the ${plural(n, `${MOCK_SOURCES[src] ?? src} mock`)}?`, text: "Deleted from the project's mocks, edited ones too.", confirm: "Purge" }))) return;
                   const r = await busy(b, "Purging…", () => api("/api/mocks/purge", { method: "POST", body: { dir, source: src } }));
                   if (r) (toast(`${plural(r.removed, "mock")} purged`), loadMocks());
                 }, { small: true, kind: "danger-ghost", iconName: "cleanup" }),
               ),
             )
-          : h("p", { class: "dim" }, "No mocks yet: make them from the API spec above, turn on the cache and use the app, or make them from a visit on the Activity page."),
+          : h("p", { class: "dim" }, "No mocks yet."),
       );
       drawEndpoints(m);
     };
@@ -4403,7 +4573,7 @@ const PROCESS_GROUPS = [
 
 const DOCKER_PRUNE = {
   containers: ["stopped containers", "Containers that aren't running are removed. Their images stay."],
-  images: ["unused images", "Images no container uses are removed, stopped containers' images stay. A project whose images go pulls or builds them again when it next starts, which takes longer once."],
+  images: ["unused images", "Unused images are removed; stopped containers' images stay."],
   "build-cache": ["the build cache", "Docker's next build of each project starts from scratch, which takes longer once."],
 };
 
@@ -4448,7 +4618,7 @@ function machineMoveCard() {
   return h(
     "div",
     { class: "card card-pad" },
-    h("p", { class: "dim" }, "Export what this computer has for development: tools and their versions, global npm packages, git's name, email and settings, editor extensions and the names of your SSH keys (never a key, token, password or path). On the new computer, choose that file to see what's still missing, as commands to run yourself. Your projects, journal and tools move with Settings, Your dx on another computer."),
+    h("p", { class: "dim" }, "What this computer has for development, as a file. Choose one from another computer to see what's missing. No keys, tokens or paths."),
     h("div", { class: "toolbar" }, btn("Export this computer", (ev) => exportIt(ev.currentTarget), { iconName: "save" }), btn("What does this computer still need? Choose a file…", () => input.click(), { kind: "ghost" })),
     input,
     result,
@@ -4470,20 +4640,20 @@ function machinePage(root) {
   const servicesHolder = h("div", { class: "card" }, loadingView("Looking for database services…"));
   const th = (text, cls) => h("th", { scope: "col", class: cls }, text);
   const hiddenTh = (text) => h("th", { scope: "col" }, h("span", { class: "visually-hidden" }, text));
+  const foldBadges = new Map();
 
   append(
     root,
     pageHead(
       "Machine",
-      "The tools on this computer, what your projects need from them, and what's running in the background.",
-      btn("Check again", (ev) => busy(ev.currentTarget, "Checking…", () => loadAll(true)), { iconName: "refresh", kind: "ghost" }),
+      "Tools, project needs and background processes.",
     ),
     stats,
-    section("machine-tools", "Tools", "Each tool's version, the newest one, and whether yours still gets security fixes. Updates open in a terminal, so you see what runs.", toolsHolder),
+    section("machine-tools", "Tools", "", toolsHolder),
     section(
       "machine-projects",
       "Your projects",
-      "What each project asks for (.nvmrc, engines, packageManager, lock files, go.mod…) next to what's installed.",
+      "",
       needsHolder,
       segmented("Show", [["problems", "Needs attention"], ["all", "All projects"]], projectsShow, (v) => {
         projectsShow = v;
@@ -4491,16 +4661,11 @@ function machinePage(root) {
         if (needs) drawNeeds();
       }),
     ),
-    section(
-      "machine-processes",
-      "Running in the background",
-      "Dev servers, watchers and tools that were started on this computer, with the memory and CPU they use now.",
-      processHolder,
-      btn("Refresh", (ev) => busy(ev.currentTarget, "Refreshing…", loadProcesses), { iconName: "refresh", kind: "ghost", small: true }),
-    ),
-    section("machine-docker", "Docker", "Containers, and the space Docker keeps on disk.", dockerHolder),
-    section("machine-move", "Move to a new computer", "Carry your development setup across, and see what the other computer is missing.", machineMoveCard()),
-    section("machine-services", "Services", "Databases and Docker installed as services can start with the computer and use memory when no project needs them.", servicesHolder),
+    // The rest is folded: open one when you want it (a problem opens its own).
+    fold("machine-processes", "Running in the background", processHolder),
+    fold("machine-docker", "Docker", dockerHolder),
+    fold("machine-services", "Database services", servicesHolder),
+    fold("machine-move", "Move to a new computer", machineMoveCard()),
   );
 
   function section(id, title, sub, body, ...actions) {
@@ -4511,6 +4676,24 @@ function machinePage(root) {
       body,
     );
   }
+
+  /** A closed section with a one-line summary beside its title; it remembers whether you opened it. */
+  function fold(id, title, body) {
+    const badge = h("span", { class: "dim fold-note" });
+    foldBadges.set(id, badge);
+    return h(
+      "details",
+      { class: "fold", open: pref(`machineFold:${id}`, "") === "1" || undefined, ontoggle: (e) => setPref(`machineFold:${id}`, e.currentTarget.open ? "1" : "") },
+      h("summary", null, h("strong", { id }, title), badge),
+      body,
+    );
+  }
+  const foldNote = (id, text, warn = false) => {
+    const el = foldBadges.get(id);
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle("fold-warn", warn);
+  };
 
   function stat(value, label, sub) {
     return h("div", { class: "card stat" }, h("div", { class: "stat-value" }, value), h("div", { class: "stat-label" }, label), sub ? h("div", { class: "stat-label" }, sub) : null);
@@ -4567,11 +4750,23 @@ function machinePage(root) {
 
   // ---- tools
 
+  const sigs = {};
+  /** True when `value` is what the page already shows: nothing to redraw (and no open section to lose). */
+  const unchanged = (key, value) => {
+    const sig = JSON.stringify(value);
+    if (sigs[key] === sig) return true;
+    sigs[key] = sig;
+    return false;
+  };
+
   async function loadTools(refresh) {
     try {
-      tools = await api(`/api/machine/tools${refresh ? "?refresh=1" : ""}`);
+      const fresh = await api(`/api/machine/tools${refresh ? "?refresh=1" : ""}`);
+      if (unchanged("tools", fresh)) return;
+      tools = fresh;
       drawTools();
     } catch (err) {
+      delete sigs.tools;
       toolsHolder.replaceChildren(errorView(err, () => loadTools(true)));
     }
     drawStats();
@@ -4580,7 +4775,7 @@ function machinePage(root) {
   function drawTools() {
     const installed = tools.filter((t) => t.installed).sort((a, b) => TOOL_ORDER[a.status] - TOOL_ORDER[b.status]);
     const missing = tools.filter((t) => !t.installed);
-    toolsHolder.replaceChildren(
+    const table = (list) =>
       h(
         "div",
         { class: "table-wrap" },
@@ -4588,10 +4783,18 @@ function machinePage(root) {
           "table",
           { class: "table" },
           h("thead", null, h("tr", null, th("Tool"), th("Version"), th("Status"), hiddenTh("Actions"))),
-          h("tbody", null, installed.map(toolRow)),
+          h("tbody", null, list.map(toolRow)),
         ),
-      ),
-      missing.length ? h("p", { class: "dim machine-foot" }, `Not installed: ${missing.map((t) => t.name).join(", ")}. A project that needs one says so under Your projects.`) : null,
+      );
+    // Tools that need something first; the up-to-date ones sit behind one line.
+    const todo = installed.filter((t) => t.status !== "ok");
+    const fine = installed.filter((t) => t.status === "ok");
+    toolsHolder.replaceChildren(
+      todo.length ? table(todo) : stateView(`All ${installed.length} tools are up to date`, ""),
+      fine.length && todo.length
+        ? h("details", { class: "tour-fold" }, h("summary", null, h("strong", null, `${fine.length} up to date`)), table(fine))
+        : null,
+      missing.length ? h("p", { class: "dim machine-foot", title: "A project that needs one says so under Your projects." }, `Not installed: ${missing.map((t) => t.name).join(", ")}.`) : null,
     );
   }
 
@@ -4603,7 +4806,7 @@ function machinePage(root) {
     return h(
       "tr",
       null,
-      h("td", null, h("strong", null, t.name), t.path ? h("div", { class: "dim mono machine-path", title: t.path }, tildify(t.path)) : null),
+      h("td", null, h("strong", { title: t.path ? tildify(t.path) : undefined }, t.name)),
       h(
         "td",
         { class: "mono machine-version" },
@@ -4626,9 +4829,12 @@ function machinePage(root) {
 
   async function loadNeeds() {
     try {
-      needs = await api("/api/machine/projects");
+      const fresh = await api("/api/machine/projects");
+      if (unchanged("needs", fresh)) return;
+      needs = fresh;
       drawNeeds();
     } catch (err) {
+      delete sigs.needs;
       needsHolder.replaceChildren(errorView(err, loadNeeds));
     }
     drawStats();
@@ -4641,10 +4847,13 @@ function machinePage(root) {
     }
     const shown = needs.filter((p) => projectsShow === "all" || p.problems > 0);
     if (!shown.length) {
-      needsHolder.replaceChildren(stateView("Every project matches this computer", `${plural(needs.length, "project")} checked: each one finds the tools and versions it asks for. Pick All projects to see them.`));
+      needsHolder.replaceChildren(stateView("Every project matches this computer", ""));
       return;
     }
+    // Advice that isn't a command (install a version manager…) is the same for every project: said once, above.
+    const advice = [...new Set(shown.flatMap((p) => p.needs.filter((n) => !n.ok && n.fix && !n.runnable).map((n) => n.fix)))];
     needsHolder.replaceChildren(
+      advice.length ? h("div", { class: "card-pad dim" }, advice.map((a) => h("p", null, a))) : null,
       h(
         "div",
         { class: "table-wrap" },
@@ -4659,7 +4868,7 @@ function machinePage(root) {
               h(
                 "tr",
                 null,
-                h("td", null, h("strong", null, p.project), h("div", { class: "dim mono machine-path", title: p.dir }, tildify(p.dir))),
+                h("td", null, h("strong", { title: tildify(p.dir) }, p.project)),
                 h(
                   "td",
                   null,
@@ -4673,7 +4882,6 @@ function machinePage(root) {
                       "div",
                       { class: "machine-fix" },
                       h("span", null, n.problem === "missing" ? `${n.label} isn't installed` : `${n.label}, you have ${n.installed}`, h("span", { class: "dim" }, ` (${n.source})`)),
-                      n.fix && !n.runnable ? h("span", { class: "dim" }, n.fix) : null,
                       n.fix && n.runnable ? h("span", { class: "machine-code" }, n.fix) : null,
                       fixActions(n.fix, n.runnable, { tool: n.tool, dir: p.dir }, `${n.problem === "missing" ? "Install" : "Switch to"} ${n.label} for ${p.project}`),
                     ),
@@ -4685,22 +4893,30 @@ function machinePage(root) {
         ),
       ),
     );
+    foldRows(needsHolder);
   }
 
   // ---- processes
 
   async function loadProcesses() {
     try {
-      processes = await api("/api/machine/processes");
+      const fresh = await api("/api/machine/processes");
+      // Memory and CPU move all the time: only a process starting, stopping or being left behind redraws.
+      if (unchanged("processes", fresh.map((x) => [x.pid, x.leftBehind, x.label]))) return void (processes = fresh);
+      processes = fresh;
       drawProcesses();
     } catch (err) {
+      delete sigs.processes;
       processHolder.replaceChildren(h("div", { class: "card" }, errorView(err, loadProcesses)));
     }
     drawStats();
   }
 
   function drawProcesses() {
-    const groups = PROCESS_GROUPS.map(([kind, title]) => [kind, title, processes.filter((p) => p.kind === kind)]).filter(([, , list]) => list.length);
+    const mine = processes.filter((p) => p.kind !== "dx");
+    const stuck = mine.filter((p) => p.leftBehind).length;
+    foldNote("machine-processes", mine.length ? `${plural(mine.length, "process", "processes")}, ${formatBytes(mine.reduce((n, p) => n + p.memory, 0))}${stuck ? `, ${stuck} left behind` : ""}` : "none", stuck > 0);
+    const groups =PROCESS_GROUPS.map(([kind, title]) => [kind, title, processes.filter((p) => p.kind === kind)]).filter(([, , list]) => list.length);
     if (!groups.length) {
       processHolder.replaceChildren(h("div", { class: "card" }, stateView("Nothing running", "No dev servers, watchers or developer tools are running.")));
       return;
@@ -4825,21 +5041,25 @@ function machinePage(root) {
 
   async function loadDocker() {
     try {
-      docker = await api("/api/machine/docker");
+      const fresh = await api("/api/machine/docker");
+      if (unchanged("docker", { ...fresh, containers: fresh.containers?.map((c) => [c.id, c.state]) })) return void (docker = fresh);
+      docker = fresh;
       drawDocker();
     } catch (err) {
+      delete sigs.docker;
       dockerHolder.replaceChildren(h("div", { class: "card" }, errorView(err, loadDocker)));
     }
     drawStats();
   }
 
   function drawDocker() {
+    foldNote("machine-docker", !docker.installed ? "not installed" : !docker.running ? "not running" : `${plural(docker.containers.filter((c) => c.state === "running").length, "container")} running`);
     if (!docker.installed) {
       dockerHolder.replaceChildren(h("div", { class: "card" }, stateView("Docker isn't installed", "A project with a compose file says so under Your projects.")));
       return;
     }
     if (!docker.running) {
-      dockerHolder.replaceChildren(h("div", { class: "card" }, stateView("Docker isn't running", docker.error ?? "Start Docker Desktop, or the docker service, to see its containers and the space it uses.", btn("Check again", (ev) => busy(ev.currentTarget, "Checking…", loadDocker), { small: true, iconName: "refresh" }))));
+      dockerHolder.replaceChildren(h("div", { class: "card" }, stateView("Docker isn't running", docker.error ?? "Start Docker Desktop, or the docker service, to see its containers and the space it uses.")));
       return;
     }
     const running = docker.containers.filter((c) => c.state === "running");
@@ -4936,6 +5156,7 @@ function machinePage(root) {
   async function loadServices() {
     try {
       const list = await api("/api/machine/services");
+      foldNote("machine-services", list.length ? `${list.filter((s) => s.running).length} of ${list.length} running` : "none");
       if (!list.length) {
         servicesHolder.replaceChildren(stateView("No database services", "No Postgres, MySQL, Redis, MongoDB or similar is installed as a service on this computer."));
         return;
@@ -4972,7 +5193,7 @@ function machinePage(root) {
             ),
           ),
         ),
-        h("p", { class: "dim machine-foot" }, `Stopping a service or changing when it starts needs admin rights, so dx gives you the command to run yourself${note ? `, ${note}` : ""}.`),
+        h("p", { class: "dim machine-foot" }, `Stopping a service needs admin rights, so you run the command${note ? `, ${note}` : ""}.`),
       );
     } catch (err) {
       servicesHolder.replaceChildren(errorView(err, loadServices));
@@ -4983,6 +5204,9 @@ function machinePage(root) {
     return Promise.all([loadTools(refresh), loadNeeds(), loadProcesses(), loadDocker(), loadServices()]);
   }
   loadAll(false);
+  // Live: what changes quickly is read often, the rest rarely.
+  const stops = [livePoll(loadProcesses, 8000), livePoll(loadDocker, 20_000), livePoll(() => loadTools(false), 120_000), livePoll(loadNeeds, 60_000), livePoll(loadServices, 60_000)];
+  return () => stops.forEach((stop) => stop());
 }
 
 // ------------------------------------------------------------------ Journal
@@ -5015,7 +5239,7 @@ function journalPage(root) {
     root,
     pageHead(
       "Journal",
-      "One line per thing you did. It feeds your weekly summary.",
+      "What you did, one line each.",
       segmented("Show", [[7, "7 days"], [30, "30 days"], [90, "90 days"]], days, (v) => ((days = v), setPref("journalDays", v), load())),
     ),
     form,
@@ -5059,7 +5283,7 @@ function envPage(root) {
   const alertsCard = h("div", { class: "card card-pad env-alerts" });
   append(
     root,
-    pageHead("Env & secrets", "Its .env files, and whether git could leak them. Keys, certificates and .env files never belong in git (OWASP).", btn("Check again", () => load(), { iconName: "refresh", kind: "ghost" })),
+    pageHead("Env & secrets", "Your .env files, and what git could leak."),
     alertsCard,
     summary,
     holder,
@@ -5093,7 +5317,7 @@ function envPage(root) {
       h(
         "div",
         { class: "env-alerts-options" },
-        h("label", { class: "check", for: "env-alerts-on" }, on, "Warn me when a .env file changes, is staged or is committed, when this project's tools say something, and when an agent working here is waiting for me"),
+        h("label", { class: "check", for: "env-alerts-on" }, on, "Alert me about .env changes, my tools' watches and waiting agents"),
         h("label", { class: "check", for: "env-alerts-os" }, os, "Also as a notification from the system, outside dx"),
       ),
       s.everywhere ? null : h("p", { class: "dim" }, "Alerts are off for every project in ", h("a", { href: "#/health" }, "Settings"), "."),
@@ -5383,6 +5607,8 @@ function envPage(root) {
   }
 
   load();
+  // Current without a button: looked at again while no file's values are on screen.
+  return livePoll(() => (deep.size ? undefined : load()), 20_000);
 }
 
 // ------------------------------------------------------------------ Git
@@ -5472,6 +5698,8 @@ function slideFromPlaces(container, places) {
     const other = { changes: "staged", staged: "changes" }[col];
     const was = places.get(el.dataset.key) ?? (other ? places.get(`${other}:${rest.join(":")}`) : undefined);
     const now = el.getBoundingClientRect();
+    // A card in a folded group has no place on screen: nothing to slide from or to.
+    if (now.width === 0 || (was && was.width === 0)) continue;
     if (!was) {
       el.animate([{ opacity: 0, transform: "scale(0.96)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "ease-out" });
       continue;
@@ -5670,7 +5898,7 @@ function gitPage(root) {
       h(
         "div",
         { class: "card card-pad section" },
-        h("p", { class: "dim" }, "The \"how was this tested\" part of a pull request, from what dx saw on this branch: the last test run, the pages you opened and their errors, what the visual diff, speed and accessibility checks found, and any Gremlins, Chaos, security or upgrade runs."),
+        h("p", { class: "dim" }, "From what dx saw on this branch."),
         h("div", { class: "toolbar" }, btn("Write the proof", (ev) => showProof(ev.currentTarget), { kind: "primary", iconName: "check" })),
       ),
     );
@@ -5722,7 +5950,7 @@ function gitPage(root) {
     const n = button.dataset.number;
     const yes = await confirmDialog({
       title: `Add the proof to pull request #${n}?`,
-      text: ["dx puts its section into the pull request's description on GitHub, through the GitHub CLI you're signed in to. An earlier dx section is replaced; the rest of the description stays as it is.", "Everyone who can see the pull request will see it."],
+      text: ["Replaces dx's earlier section; the rest stays.", "Everyone who can see the pull request will see it."],
       confirm: "Add it",
       danger: false,
     });
@@ -5782,7 +6010,7 @@ function gitPage(root) {
     small: true,
     kind: "ghost",
     iconName: "journal",
-    title: "Claude Code (claude -p) writes a message from the staged changes, in this repository's style, for you to edit. This sends the staged diff to your Claude account, and only when you click.",
+    title: "Sends the staged diff to your Claude account, only when you click.",
   });
   writeButton.hidden = true;
   api("/api/git/ai").then((r) => (writeButton.hidden = !r.claude), () => {});
@@ -5859,8 +6087,7 @@ function gitPage(root) {
     root,
     pageHead(
       "Code",
-      "Save your changes, share them, release them, or go back. Every step can be undone.",
-      btn("Refresh", () => load({ keep: true }), { iconName: "refresh", kind: "ghost" }),
+      "Save, share, release, go back.",
     ),
     headInfo,
     opBanner,
@@ -6051,6 +6278,37 @@ function gitPage(root) {
     }
   }
 
+  const GROUP_AFTER = 30;
+  // Folders a person opened stay open while the page is, through every redraw.
+  const openGroups = new Set();
+
+  /** The cards of a long list, in a <details> per top folder (project root files first). A folder with a conflict, or the open file, is open. */
+  function groupedCards(files, kind) {
+    const groups = new Map();
+    for (const f of files) {
+      const slash = f.path.indexOf("/");
+      const key = slash > 0 ? f.path.slice(0, slash) : "";
+      (groups.get(key) ?? groups.set(key, []).get(key)).push(f);
+    }
+    return [...groups]
+      .sort(([a], [b]) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)))
+      .map(([folder, list]) => {
+        const label = folder ? `${folder}/` : "Project root";
+        const mustShow = list.some((f) => f.conflicted || openFile?.path === f.path);
+        const stageAll = btn("Stage", (e) => (e.preventDefault(), e.stopPropagation(), move(kind, list.map((f) => f.path))), { small: true, kind: "ghost", iconName: "right", title: `Stage the ${plural(list.length, "file")} in ${label}`, name: `Stage the ${plural(list.length, "file")} in ${label}` });
+        return h(
+          "li",
+          { class: "git-group-item" },
+          h(
+            "details",
+            { class: "git-group", open: openGroups.has(folder) || mustShow || undefined, ontoggle: (e) => (e.currentTarget.open ? openGroups.add(folder) : openGroups.delete(folder)) },
+            h("summary", { class: "git-group-head" }, h("span", { class: "git-group-name mono" }, label), h("span", { class: "badge" }, String(list.length)), stageAll),
+            h("ul", { class: "git-cards" }, list.map((f) => card(f, kind))),
+          ),
+        );
+      });
+  }
+
   function renderBoard({ animate = true } = {}) {
     const places = animate ? rememberPlaces(board) : new Map();
     for (const kind of ["changes", "staged"]) {
@@ -6058,7 +6316,8 @@ function gitPage(root) {
       const c = columns[kind];
       c.count.textContent = String(files.length);
       c.all.disabled = files.length === 0;
-      c.list.replaceChildren(...files.map((f) => card(f, kind)));
+      // A long list of changes is folded by top folder, so it can be read (and a folder staged at once).
+      c.list.replaceChildren(...(kind === "changes" && files.length > GROUP_AFTER ? groupedCards(files, kind) : files.map((f) => card(f, kind))));
       c.empty.hidden = files.length > 0;
       c.empty.textContent =
         kind === "changes"
@@ -6199,7 +6458,7 @@ function gitPage(root) {
       title: `Force push ${status.branch}?`,
       text: [
         `The remote's ${status.upstream} is replaced with your ${status.branch}: commits only the remote has are dropped there.`,
-        "It's done with --force-with-lease, so if someone pushed since you last fetched, nothing is overwritten and you're told instead. It can't be undone from here.",
+        "Uses --force-with-lease, so nothing is overwritten if someone pushed. Can't be undone from here.",
       ],
       confirm: "Force push",
     });
@@ -6338,7 +6597,7 @@ function gitPage(root) {
   async function goBackTo(hash, subject) {
     const yes = await confirmDialog({
       title: `Move ${status?.branch ?? "HEAD"} back to ${hash.slice(0, 7)}?`,
-      text: [subject ? `"${subject}" becomes the latest commit on the branch.` : "", "Uncommitted changes are kept. The commits after it stay in the reflog, and Undo moves the branch forward again."],
+      text: [subject ? `"${subject}" becomes the latest commit on the branch.` : "", "Uncommitted changes are kept. Undo moves the branch forward again."],
       confirm: "Go back here",
       danger: false,
     });
@@ -6596,7 +6855,7 @@ function gitPage(root) {
     if (r.visual) void loadVisual();
     say(`${amend ? "Amended" : "Committed"} ${r.short}: ${r.subject}`);
     // A commit stays on this computer: pushing is a separate step, at the top or by dragging the branch.
-    toast(`${amend ? "Amended" : "Committed"} ${r.short}: ${r.subject}.${refs?.remotes.length ? " It's only on this computer until you push." : ""}`);
+    toast(`${amend ? "Amended" : "Committed"} ${r.short}: ${r.subject}.${refs?.remotes.length ? " It's only on this computer until you push." : ""}`, "ok", refs?.remotes.length ? { action: { label: "Push", run: () => act("push") } } : {});
     await flyToHistory(flying);
     closeFile();
     await refreshAll();
@@ -7032,7 +7291,7 @@ function gitPage(root) {
             btn("Cancel", () => ((rebase = null), renderRebase()), { small: true, kind: "ghost", iconName: "x" }),
           ),
         ),
-        h("p", { class: "dim" }, "Oldest first, the order git replays them in. Drag a commit (or use the arrows) to move it; pick what happens to each. Undo puts everything back."),
+        h("p", { class: "dim" }, "Oldest first. Drag or use the arrows; Undo puts everything back."),
         invalid ? h("p", { class: "git-preview-warn" }, icon("warn"), kept ? " The first commit kept can't be squashed: there's nothing above it." : " That drops every commit: use Go back here instead.") : null,
         list,
       ),
@@ -7303,7 +7562,7 @@ function gitPage(root) {
         : !visual.target
           ? "Start the dev server from dx to capture how the app looks."
           : !visual.on
-            ? "Captures after each commit are off in Health & settings."
+            ? "Captures after each commit are off in Settings."
             : visual.last
               ? `Last capture: ${visual.last.message}`
               : "Each commit is captured: the pages you use most, compared with the commit before.";
@@ -7314,7 +7573,7 @@ function gitPage(root) {
         small: true,
         kind: "ghost",
         disabled: visual.capturing || !visual.target || !visual.browser,
-        title: "Screenshot the pages you use most, as the dev server shows them now, and compare them with the commit before's",
+        title: "Screenshots of your most-used pages, compared with the previous commit's.",
       }),
     );
   }
@@ -7685,11 +7944,14 @@ function gitPage(root) {
     try {
       const fresh = await api(`/api/git/status?dir=${encodeURIComponent(dir)}`);
       if (forDir !== dir || stopped) return;
+      root.classList.remove("git-failed");
       if (JSON.stringify(fresh) === statusSig) return;
       setStatus(fresh);
       if (openFile && quiet) refreshOpenFile();
     } catch (err) {
       if (quiet) return;
+      // Until it has loaded once, the board would say "Changes 0" next to the error, which reads as a real empty list.
+      if (!status) root.classList.add("git-failed");
       headInfo.replaceChildren(errorView(err, () => load()));
     }
   }
@@ -7772,7 +8034,7 @@ function gitPage(root) {
     const mine = projects.find((p) => sameDir(p.dir, dir));
     if (!mine) {
       board.hidden = true;
-      headInfo.replaceChildren(stateView(`${projectName() || "This project"} doesn't use git`, "Its folder has no git repository, so there's nothing to commit, share or release. Run git init in it, or pick another project at the top.", h("a", { class: "btn", href: "#/overview" }, "Go to its overview")));
+      headInfo.replaceChildren(stateView(`${projectName() || "This project"} doesn't use git`, "No git repository here. Run git init, or pick another project.", h("a", { class: "btn", href: "#/overview" }, "Go to its overview")));
       gitTabs.hidden = true;
       for (const el of Object.values(panels)) el.hidden = true;
       return;
@@ -7899,7 +8161,7 @@ function activityPage(root) {
       if (f) void openBundleFile(f);
     },
   });
-  const openBundle = btn("Open a bug bundle", () => bundleInput.click(), { iconName: "folder", title: "Open a .dxbug.json file a teammate sent and replay it on your own dev server. You can also drop the file on this page." });
+  const openBundle = btn("Open a bug bundle", () => bundleInput.click(), { iconName: "folder", title: "Replay a .dxbug.json file on your dev server, or drop it here." });
   const hasFiles = (ev) => [...(ev.dataTransfer?.types ?? [])].includes("Files");
   const onDragOver = (ev) => {
     if (!hasFiles(ev)) return;
@@ -7989,7 +8251,7 @@ function activityPage(root) {
   append(
     siteForm,
     h("h2", { class: "site-form-title" }, "Record a site"),
-    h("p", { class: "dim" }, "The dx browser records this site like your local apps: requests and responses, routes, clicks, console and errors, with passwords and tokens masked. Nothing else you browse there is recorded."),
+    h("p", { class: "dim" }, "Recorded like your local apps, secrets masked. Nothing else you browse is recorded."),
     h(
       "div",
       { class: "form-grid" },
@@ -8033,7 +8295,7 @@ function activityPage(root) {
     root,
     pageHead(
       "Activity",
-      "What happened in your apps, here and deployed: each visit's steps, every API with its payloads and responses, errors and console output.",
+      "What your apps did.",
       openBrowser,
       recordSite,
       openBundle,
@@ -8141,7 +8403,7 @@ function activityPage(root) {
     } else if (!b.found) {
       browserLine.replaceChildren(h("p", { class: "dim" }, "The dx browser needs Chrome, Edge, Chromium or Brave. dx doctor says how to install one."));
     } else browserLine.replaceChildren();
-    if (b.recording === false) browserLine.append(h("p", { class: "dim" }, "The history is off, so nothing is recorded. Turn it on in Health & settings."));
+    if (b.recording === false) browserLine.append(h("p", { class: "dim" }, "The history is off, so nothing is recorded. Turn it on in Settings."));
   }
 
   /** The list on the left: everything, each project (with the sites linked to it), and sites of their own. */
@@ -8388,8 +8650,25 @@ function activityPage(root) {
           "Nothing from your AI agent here",
           siteKey
             ? "AI agents work on your local apps through dx; recorded sites show what you did in the dx browser."
-            : "When an agent runs, checks or replays your app through dx's MCP tools, its page checks show here, with its other calls in between. The AI lane at the right edge follows it live.",
+            : "Nothing from your AI agent yet. The AI lane follows it live.",
           btn("Show everyone's", () => ((who = ""), setPref("activityWho", ""), route()), { small: true }),
+        ),
+      );
+      return;
+    }
+    if (!shown.length && who !== "ai" && overviewData.on === false) {
+      // Nothing is empty because nothing happened: the history is off. Say so, with the switch right here.
+      holder.replaceChildren(
+        stateView(
+          "The history is off",
+          "",
+          btn("Turn on the history", async (ev) => {
+            const button = ev.currentTarget;
+            const r = await busy(button, "Turning on…", () => api("/api/config", { method: "POST", body: { activity: true } }));
+            if (!r) return;
+            toast("History is on. Open your app and use it.");
+            route();
+          }, { kind: "primary", iconName: "check" }),
         ),
       );
       return;
@@ -8403,7 +8682,7 @@ function activityPage(root) {
             ? "Try other words, or a longer time."
             : siteKey
               ? `Open ${siteKey} in the dx browser and use it: its requests, routes, clicks, console output and errors show up here.`
-              : "Start an app from the Projects page and open it in your browser, or open a deployed site in the dx browser. Its requests, routes, clicks, console output and errors show up here as they happen.",
+              : "Open an app at its .localhost address and it shows up here.",
           search
             ? null
             : siteKey && site && siteUrl(site.host)
@@ -8714,7 +8993,7 @@ function activityPage(root) {
       const g = groups.get(key) ?? groups.set(key, { key, kind, project: e.project, all: [] }).get(key);
       g.all.push(e);
     }
-    if (!groups.size) return holder.replaceChildren(stateView("No errors", "Uncaught exceptions, console errors, failed requests and server errors show up here, grouped, with each time they happened."));
+    if (!groups.size) return holder.replaceChildren(stateView("No errors", "Errors appear here, grouped."));
     const list = [...groups.values()].sort((a, b) => Date.parse(b.all[b.all.length - 1].at) - Date.parse(a.all[a.all.length - 1].at));
     holder.replaceChildren(
       h(
@@ -8893,7 +9172,7 @@ function activityPage(root) {
         btn("Download bug bundle", (ev) => downloadBundle(ev.currentTarget, lastProblem), {
           small: true,
           iconName: "save",
-          title: "Save this visit's steps, requests and error as a .dxbug.json file a teammate can replay on their own dev server",
+          title: "Save this visit as a .dxbug.json a teammate can replay.",
           name: `Download a bug bundle for this visit to ${path || g.project}`,
         }),
       );
@@ -9060,7 +9339,7 @@ function activityPage(root) {
       s.use,
       (v) => (s.use = v),
     );
-    const go = btn("Replay", (ev) => void replayBundle(ev.currentTarget), { kind: "primary", iconName: "play", disabled: !s.dir || running, title: "Run it (the commit as a snapshot, or your working copy), then do the steps in a headless browser on that dev server" });
+    const go = btn("Replay", (ev) => void replayBundle(ev.currentTarget), { kind: "primary", iconName: "play", disabled: !s.dir || running, title: "Replay the steps in a headless browser on that dev server." });
 
     bundleHolder.replaceChildren(
       h(
@@ -9115,7 +9394,7 @@ function activityPage(root) {
 
   function bundleResult(s) {
     const job = s.job;
-    if (!job) return h("p", { class: "dim" }, "Its steps run in a headless browser against your own dev server for the project: the bundle's own address is never used.");
+    if (!job) return h("p", { class: "dim" }, "");
     if (job.phase === "failed") return h("div", { class: "note note-danger", role: "alert" }, icon("warn"), h("p", null, job.error ?? "The replay failed."));
     if (job.phase !== "done") return h("div", { class: "note", role: "status" }, h("span", { class: "spinner", "aria-hidden": "true" }), h("p", null, `${job.step}…`));
     const v = job.verdict;
@@ -9202,7 +9481,7 @@ function activityPage(root) {
         h(
           "p",
           { class: "dim" },
-          "While it's on, this project's API calls are answered by dx from what was recorded, so the front end runs without its back end. Pages and assets still come from the dev server. Values that were masked when recorded (•••) come back masked.",
+          "Answers this project's API calls from what was recorded. Pages still come from the dev server.",
         ),
         h(
           "div",
@@ -9218,7 +9497,7 @@ function activityPage(root) {
         ),
         n
           ? h("ul", { class: "mock-list" }, mocks.endpoints.map(mockRow))
-          : h("p", { class: "dim" }, "No mocks yet. Use the app at its .localhost address, then make mocks from the last hour, or from one visit with its Make mocks button."),
+          : h("p", { class: "dim" }, "No mocks yet."),
       ),
     );
     mockHolder.replaceChildren(panel);
@@ -9452,7 +9731,7 @@ function activityPage(root) {
             btn("Make a rule", () => openLab(e.dir, "rules", { method: e.method ?? "GET", path: (e.url ?? "/").split("?")[0] }), {
               small: true,
               iconName: "new",
-              title: "A rule for this endpoint on the Requests page: change its request or answer, slow it down, make it fail, or hold it",
+              title: "A rule for this endpoint.",
             }),
           ),
         );
@@ -9542,26 +9821,49 @@ function summaryPage(root) {
     { class: "input", "aria-label": "Year", hidden: days !== "year", onchange: (e) => ((storyYear = Number(e.target.value)), setPref("storyYear", storyYear), load()) },
     Array.from({ length: 10 }, (_, i) => thisYear - i).map((y) => h("option", { value: String(y), selected: y === storyYear }, String(y))),
   );
-  const save = btn("Save to file", async (e) => {
+  // Save to file and the two switches live in one More menu: Copy is the page's action.
+  const save = h("button", { type: "button", role: "menuitem", disabled: true }, icon("save"), "Save to file");
+  save.addEventListener("click", async () => {
+    more.removeAttribute("open");
     if (days === "year") {
-      const r = await busy(e.currentTarget, "Saving…", () => api("/api/summary/story/save", { method: "POST", body: { year: storyYear, github, allAuthors: everyone } }));
+      const r = await busy(save, "Saving…", () => api("/api/summary/story/save", { method: "POST", body: { year: storyYear, github, allAuthors: everyone } }));
       if (r) toast(`Saved as ${r.year}-in-review.md in ~/.dx/summaries`);
       return;
     }
-    const r = await busy(e.currentTarget, "Saving…", () => api("/api/summary/save", { method: "POST", body: { days, github, allAuthors: everyone } }));
+    const r = await busy(save, "Saving…", () => api("/api/summary/save", { method: "POST", body: { days, github, allAuthors: everyone } }));
     if (r) toast(`Saved to ${tildify(r.file)}`);
-  }, { iconName: "save", disabled: true });
+  });
+  const switchItem = (label, on, set) => {
+    const item = h("button", { type: "button", role: "menuitemcheckbox", "aria-checked": String(on) }, icon("check"), label);
+    item.addEventListener("click", () => {
+      on = !on;
+      item.setAttribute("aria-checked", String(on));
+      set(on);
+      load();
+    });
+    return item;
+  };
+  const more = h(
+    "details",
+    { class: "menu summary-more" },
+    h("summary", { class: "btn btn-sm btn-ghost", "aria-label": "More" }, icon("more"), "More"),
+    h(
+      "div",
+      { class: "menu-list", role: "menu" },
+      save,
+      switchItem("GitHub pull requests", github, (v) => ((github = v), setPref("summaryGithub", v ? "1" : "0"))),
+      switchItem("Everyone's commits", everyone, (v) => (everyone = v)),
+    ),
+  );
 
   append(
     root,
-    pageHead("Summary", "Your commits, pull requests and journal, ready to send.", copy, save),
+    pageHead("Summary", "Ready to send.", copy, more),
     h(
       "div",
       { class: "toolbar" },
       segmented("Period", [[1, "Today"], [7, "7 days"], [30, "30 days"], ["year", "Your year"]], days, (v) => ((days = v), setPref("summaryDays", v), (yearSelect.hidden = v !== "year"), load())),
       yearSelect,
-      h("label", { class: "check" }, h("input", { type: "checkbox", checked: github, onchange: (e) => ((github = e.target.checked), setPref("summaryGithub", github ? "1" : "0"), load()) }), "GitHub pull requests"),
-      h("label", { class: "check" }, h("input", { type: "checkbox", onchange: (e) => ((everyone = e.target.checked), load()) }), "Everyone's commits"),
     ),
     holder,
   );
@@ -9674,16 +9976,17 @@ function summaryPage(root) {
       out.push(
         section(
           "Not committed yet",
-          h("div", { class: "note note-warn" }, icon("warn"), h("div", null, h("p", null, "These projects have changes you haven't committed. It's a reminder for you, and it's in the copied text too: delete that part before sending if you like."), h("ul", { class: "bullets" }, s.uncommitted.map((u) => h("li", null, h("strong", null, u.project), `: ${plural(u.files, "changed file")}`))))),
+          h("div", { class: "note note-warn" }, icon("warn"), h("div", null, h("p", null, "Uncommitted changes. Delete this part before sending if you like."), h("ul", { class: "bullets" }, s.uncommitted.map((u) => h("li", null, h("strong", null, u.project), `: ${plural(u.files, "changed file")}`))))),
         ),
       );
     }
     const notes = [];
     if (s.skipped.length) notes.push(`Couldn't read ${s.skipped.map((x) => `${x.project} (${x.reason})`).join(", ")}.`);
     if (s.github && "error" in s.github) notes.push(`No pull requests: ${s.github.error}.`);
-    else if (gh && !gh.authenticated) notes.push("Pull requests come from public repos only. To include private ones, sign in once with the GitHub CLI (gh auth login); dx uses that login from then on. A GITHUB_TOKEN set before dx ui starts works too.");
+    else if (gh && !gh.authenticated) notes.push("Pull requests: public repos only. Sign in with gh auth login for private ones.");
     if (notes.length) out.push(h("div", { class: "note" }, icon("info"), h("div", null, notes.map((n) => h("p", null, n)))));
     out.push(h("p", { class: "dim" }, `Commits by ${s.author}.`));
+    for (const el of out) if (el instanceof Element) foldRows(el);
     return out;
   }
 
@@ -9930,11 +10233,10 @@ function cleanupPage(root) {
     root,
     pageHead(
       "Cleanup",
-      "Free disk space: node_modules and build folders in projects you haven't touched lately.",
+      "Free disk space from idle projects.",
       h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Idle for"), h("select", { onchange: (e) => ((days = Number(e.target.value)), setPref("cleanupDays", days), load()) }, [30, 60, 90, 180, 365].map((d) => h("option", { value: d, selected: d === days }, `Idle for ${d}+ days`)))),
-      btn("Scan again", () => load(), { iconName: "refresh" }),
     ),
-    h("div", { class: "note" }, icon("info"), h("p", null, "Only folders an install or a build recreates are listed. In a git repo, only folders git ignores, so a committed build folder is never touched. Run npm install in a project to get its node_modules back.")),
+    h("div", { class: "note" }, icon("info"), h("p", null, "Only folders a build recreates, and only git-ignored ones in a repo.")),
     holder,
   );
 
@@ -9952,7 +10254,7 @@ function cleanupPage(root) {
 
   function render() {
     if (!scan.items.length) {
-      holder.replaceChildren(h("div", { class: "card" }, stateView("Nothing to clean", scan.projectsScanned ? `${plural(scan.projectsScanned, "project")} idle for ${days}+ days, and none has build folders left.` : `No project has been idle for ${days}+ days.`)));
+      holder.replaceChildren(h("div", { class: "card" }, stateView("Nothing to clean", "")));
       return;
     }
     const chosen = scan.items.filter((i) => selected.has(i.dir));
@@ -10034,19 +10336,21 @@ function depsPage(root) {
   const upgradePanels = new Map();
   const upgradeTimers = new Map();
   let leaving = false;
+  let autoRan = false;
   let timer;
-  const runButton = btn("Run audit", () => run(), { kind: "primary", iconName: "deps" });
   const holder = h("div", { class: "section" });
   append(
     root,
     pageHead(
       "Dependencies",
-      "Outdated packages and known vulnerabilities in every Node project. Nothing is changed.",
-      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Which projects"), h("select", { onchange: (e) => ((active = e.target.value), setPref("depsActive", active)) }, [["", "All projects"], ["30", "Active in the last 30 days"], ["90", "Active in the last 90 days"]].map(([v, t]) => h("option", { value: v, selected: v === active }, t)))),
-      runButton,
+      "Outdated and vulnerable packages.",
+      h("label", { class: "field" }, h("span", { class: "visually-hidden" }, "Which projects"), h("select", { onchange: (e) => ((active = e.target.value), setPref("depsActive", active), run()) }, [["", "All projects"], ["30", "Active in the last 30 days"], ["90", "Active in the last 90 days"]].map(([v, t]) => h("option", { value: v, selected: v === active }, t)))),
     ),
     holder,
   );
+
+  // The audit starts by itself when there's none, or the last one is over six hours old.
+  const STALE_MS = 6 * 3600_000;
 
   async function run() {
     try {
@@ -10066,7 +10370,14 @@ function depsPage(root) {
       holder.replaceChildren(errorView(err, poll));
       return;
     }
-    runButton.disabled = job.running;
+    if (!job.running && !job.error && (!job.reports || Date.now() - Date.parse(job.finishedAt ?? 0) > STALE_MS) && !leaving) {
+      const first = !job.reports;
+      if (first || !autoRan) {
+        autoRan = true;
+        await run();
+        return;
+      }
+    }
     if (job.running) {
       const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
       holder.replaceChildren(
@@ -10085,10 +10396,7 @@ function depsPage(root) {
       holder.replaceChildren(errorView(new Error(job.error), run));
       return;
     }
-    if (!job.reports) {
-      holder.replaceChildren(h("div", { class: "card" }, stateView("No audit yet", "Run it to check every Node project. It takes about 5 seconds per project.", btn("Run audit", () => run(), { kind: "primary", iconName: "deps" }))));
-      return;
-    }
+    if (!job.reports) return;
     render(job);
   }
 
@@ -10200,7 +10508,7 @@ function depsPage(root) {
       title: `Try ${name} ${version}?`,
       text: [
         `dx copies ${r.project} as it is now (uncommitted changes included) under ~/.dx/snapshots, installs ${name}@${version} there, and runs the type check, build and tests before and after. Then it compares the copy's pages with your own running app: how they look, what they call, errors, speed and accessibility.`,
-        "Your own folder and node_modules aren't touched. It takes a few minutes, and the copy stays in Run any commit until you remove it.",
+        "Your own folder is untouched. Takes a few minutes.",
       ],
       confirm: "Try it",
       danger: false,
@@ -10612,7 +10920,7 @@ function toolsPage(root) {
     root,
     pageHead(
       "Tools",
-      "Your own helpers for this project: views of its data, watches on what it does, and operations to run. Made in a chat, then run by dx the same way every time, with no AI.",
+      "Small tools made for this project.",
       btn("New tool", () => openBuilder(), { kind: "primary", iconName: "new" }),
       btn("Import", () => fileInput.click(), { iconName: "folder", kind: "ghost", title: "Add tools from a .dxtools.json file" }),
       btn("Export", (ev) => exportAll(ev.currentTarget), { iconName: "save", kind: "ghost", title: "Save every tool of this project in one file, with their requests' headers and bodies as written" }),
@@ -10644,7 +10952,7 @@ function toolsPage(root) {
           { class: "card" },
           stateView(
             "No tools yet",
-            "Describe what you want and it's made for you: a table of an API's answers, a watch on failing requests, a few requests sent in order.",
+            "Describe what you want, and it's made.",
             h(
               "div",
               { class: "tool-examples" },
@@ -11079,7 +11387,7 @@ function agentTimeline(n) {
     { class: "agent-spark" },
     h("div", { class: "field-label" }, "Tool calls in the last hour"),
     agentSvg("svg", { viewBox: `0 0 ${w} 38`, width: w, height: 38, role: "img", "aria-label": `Tool calls per five minutes over the last hour, ${t.calls.join(", ")}` }, ...bars.flat().filter(Boolean)),
-    h("div", { class: "dim agent-spark-note" }, "Five-minute steps, oldest on the left; the accent part went through dx. Only what dx read of the session counts."),
+    h("div", { class: "dim agent-spark-note" }, "Five-minute steps; accent: through dx."),
   );
 }
 
@@ -11097,7 +11405,17 @@ function agentRuns(kids) {
 }
 
 function agentsPage(root) {
-  const statTile = (value, label) => h("div", { class: "card stat" }, h("div", { class: "stat-value" }, String(value)), h("div", { class: "stat-label" }, label));
+  // Working, waiting and stuck are buttons: they narrow the graph to those agents (and what they hang from).
+  let statusFilter = "";
+  const statTile = (value, label, key) =>
+    key
+      ? h(
+          "button",
+          { type: "button", class: "card stat stat-button", "aria-pressed": String(statusFilter === key), onclick: () => ((statusFilter = statusFilter === key ? "" : key), (sig = ""), draw()) },
+          h("div", { class: "stat-value" }, String(value)),
+          h("div", { class: "stat-label" }, label),
+        )
+      : h("div", { class: "card stat" }, h("div", { class: "stat-value" }, String(value)), h("div", { class: "stat-label" }, label));
   let data = null;
   let range = pref("agentsRange", "active");
   let only = pref("agentsProject", "");
@@ -11111,7 +11429,7 @@ function agentsPage(root) {
   const filters = h("div", { class: "toolbar" });
   append(
     root,
-    pageHead("Agents", "The AI agents on this computer and the subagents they started, live. dx reads only the names of tools, models, titles and times from Claude Code's session files, never your messages."),
+    pageHead("Agents", ["AI agents on this computer, live.", "dx reads only the names of tools, models, titles and times from Claude Code's session files, never your messages."]),
     filters,
     stats,
     graph,
@@ -11129,7 +11447,7 @@ function agentsPage(root) {
     draw();
   }
 
-  function visible() {
+  function baseVisible() {
     let list = data.agents;
     if (only) {
       // A whole session when any of it is in the project.
@@ -11137,6 +11455,19 @@ function agentsPage(root) {
       list = list.filter((a) => sessions.has(a.id.split(":")[1]));
     }
     return range === "active" ? activeAgents(list) : list;
+  }
+
+  /** What's drawn: the chosen time and project, narrowed to working, waiting or stuck agents when a tile is pressed. */
+  function visible() {
+    const list = baseVisible();
+    if (!statusFilter) return list;
+    const byId = new Map(list.map((a) => [a.id, a]));
+    const keep = new Set();
+    for (const a of list) {
+      if (statusFilter === "stuck" ? !a.stuck : a.status !== statusFilter) continue;
+      for (let n = a; n && !keep.has(n.id); n = n.parent ? byId.get(n.parent) : undefined) keep.add(n.id);
+    }
+    return list.filter((a) => keep.has(a.id));
   }
 
   function drawFilters() {
@@ -11147,19 +11478,21 @@ function agentsPage(root) {
 
   function draw() {
     drawFilters();
+    // The tiles count everything in the chosen time and project, so a pressed tile doesn't zero the others.
+    const base = baseVisible();
     const list = visible();
-    const count = (s) => list.filter((a) => a.status === s).length;
-    const sessions = list.filter((a) => a.kind === "session").length;
+    const count = (s) => base.filter((a) => a.status === s).length;
+    const sessions = base.filter((a) => a.kind === "session").length;
     fill(
       stats,
-      statTile(count("working"), "working"),
-      statTile(count("waiting"), "waiting for you"),
+      statTile(count("working"), "working", "working"),
+      statTile(count("waiting"), "waiting for you", "waiting"),
       statTile(sessions, sessions === 1 ? "session" : "sessions"),
-      statTile(list.length - sessions, list.length - sessions === 1 ? "subagent" : "subagents"),
-      statTile(list.filter((a) => a.stuck).length, "stuck"),
-      statTile(list.reduce((n, a) => n + a.dxCalls, 0), "calls through dx"),
+      statTile(base.length - sessions, base.length - sessions === 1 ? "subagent" : "subagents"),
+      statTile(base.filter((a) => a.stuck).length, "stuck", "stuck"),
+      statTile(base.reduce((n, a) => n + a.dxCalls, 0), "calls through dx"),
     );
-    const next = JSON.stringify(list.map((a) => [a.id, a.status, a.tool, a.calls, a.parent, a.label, a.stuck?.minutes])) + selected;
+    const next = JSON.stringify(list.map((a) => [a.id, a.status, a.tool, a.calls, a.parent, a.label, a.stuck?.minutes])) + selected + statusFilter;
     if (next !== sig) {
       sig = next;
       drawGraph(list);
@@ -11173,11 +11506,13 @@ function agentsPage(root) {
         graph,
         stateView(
           range === "active" ? "No agent is working right now" : "No agents in this time",
-          "Start Claude Code in a project and its session shows here, with every subagent it starts hanging under it. dx finds them by reading Claude Code's session files on this computer.",
+          "Start Claude Code in a project and it shows here.",
           range === "active" ? btn("Show the last 24 hours", () => ((range = "day"), setPref("agentsRange", "day"), sig = "", load()), { small: true }) : null,
         ),
       );
     }
+    // A redraw rebuilds the nodes: the one that had focus gets it back (pressing Enter on a node redraws).
+    const focused = document.activeElement?.closest?.(".agent-node")?.getAttribute("data-id");
     const L = layoutAgents(list);
     const byId = new Map(L.nodes.map((n) => [n.id, n]));
     const edges = L.nodes
@@ -11198,7 +11533,7 @@ function agentsPage(root) {
       const meta = [sub ? n.agentType : (n.project ?? n.app), shortModel(n.model), n.effort].filter(Boolean).join(" · ");
       const g = agentSvg(
         "g",
-        { class: `agent-node agent-${n.status}${n.stuck ? " agent-stuck" : ""}${sub ? " agent-sub" : ""}${n.id === selected ? " agent-selected" : ""}`, transform: `translate(${n.x} ${n.y})`, tabindex: "0", role: "button", "aria-label": `${sub ? "Subagent" : "Session"} ${n.label}, ${AGENT_STATUS[n.status].toLowerCase()}`, "aria-pressed": String(n.id === selected) },
+        { class: `agent-node agent-${n.status}${n.stuck ? " agent-stuck" : ""}${sub ? " agent-sub" : ""}${n.id === selected ? " agent-selected" : ""}`, "data-id": n.id, transform: `translate(${n.x} ${n.y})`, tabindex: "0", role: "button", "aria-label": `${sub ? "Subagent" : "Session"} ${n.label}, ${AGENT_STATUS[n.status].toLowerCase()}`, "aria-pressed": String(n.id === selected) },
         agentSvg("title", {}, `${n.label}\n${doing}${n.project ? `\n${n.project}` : ""}`),
         agentSvg("rect", { class: "agent-card", width: AGENT_NODE.w, height: AGENT_NODE.h, rx: 10 }),
         n.status === "working" ? agentSvg("circle", { class: "agent-pulse", cx: 18, cy: 20, r: 6 }) : null,
@@ -11213,6 +11548,7 @@ function agentsPage(root) {
       return g;
     });
     fill(graph, agentSvg("svg", { class: "agent-svg", viewBox: `0 0 ${L.width} ${L.height}`, width: L.width, height: L.height, role: "group", "aria-label": "Agent graph" }, ...edges, ...nodes));
+    if (focused) [...graph.querySelectorAll(".agent-node")].find((g) => g.getAttribute("data-id") === focused)?.focus({ preventScroll: true });
   }
 
   function drawDetail(list) {
@@ -11263,11 +11599,48 @@ function agentsPage(root) {
   };
 }
 
-// ------------------------------------------------------------------ Health & settings
+// ------------------------------------------------------------------ Settings
 
 function healthPage(root) {
   const holder = h("div", { class: "section" }, loadingView("Checking your setup…"));
-  append(root, pageHead("Health & settings", "Checks that dx works on this computer, its settings, and what it ran recently.", btn("Check again", () => load(), { iconName: "refresh" })), holder);
+  append(root, pageHead("Settings", ""), holder);
+
+  let checksBox = null;
+  let checksSig = "";
+  /** The checks block: what needs you first, the ones that passed folded away. */
+  function buildChecks(data) {
+    const symbol = { ok: "✓", warn: "!", fail: "✗" };
+    const checkRow = (c) =>
+      h(
+        "li",
+        null,
+        h("span", { class: `status-${c.status}`, "aria-label": c.status }, symbol[c.status]),
+        h("strong", null, c.name),
+        h(
+          "span",
+          { class: "dim", style: { overflowWrap: "anywhere" } },
+          c.detail,
+          c.fix ? h("span", { class: "check-fix" }, "Fix: ", h("span", { class: "mono" }, c.fix), " ", copyButton(c.fix, "Copy")) : null,
+        ),
+      );
+    // What needs you first; the checks that passed fold away (and stay folded).
+    const needs = data.checks.filter((c) => c.status !== "ok");
+    const passed = data.checks.filter((c) => c.status === "ok");
+    return h(
+      "div",
+      { class: "checks-block" },
+      h("p", { class: needs.length ? "checks-summary checks-summary-warn" : "checks-summary" }, icon(needs.length ? "warn" : "check"), needs.length ? `${plural(needs.length, "thing")} to look at` : "Everything dx relies on is in order"),
+      needs.length ? h("ul", { class: "checks card" }, needs.map(checkRow)) : null,
+      passed.length
+        ? h(
+            "details",
+            { class: "checks-passed", open: pref("checksPassedOpen", "") === "1" || undefined, ontoggle: (e) => setPref("checksPassedOpen", e.currentTarget.open ? "1" : "") },
+            h("summary", null, `${plural(passed.length, "check")} passed`),
+            h("ul", { class: "checks card" }, passed.map(checkRow)),
+          )
+        : null,
+    );
+  }
 
   async function load() {
     let data;
@@ -11277,20 +11650,8 @@ function healthPage(root) {
       holder.replaceChildren(errorView(err, load));
       return;
     }
-    const symbol = { ok: "✓", warn: "!", fail: "✗" };
-    const checks = h(
-      "ul",
-      { class: "checks card" },
-      data.checks.map((c) =>
-        h(
-          "li",
-          null,
-          h("span", { class: `status-${c.status}`, "aria-label": c.status }, symbol[c.status]),
-          h("strong", null, c.name),
-          h("span", { class: "dim", style: { overflowWrap: "anywhere" } }, c.detail, c.fix ? h("span", { class: "check-fix" }, "Fix: ", h("span", { class: "mono" }, c.fix)) : null),
-        ),
-      ),
-    );
+    checksBox = h("div", null, buildChecks(data));
+    checksSig = JSON.stringify(data.checks);
 
     const aiTools = h("div", null, loadingView("Looking for AI tools…"));
     void loadAiTools(aiTools);
@@ -11303,33 +11664,59 @@ function healthPage(root) {
     const activityOn = h("input", { type: "checkbox", id: "cfg-activity", checked: config.activity !== false });
     const localhostOn = h("input", { type: "checkbox", id: "cfg-localhost", checked: config.localhostRecording !== false });
     const visualOn = h("input", { type: "checkbox", id: "cfg-visual", checked: config.visualDiff !== false });
-    const envAlertsOn = h("input", { type: "checkbox", id: "cfg-env-alerts", checked: config.envAlerts !== false });
-    const agentAlertsOn = h("input", { type: "checkbox", id: "cfg-agent-alerts", checked: config.agentAlerts !== false });
+    const alertsOn = h("input", { type: "checkbox", id: "cfg-alerts", checked: config.envAlerts !== false || config.agentAlerts !== false });
     const activityDays = h("select", { id: "cfg-activity-days" }, [1, 3, 7, 14, 30, 90].map((d) => h("option", { value: d, selected: d === (config.activityDays ?? 7) }, plural(d, "day"))));
     const activityMax = h("select", { id: "cfg-activity-max" }, [100, 250, 500, 1000, 2000, 5000].map((mb) => h("option", { value: mb, selected: mb === (config.activityMaxMB ?? 500) }, mb >= 1000 ? `${mb / 1000} GB` : `${mb} MB`)));
     const activityUse = h("span", { class: "field-hint" });
     api("/api/activity/usage")
       .then((u) => activityUse.replaceChildren(u.bytes ? `Now ${formatBytes(u.bytes)}${u.projects.length > 1 ? ` across ${plural(u.projects.length, "project")}` : ""}. The oldest days go first when it's full.` : "Nothing recorded yet."))
       .catch(() => {});
-    const save = btn("Save settings", null, { kind: "primary", type: "submit" });
     const theme = h(
       "select",
       { id: "cfg-theme", onchange: () => (applyTheme(theme.value), setPref("theme", theme.value)) },
       [["auto", "Same as the system"], ["light", "Light"], ["dark", "Dark"]].map(([value, label]) => h("option", { value, selected: value === pref("theme", "auto") }, label)),
     );
 
+    const currentValues = () => ({ editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, envAlerts: alertsOn.checked, agentAlerts: alertsOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) });
+    let saved = currentValues();
+    let saveTimer = 0;
+    async function autosave() {
+      const body = currentValues();
+      if (JSON.stringify(body) === JSON.stringify(saved)) return;
+      const before = saved;
+      try {
+        await api("/api/config", { method: "POST", body });
+      } catch (err) {
+        return toast(err.message, "error");
+      }
+      saved = body;
+      toast("Saved", "ok", {
+        action: {
+          label: "Undo",
+          run: async () => {
+            try {
+              await api("/api/config", { method: "POST", body: before });
+              saved = before;
+              load();
+            } catch (err) {
+              toast(err.message, "error");
+            }
+          },
+        },
+      });
+    }
+
     const settings = h(
       "form",
       {
         class: "card card-pad section",
-        onsubmit: async (e) => {
-          e.preventDefault();
-          const body = { editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, envAlerts: envAlertsOn.checked, agentAlerts: agentAlertsOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) };
-          const r = await busy(save, "Saving…", () => api("/api/config", { method: "POST", body }));
-          if (r) toast("Settings saved");
+        // No Save button: a change is saved a moment after it's made, and the toast can take it back.
+        onsubmit: (e) => e.preventDefault(),
+        onchange: () => {
+          clearTimeout(saveTimer);
+          saveTimer = setTimeout(autosave, 400);
         },
       },
-      h("h2", { class: "section-title" }, "Settings"),
       h(
         "div",
         { class: "field" },
@@ -11346,38 +11733,40 @@ function healthPage(root) {
       h(
         "div",
         { class: "form-grid" },
-        h("label", { class: "field", for: "cfg-editor" }, h("span", { class: "field-label" }, "Editor command"), editor, h("span", { class: "field-hint" }, "code, cursor, or a full path in quotes")),
-        h("label", { class: "field", for: "cfg-github" }, h("span", { class: "field-label" }, "GitHub username"), github, h("span", { class: "field-hint" }, "For pull requests in the summary")),
-        h("label", { class: "field", for: "cfg-depth" }, h("span", { class: "field-label" }, "Look for projects"), depth),
-        terminalSelect({ withLabel: true }),
-        h("label", { class: "field", for: "cfg-theme" }, h("span", { class: "field-label" }, "Theme"), theme, h("span", { class: "field-hint" }, "Changes at once, for this computer")),
-        h(
-          "div",
-          { class: "field" },
-          h("span", { class: "field-label" }, "Activity history"),
-          h("label", { class: "check", for: "cfg-activity" }, activityOn, "Keep a history of requests, routes, clicks, console and errors"),
-          h("label", { class: "check", for: "cfg-localhost" }, localhostOn, "Record apps at localhost:<port> too (dx answers there and moves the dev server)"),
-          h("label", { class: "toolbar", for: "cfg-activity-days" }, h("span", { class: "field-hint" }, "Keep it for"), activityDays),
-          h("label", { class: "toolbar", for: "cfg-activity-max" }, h("span", { class: "field-hint" }, "At most"), activityMax),
-          activityUse,
-        ),
-        h(
-          "div",
-          { class: "field" },
-          h("span", { class: "field-label" }, "Visual diffs"),
-          h("label", { class: "check", for: "cfg-visual" }, visualOn, "After each commit, screenshot the pages you use most and compare them with the commit before"),
-          h("span", { class: "field-hint" }, "Only while dx runs the project's dev server, with Chrome, Edge, Chromium or Brave. The last 30 commits are kept per project."),
-        ),
+        h("label", { class: "field", for: "cfg-theme" }, h("span", { class: "field-label" }, "Theme"), theme),
         h(
           "div",
           { class: "field" },
           h("span", { class: "field-label" }, "Alerts"),
-          h("label", { class: "check", for: "cfg-env-alerts" }, envAlertsOn, "Warn me, with a sound and a system notification, when a project's .env file changes, is staged or is committed"),
-          h("label", { class: "check", for: "cfg-agent-alerts" }, agentAlertsOn, "Warn me, with a sound and a system notification, when an AI agent is waiting for my reply or stuck on one tool call"),
-          h("span", { class: "field-hint" }, "Each project can turn its own alerts, or just the system notifications, off on its Env & secrets page."),
+          // One switch for both kinds; each project can still turn its own off on its Env & secrets page.
+          h("label", { class: "check", for: "cfg-alerts", title: "Each project can turn its own alerts, or only the system notifications, off on its Env & secrets page." }, alertsOn, "Tell me about .env changes and agents waiting"),
         ),
       ),
-      h("div", { class: "form-actions" }, save),
+      // Everything below has a sensible default and is found by dx itself.
+      h(
+        "details",
+        { class: "advanced", open: pref("settingsAdvanced", "") === "1" || undefined, ontoggle: (e) => setPref("settingsAdvanced", e.currentTarget.open ? "1" : "") },
+        h("summary", null, "Advanced"),
+        h(
+          "div",
+          { class: "form-grid" },
+          terminalSelect({ withLabel: true }),
+          h("label", { class: "field", for: "cfg-editor" }, h("span", { class: "field-label" }, "Editor command"), editor),
+          h("label", { class: "field", for: "cfg-github" }, h("span", { class: "field-label" }, "GitHub username"), github),
+          h("label", { class: "field", for: "cfg-depth" }, h("span", { class: "field-label" }, "Look for projects"), depth),
+          h(
+            "div",
+            { class: "field" },
+            h("span", { class: "field-label" }, "Activity history"),
+            h("label", { class: "check", for: "cfg-activity" }, activityOn, "Keep a history of requests, routes, clicks, console and errors"),
+            h("label", { class: "check", for: "cfg-localhost", title: "dx answers at the app's usual port and moves the dev server" }, localhostOn, "Record apps at localhost:<port> too"),
+            h("label", { class: "toolbar", for: "cfg-activity-days" }, h("span", { class: "field-hint" }, "Keep it for"), activityDays),
+            h("label", { class: "toolbar", for: "cfg-activity-max" }, h("span", { class: "field-hint" }, "At most"), activityMax),
+            activityUse,
+          ),
+          h("div", { class: "field" }, h("span", { class: "field-label" }, "Visual diffs"), h("label", { class: "check", for: "cfg-visual", title: "Last 30 commits kept per project." }, visualOn, "Screenshot the most-used pages after each commit")),
+        ),
+      ),
     );
 
     const runs = data.runs.length
@@ -11399,18 +11788,69 @@ function healthPage(root) {
         )
       : h("div", { class: "card" }, stateView("Nothing run yet", "Opening projects, killing ports and other things dx does show up here."));
 
-    holder.replaceChildren(
-      h("section", { class: "section" }, h("h2", { class: "section-title" }, "Checks"), checks),
+    // Checks first, since they say whether anything needs you; the rest folds away, closed until opened.
+    const folded = (id, title, note, ...body) =>
       h(
-        "section",
-        { class: "section" },
-        h("h2", { class: "section-title" }, "AI tools"),
-        h("p", { class: "page-sub" }, "Connected tools can run your apps, read their output and errors, and check pages through dx. dx connects new ones by itself."),
-        aiTools,
-      ),
-      settings,
-      stateCard(),
-      h("section", { class: "section" }, h("h2", { class: "section-title" }, "Recent runs"), runs),
+        "details",
+        { class: "fold", open: pref(`settingsFold:${id}`, "") === "1" || undefined, ontoggle: (e) => setPref(`settingsFold:${id}`, e.currentTarget.open ? "1" : "") },
+        h("summary", null, h("strong", null, title), note ? h("span", { class: "dim fold-note" }, note) : null),
+        ...body,
+      );
+    holder.replaceChildren(
+      h("section", { class: "section" }, checksBox),
+      folded("ai", "AI tools", "Claude, Cursor and others that can use dx", aiTools),
+      folded("prefs", "Preferences", "Folders, editor, history, alerts, theme", settings),
+      folded("state", "Your dx on another computer", "Export or import everything you've set up", stateCard()),
+      folded("runs", "Recent runs", "What dx did lately", runs),
+      folded("remove", "Remove dx", "", removeCard()),
+    );
+  }
+
+  /**
+   * Removing dx from this computer (core/uninstall.ts): what goes is read from the server when the
+   * button is clicked, named in the confirm, and the removal runs on its own once this dashboard closes.
+   */
+  function removeCard() {
+    async function ask(button) {
+      const plan = await busy(button, "Looking…", () => api("/api/uninstall"));
+      if (!plan) return;
+      if (plan.blocked) return toast(plan.blocked, "error");
+      const lines = [
+        ...plan.installs.map((i) => (i.kind === "npm" ? `dx-devkit ${i.version ?? ""} from npm` : `The link to your build in ${tildify(i.dir)} (the folder itself stays)`)),
+        plan.shims.length ? `The dx command (${plural(plan.shims.length, "shim")})` : null,
+        plan.app ? `The dx app${plan.app.versions.length ? `, Electron ${plan.app.versions.join(", ")}` : ""}` : null,
+        plan.entries.length ? `${plural(plan.entries.length, "shortcut")} and sign-in entries, Floppy's included` : null,
+        plan.aiTools.length ? `dx in ${plan.aiTools.join(", ")}` : null,
+        plan.processes.length ? `${plural(plan.processes.length, "process", "processes")} still running from dx: ${[...new Set(plan.processes.map((p) => p.what))].join(", ")}` : null,
+        `This dashboard${plan.servers.length ? `, and the dev servers it runs (${plan.servers.join(", ")})` : ""}`,
+      ].filter(Boolean);
+      const everything = h("input", { type: "checkbox", id: "remove-data" });
+      const yes = await confirmDialog({
+        title: "Remove dx from this computer?",
+        text: [
+          h("ul", { class: "state-lines" }, lines.map((l) => h("li", null, l))),
+          h("label", { class: "check", for: "remove-data" }, everything, `Also delete everything dx keeps in ${tildify(plan.data.dir)} (${formatBytes(plan.data.bytes)}): settings, the journal, history, mocks, tools${plan.data.snapshots ? `, ${plural(plan.data.snapshots, "snapshot")}` : ""}`),
+          h("p", { class: "field-hint" }, "Your projects aren't touched. This can't be undone from dx: to use it again, install it with npm install -g dx-devkit."),
+        ],
+        confirm: "Remove dx",
+      });
+      if (!yes) return;
+      const r = await busy(button, "Removing…", () => api("/api/uninstall", { method: "POST", body: { data: everything.checked } }));
+      if (!r) return;
+      dxRemoved = true;
+      holder.replaceChildren(
+        stateView(
+          "dx is removing itself",
+          `This dashboard closes now, then everything else goes. A system notification says when it's done; the log is ${r.log}. You can close this window.`,
+        ),
+      );
+    }
+
+    return h(
+      "section",
+      { class: "card card-pad section" },
+      h("p", { class: "field-hint" }, "Takes dx, its app, shortcuts and its place in your AI tools off this computer. You choose whether its data goes too."),
+      h("div", { class: "toolbar" }, btn("Remove dx…", (ev) => ask(ev.currentTarget), { kind: "danger", iconName: "cleanup" })),
     );
   }
 
@@ -11534,7 +11974,7 @@ function healthPage(root) {
             : null,
           plan.left.length ? h("p", { class: "field-hint" }, `Left out when it was exported: ${plan.left.join("; ")}.`) : null,
           h("label", { class: "check", for: "state-settings" }, withSettings, "Bring the settings and dashboard preferences too"),
-          h("p", { class: "field-hint" }, "Where both have something, the file's wins; nothing here is deleted. Mock mode and Chaos mode stay switched as they are here. Every file is backed up first, so Undo puts it all back."),
+          h("p", { class: "field-hint" }, "The file wins on overlap; nothing is deleted; everything is backed up first."),
           h("div", { class: "form-actions" }, go, btn("Cancel", () => fill(panel), { kind: "ghost" })),
         ),
       );
@@ -11562,10 +12002,8 @@ function healthPage(root) {
 
     return h(
       "section",
-      { class: "card card-pad section", "aria-labelledby": "state-title" },
-      h("h2", { class: "section-title", id: "state-title" }, "Your dx on another computer"),
-      h("p", { class: "page-sub" }, "One file with everything you've set up: settings, the journal, saved summaries, templates, and each project's tools, mocks, rules, API spec, chaos settings, data scenes, note and alerts. Projects are found again on the other computer by their repository or folder name. Live things stay here: commits, the activity history, snapshots, sign-ins and .env files."),
-      h("p", { class: "field-hint" }, "The file holds your mocks' answers and saved data scenes, so keep it to yourself."),
+      { class: "card card-pad section" },
+      h("p", { class: "field-hint", title: "Live things (commits, history, sign-ins, .env files) stay here. The file holds your mocks' answers and saved data scenes, so keep it to yourself." }, "Everything you've set up, in one private file."),
       h("div", { class: "toolbar" }, btn("Export everything", (ev) => exportState(ev.currentTarget), { iconName: "save" }), btn("Import…", () => fileInput.click(), { iconName: "folder", kind: "ghost", title: "Bring in a file exported on another computer" })),
       undoRow,
       panel,
@@ -11628,6 +12066,15 @@ function healthPage(root) {
     }
   }
   load();
+  // The checks look again on their own; only their block is redrawn, so nothing typed below is lost.
+  return livePoll(async () => {
+    if (!checksBox?.isConnected) return;
+    const data = await api("/api/health");
+    const sig = JSON.stringify(data.checks);
+    if (sig === checksSig) return;
+    checksSig = sig;
+    checksBox.replaceChildren(buildChecks(data));
+  }, 60_000);
 }
 
 // ------------------------------------------------------------------ the AI lane
@@ -11677,7 +12124,7 @@ async function interruptAgent(button) {
     title: "Stop the agent's dev servers?",
     text: [
       `This stops ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`}, which your AI agent started.`,
-      "dx can't stop the agent itself: it runs in your AI tool. Tell it to stop there too, or it may start them again.",
+      "dx can't stop the agent itself: tell it to stop in your AI tool.",
     ],
     confirm: `Stop ${plural(names.length, "server")}`,
   });
@@ -11712,8 +12159,8 @@ function drawAiLane() {
     iconName: "stop",
     disabled: !d.servers.length,
     title: d.servers.length
-      ? "Stop every dev server the agent started. dx can't stop the agent itself: it runs in your AI tool, so tell it to stop there."
-      : "The agent has no dev servers running. dx can't stop the agent itself: it runs in your AI tool, so tell it to stop there.",
+      ? "Stops the dev servers the agent started, not the agent."
+      : "No dev servers running for the agent.",
   });
   stopBtn.classList.add("ai-lane-interrupt");
   const close = btn("", () => setAiLaneOpen(false), { small: true, kind: "ghost", iconName: "right", name: "Collapse the AI lane" });
@@ -11801,7 +12248,7 @@ aiLaneEl.addEventListener("keydown", (e) => {
 
 // ------------------------------------------------------------------ start
 
-// The theme is chosen on Health & settings; it's this computer's, so it lives with the page's other preferences.
+// The theme is chosen on Settings; it's this computer's, so it lives with the page's other preferences.
 function applyTheme(value) {
   if (value === "auto") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", value);
@@ -11835,6 +12282,7 @@ async function runFloppy(button) {
 let toolAlertsAfter = ""; // the newest activity id the page has seen, as text ("" until the first ask)
 let toolAlertsFor = "";
 let envAlertsSince = new Date().toISOString();
+let autoNoticesAfter = new Date().toISOString();
 let agentAlertsSince = new Date().toISOString();
 async function checkToolAlerts() {
   try {
@@ -11843,6 +12291,16 @@ async function checkToolAlerts() {
       envAlertsSince = env[env.length - 1].at;
       for (const a of env.slice(-3)) toast(h("span", null, h("strong", null, a.title), ` ${a.text}`), "warn");
       warningSound();
+    }
+  } catch {
+    // the dashboard went away; the page says so elsewhere
+  }
+  try {
+    // What dx did by itself: said once, quietly, with no sound.
+    const { notices } = await api(`/api/auto/notices?since=${encodeURIComponent(autoNoticesAfter)}`);
+    if (notices.length) {
+      autoNoticesAfter = notices[notices.length - 1].at;
+      for (const n of notices.slice(-3)) toast(n.text, "ok", { ms: 9000 });
     }
   } catch {
     // the dashboard went away; the page says so elsewhere
@@ -11870,6 +12328,144 @@ async function checkToolAlerts() {
   }
 }
 pollWhileVisible(checkToolAlerts, 5000);
+pollWhileVisible(loadNavState, 20_000);
+
+// ------------------------------------------------------------------ jump to anything (Ctrl+K, or /)
+
+/** Switches the project every project page works on, staying on the page you're on when it is one. */
+function switchProject(dir) {
+  setPref("project", dir);
+  const page = pages.find((p) => p.id === location.hash.replace(/^#\/?/, "").split("?")[0]);
+  if (page?.project) location.hash.includes("?") ? (location.hash = `#/${page.id}`) : route();
+  else location.hash = "#/overview";
+}
+
+/** Starts a project's dev server (what its Run button does) and shows it on its Overview. */
+async function runProject(p) {
+  try {
+    await api("/api/dev/start", { method: "POST", body: { dir: p.dir } });
+    toast(`Starting ${p.name}…`);
+    switchProject(p.dir);
+    location.hash = "#/overview";
+    void updateRunningCount();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+/** Everything the palette can do: go to a page, switch to a project, run one. */
+function paletteItems() {
+  const here = currentProject();
+  const items = [];
+  for (const p of pages) {
+    items.push({ label: `Go to ${p.title ?? p.label}`, hint: p.project ? projectName() : "", icon: p.icon, keywords: `${p.label} ${p.tab ?? ""} ${p.aka ?? ""} ${p.id}`, run: () => (location.hash = `#/${p.id}`) });
+  }
+  for (const p of projectList) {
+    items.push({ label: `Switch to ${p.name}`, hint: sameDir(p.dir, here) ? "this one now" : "", icon: "projects", keywords: p.name, run: () => switchProject(p.dir) });
+    if ((p.devCommand || p.stack) && !projectServers.some((s) => sameDir(s.dir, p.dir) && s.status !== "stopped")) {
+      items.push({ label: `Run ${p.name}`, hint: p.stack ? `${p.stack.services.length} services` : p.devCommand, icon: "play", keywords: `start dev server ${p.name}`, run: () => runProject(p) });
+    }
+  }
+  return items;
+}
+
+const SHORTCUTS = [
+  ["Ctrl K  or  /", "Jump to a page or project, or run one"],
+  ["↑  ↓  Enter", "Move in the list, and choose"],
+  ["Esc", "Close the list, a menu or a dialog"],
+  ["Ctrl Enter", "Commit, on the Code page"],
+  ["?", "This list"],
+];
+
+let paletteDialog;
+function openPalette(help = false) {
+  if (document.querySelector("dialog[open]")) return;
+  paletteDialog ??= h("dialog", { class: "dialog palette", "aria-label": "Jump to" });
+  const input = h("input", { class: "palette-input", type: "text", placeholder: help ? "Keyboard shortcuts" : "Jump to a page or project, or run one…", role: "combobox", "aria-expanded": "true", "aria-controls": "palette-list", "aria-autocomplete": "list", autocomplete: "off", spellcheck: false });
+  const list = h("ul", { class: "palette-list", id: "palette-list", role: "listbox", "aria-label": "Results" });
+  const all = help ? [] : paletteItems();
+  let shown = [];
+  let at = 0;
+
+  const score = (item, q) => {
+    const label = item.label.toLowerCase();
+    const hay = `${label} ${item.keywords.toLowerCase()}`;
+    const words = q.split(/\s+/).filter(Boolean);
+    if (!words.every((w) => hay.includes(w))) return -1;
+    return (label.startsWith(q) ? 3 : 0) + (label.split(/\s+/).some((w) => w.startsWith(words[0])) ? 2 : 0) + (item.label.startsWith("Go to") ? 0.5 : 0);
+  };
+  const draw = () => {
+    const q = input.value.trim().toLowerCase();
+    shown = (q ? all.map((i) => [i, score(i, q)]).filter(([, s]) => s >= 0).sort((a, b) => b[1] - a[1]).map(([i]) => i) : all).slice(0, 12);
+    at = Math.min(at, Math.max(0, shown.length - 1));
+    list.replaceChildren(
+      ...shown.map((item, i) =>
+        h(
+          "li",
+          { class: `palette-item${i === at ? " active" : ""}`, role: "option", id: `palette-opt-${i}`, "aria-selected": String(i === at), onmousemove: () => i !== at && ((at = i), mark()), onclick: () => choose(item) },
+          icon(item.icon),
+          h("span", { class: "palette-label" }, item.label),
+          item.hint ? h("span", { class: "palette-hint dim" }, item.hint) : null,
+        ),
+      ),
+    );
+    if (!shown.length && !help) list.append(h("li", { class: "palette-empty dim", role: "presentation" }, "Nothing matches. Try a page's name or a project's."));
+    input.setAttribute("aria-activedescendant", shown.length ? `palette-opt-${at}` : "");
+  };
+  const mark = () => {
+    [...list.children].forEach((li, i) => {
+      li.classList.toggle("active", i === at);
+      li.setAttribute("aria-selected", String(i === at));
+    });
+    input.setAttribute("aria-activedescendant", `palette-opt-${at}`);
+    list.children[at]?.scrollIntoView({ block: "nearest" });
+  };
+  const choose = (item) => {
+    paletteDialog.close();
+    item.run();
+  };
+
+  input.addEventListener("input", () => ((at = 0), draw()));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (shown.length) ((at = (at + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length), mark());
+    } else if (e.key === "Enter" && shown[at]) {
+      e.preventDefault();
+      choose(shown[at]);
+    }
+  });
+  paletteDialog.replaceChildren(
+    h(
+      "div",
+      { class: "palette-body" },
+      help
+        ? [
+            h("h2", { class: "dialog-title" }, "Keyboard shortcuts"),
+            h("dl", { class: "palette-keys" }, SHORTCUTS.flatMap(([keys, what]) => [h("dt", null, h("kbd", null, keys)), h("dd", null, what)])),
+          ]
+        : [input, list, h("p", { class: "palette-foot dim" }, "↑ ↓ to move · Enter to choose · Esc to close · ? for shortcuts")],
+    ),
+  );
+  paletteDialog.addEventListener("close", () => paletteDialog.remove(), { once: true });
+  document.body.append(paletteDialog);
+  paletteDialog.showModal();
+  draw();
+  if (!help) input.focus();
+}
+
+document.addEventListener("keydown", (e) => {
+  const typing = e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]");
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    openPalette();
+  } else if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "/" || e.key === "?")) {
+    e.preventDefault();
+    openPalette(e.key === "?");
+  }
+});
+document.getElementById("palette-open")?.addEventListener("click", () => openPalette());
+if (/Mac|iPhone|iPad/.test(navigator.platform)) for (const k of document.querySelectorAll("#palette-open kbd")) k.textContent = "⌘K";
 
 window.addEventListener("hashchange", route);
 pollWhileVisible(updateRunningCount, 5000);
