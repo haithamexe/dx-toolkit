@@ -24,7 +24,7 @@ What was decided while building dx, and why, so the next session doesn't relearn
   - clone-and-set-up, where you left off, unsaved work, `.env` and secrets checks, `dx deps --fix` (yarn and bun too);
   - tests read from each framework's report, a network log from the proxy, browser flows, read-only database queries, the year in review;
   - setting itself up with no configuration.
-- **Latest release**: 1.10.0.
+- **Latest release**: 1.14.0 (websites finished, an IP-literal guard fix, flaky start-up tests fixed).
 - **This is a public, open-source repository.** Nothing personal goes in it: no real names, emails, usernames, machine paths or names of anyone's own projects. Examples use neutral names (`todo-app`, `shop-website`, `api-gateway`, `octocat`), paths use `~` or `/path/to/dx-toolkit`, and test fixtures are built in temp folders.
 
 ## Backlog

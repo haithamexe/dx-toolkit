@@ -2,7 +2,7 @@
 
 Notable changes to dx, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.14.0 (2026-11-15)
 
 Website projects are finished: they travel with `dx state`, show up on Home and in the project filters, find their API spec on the site, and are seen by the MCP tools. Short results now show on the button, and two flaky start-up tests are fixed.
 
