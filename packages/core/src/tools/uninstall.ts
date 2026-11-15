@@ -114,7 +114,26 @@ function dxPlaces(installs: ReturnType<typeof findDxInstalls>, home: string): Dx
     if (repo) code.push(...["web/dist", "web/shell", "mcp/dist", "cli/dist"].map((p) => path.join(repo, "packages", p)), path.join(repo, "node_modules", "@dx"));
     else code.push(installs.local);
   }
-  return { code: code.map(slashed), app: slashed(home), home: slashed(dxHome()) };
+  return { code: [...new Set(code.flatMap(spellings).map(slashed))], app: slashed(home), home: slashed(dxHome()) };
+}
+
+/**
+ * A folder as a process might have been started from it: as given, as the system resolves it, and
+ * with macOS's /private prefix on or off (a temp folder is /var/… to a person and /private/var/… to
+ * the system), so a program run through a link is still known as dx's.
+ */
+function spellings(dir: string): string[] {
+  const out = new Set([dir]);
+  try {
+    out.add(fs.realpathSync(dir));
+  } catch {
+    // a folder that's gone has only its own spelling
+  }
+  for (const d of [...out]) {
+    if (d.startsWith("/private/")) out.add(d.slice("/private".length));
+    else if (/^\/(var|tmp|etc)\//.test(d)) out.add(`/private${d}`);
+  }
+  return [...out];
 }
 
 const slashed = (f: string) => norm(f).replace(/\/+$/, "") + "/";
