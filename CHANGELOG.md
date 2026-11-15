@@ -2,6 +2,30 @@
 
 Notable changes to dx, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+Website projects are finished: they travel with `dx state`, show up on Home and in the project filters, find their API spec on the site, and are seen by the MCP tools. Short results now show on the button, and two flaky start-up tests are fixed.
+
+### Added
+
+- **Websites in `dx state`**: the export carries a website project's name, address and environment, its sites and their switches, and its tags and pins; the import plan lists them ("websites: …"), adds the ones that aren't here, and undo puts back exactly what it wrote. Mocks, rules and Chaos settings of a website come along because they are keyed by its `site:<host>` name.
+- **Home and the filters know websites**: a website with problems in its recorded history, or whose last check failed, is on Home's list (from what dx already recorded: it makes no call of its own); All projects slices them by status, kind (**Website**, with its own hue), tag and pin like any other project.
+- **Find the API spec from the site**: on a website project's API page and Overview, **Look on the site** asks the site's own address for the usual spec paths (`/openapi.json`, `/swagger.json`, `/api-docs`…), only when you press it. One request at a time, no redirects, at most 5 MB, only the project's own site; what it finds is checked like a pasted spec.
+- **MCP tools see websites**: `list_projects` lists them, `dx_status` and `activity_log` take a website's name (`dx_status` says where its sites' last checks stand, its mocks, and the problems of the last hour), and `dx_do` already reaches its mocks, rules, sites and checks. Every tool that needs code (`search_code`, git, running, tests) refuses it with the reason and names the ones that work.
+- **Real container check**: MongoDB queries in `dx db` ran against a real `mongo:7` container (find, count, distinct, aggregate, stats, show collections; the refused operators stay refused).
+
+### Changed
+
+- **A short result shows on the button**: "Saved", "Copied", "Stopped" and the like, from the older pages' buttons, now appear on the button itself for a moment instead of in a toast; messages that carry details stay toasts.
+- **The README screenshots** show the Arcade look, taken from made-up demo projects.
+
+### Fixed
+
+- **A site address could reach this computer**: an IP-literal address (`http://127.0.0.1:…`, link-local, metadata, private ranges on a loopback-only check) skipped the name lookup that guards a site check. Addresses are now checked before and after the lookup, for adding a site and for every fetch.
+- **A dev server on a slow machine counted as "quiet" too early**: its readiness was timed from when the preparing steps began, not from when the process started, so a slow install made a starting server look ready. Found as a flaky macOS test and reproduced on purpose.
+- **"fetch failed" on an idle connection**: the dashboard's HTTP keep-alive was shorter than the clients' (Node's own fetch reuses a connection for longer), so a request could land on a connection the server had just closed. The keep-alive and header timeouts are longer now.
+- **Raycast**: Open Project didn't compile after websites became a kind of project.
+
 ## 1.13.0 (2026-11-15)
 
 A website can be a project: add its address from the project picker and the app follows it, without the pages that need code.

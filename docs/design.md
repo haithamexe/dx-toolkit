@@ -97,4 +97,4 @@ dx is a small, friendly, precise tool with a pixel mascot. The look is **"window
 - `busy()` now does what `morph` does for a button's failure (it shakes and says why beside the button) and shows a check when it worked, so every older button follows the rule for failures. The success messages that carry details ("Saved 3 tools", a count, a name) are still toasts on those pages; each moves onto its button or card with `morph`'s `done` text as the sweep goes on.
 - Home, a project's chunks, Recent changes, Ports, Machine, Secrets, the Code page's unsaved work and Settings' checks listen to the live stream; the others poll.
 - Code views tint syntax by meaning (keyword violet, string cyan, number orange, comment dim) in the preview and nowhere else; every pair measures 6:1 or better on the code background.
-- The README screenshots (`docs/images/`) still show the earlier teal look and need retaking the usual way.
+- The README screenshots (`docs/images/`) show the Arcade look (retaken Nov 2026); retake them the usual way when a page changes.

@@ -45,7 +45,7 @@ dx claude todo-app
 
 What was already in those files is kept, and `dx claude --undo` removes only what dx added (`--status` says what's set up). A settings file that isn't valid JSON is left exactly as it is.
 
-**`dx_status`** answers in one call: whether the dev server runs and where, the errors it shows now, how the last test run went and when, and unsaved work. **`dx_verify`** does the loop after an edit in one call: waits for the rebuild, runs the tests related to the change (all of them where the framework can't tell), and with a `path` loads that page in a headless browser; the answer is one short verdict with only what failed.
+**`dx_status`** answers in one call: whether the dev server runs and where, the errors it shows now, how the last test run went and when, and unsaved work; for a [website project](features.md#a-website-as-a-project) it says where each site's last checks stand, its mocks and the problems of the last hour (`activity_log` takes a website too; tools that need code refuse it and name the ones that work). **`dx_verify`** does the loop after an edit in one call: waits for the rebuild, runs the tests related to the change (all of them where the framework can't tell), and with a `path` loads that page in a headless browser; the answer is one short verdict with only what failed.
 
 ### Let your AI run your app
 

@@ -73,7 +73,7 @@ import {
   type Project,
 } from "@dx/core";
 import { dataTarget, listScenes, loadData, loadScene, makeScene, readDataSchema, saveScene, sceneSlug, type AttackReport, describeHealth, CHAOS_LEVELS, chaosReport, findGraveyard, loadChaos, probeEnv, setChaos, type BehaviourDiff, type GremlinRun } from "@dx/core";
-import { searchProject, type SearchMode } from "@dx/core";
+import { lastSiteChecks, listUrlProjects, loadMocks, projectSites, searchProject, type SearchMode } from "@dx/core";
 import { describeLocaleProblem, prProof, projectTour, queryLogState, queryReport, readActivity as readActivityLog, setQueryLog, tourMarkdown, type LocaleReport, type UpgradeReport } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
 import { ACTION_GROUPS, DX_ACTIONS, actionRequest, dxAction } from "@dx/web/actions";
@@ -106,7 +106,7 @@ let scanned: { at: number; projects: Project[] } | undefined;
 function projectNameOf(raw: unknown): string | undefined {
   if (typeof raw !== "string" || !raw) return undefined;
   try {
-    if (!scanned || Date.now() - scanned.at > 30_000) scanned = { at: Date.now(), projects: scanProjects(loadConfig()) };
+    if (!scanned || Date.now() - scanned.at > 30_000) scanned = { at: Date.now(), projects: withWebsites() };
     const { match, candidates } = findProjects(raw, scanned.projects);
     return (match ?? (candidates.length === 1 ? candidates[0] : undefined))?.name;
   } catch {
@@ -149,7 +149,7 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   async ({ query, limit }) => {
-    const all = scanProjects(loadConfig());
+    const all = withWebsites();
     const list = query ? findProjects(query, all).candidates : all;
     return text(
       list.slice(0, limit ?? 25).map((p) => ({
@@ -320,7 +320,7 @@ server.registerTool(
   },
   async ({ project, api }) => {
     try {
-      const found = findProjects(project, scanProjects(loadConfig()));
+      const found = findProjects(project, withWebsites());
       const p = found.match ?? (found.candidates.length === 1 ? found.candidates[0] : undefined);
       if (!p) return failure(found.candidates.length ? `Several projects match "${project}": ${found.candidates.map((x) => x.name).join(", ")}` : `No project matches "${project}".`);
       // The project's APIs: the ones it was given, else a spec file in it, found by itself. Each endpoint says which API it's in.
@@ -547,9 +547,37 @@ interface WaitResult {
   timedOut: boolean;
 }
 
-function pickProject(name: string): Project | string {
-  const { match, candidates } = findProjects(name, scanProjects(loadConfig()));
+/** The folders dx found and the websites added as projects (an address, no folder). */
+const withWebsites = (config = loadConfig()): Project[] => [...scanProjects(config), ...listUrlProjects(config)];
+
+/** Where a website project stands: its addresses and their last checks, mocks, and what went wrong in the last hour. No call is made. */
+function websiteStatus(project: Project): string {
+  const parts = [`${project.name} is a website (${project.url}), a project with no code on this computer: git, search, .env files and running it don't apply.`];
+  const sites = projectSites(project.dir);
+  for (const site of sites) {
+    const last = lastSiteChecks(project.dir, site.host);
+    const bits: string[] = [];
+    if (last.status) bits.push(`status ${last.status.latest.status ?? "no answer"}${last.status.latest.ms !== undefined ? ` in ${last.status.latest.ms} ms` : ""}${last.status.latest.bad ? `, ${last.status.latest.bad} problem(s)` : ""} (${last.status.latest.at})`);
+    if (last.page) bits.push(`page ${last.page.latest.ok ? "clean" : `${last.page.latest.problems ?? "some"} problem(s)`} (${last.page.latest.at})`);
+    if (last.audit) bits.push(`speed: largest paint ${last.audit.latest.lcpMs ?? "?"} ms, ${last.audit.latest.a11y ?? "?"} accessibility issue(s)`);
+    parts.push(`${site.host} (${site.env ?? "production"}; mocks, rules and chaos ${site.apply === false || (site.apply === undefined && site.env === "production") ? "off" : "on"}): ${bits.length ? bits.join("; ") : "not checked yet (the dashboard's Sites card, or dx_do api.site-check)"}`);
+  }
+  try {
+    const m = loadMocks(project.dir);
+    parts.push(m.endpoints.length ? `Mocks: ${m.endpoints.length} endpoints, mock mode ${m.on ? "on" : "off"}.` : "Mocks: none.");
+  } catch {
+    // no mocks file
+  }
+  const problems = readActivityLog({ dir: project.dir, since: new Date(Date.now() - 3_600_000), problems: true, limit: 200 });
+  parts.push(problems.length ? `Problems recorded in the last hour: ${problems.length} (activity_log shows them).` : "No problems recorded in the last hour.");
+  return parts.join("\n");
+}
+
+/** A project by name. A website (no code here) is only for the tools that work on an address: the rest say so. */
+function pickProject(name: string, { website = false } = {}): Project | string {
+  const { match, candidates } = findProjects(name, withWebsites());
   const project = match ?? (candidates.length === 1 ? candidates[0] : undefined);
+  if (project?.kind === "website" && !website) return `${project.name} is a website, so this needs its code on this computer. dx_status, activity_log, api_map and dx_do (mocks, rules, sites, checks) work on a website.`;
   if (project) return project;
   return candidates.length
     ? `Several projects match "${name}": ${candidates.slice(0, 8).map((p) => p.name).join(", ")}. Which one?`
@@ -1070,7 +1098,7 @@ server.registerTool(
   async ({ project: name, since, types, problems, search, limit, bodies, site, env }) => {
     let project: Project | undefined;
     if (name) {
-      const found = pickProject(name);
+      const found = pickProject(name, { website: true });
       if (typeof found === "string") return failure(found);
       project = found;
     }
@@ -1245,8 +1273,9 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   async ({ project: name }) => {
-    const project = pickProject(name);
+    const project = pickProject(name, { website: true });
     if (typeof project === "string") return failure(project);
+    if (project.kind === "website") return text(websiteStatus(project));
     const parts = [`${project.name} (${project.dir})`];
     const client = await findDashboard();
     const list = client ? await client.get<DevInfo[]>("/api/dev") : [];

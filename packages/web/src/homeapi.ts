@@ -3,12 +3,15 @@ import {
   auditEnvAsync,
   findUnsavedWork,
   gitStatus,
+  lastSiteChecks,
   listAiTools,
+  listUrlProjects,
   loadMocks,
   listProposals,
   loadConfig,
   mapLimit,
   nextSteps,
+  projectSites,
   readActivity,
   readChanges,
   readRuns,
@@ -83,6 +86,28 @@ function testsByProject(runs: RunRecord[]): Map<string, NonNullable<ProjectFacts
   return out;
 }
 
+/** A website project's facts: the problems its recorded calls show (the last hour), and whether its last check failed. */
+export function websiteFacts(sites: Project[]): ProjectFacts[] {
+  const since = new Date(Date.now() - 3_600_000);
+  return sites.map((p) => {
+    let problems = 0;
+    try {
+      problems = readActivity({ dir: p.dir, since, problems: true, limit: 200 }).length;
+    } catch {
+      // an unreadable history says nothing
+    }
+    let failedCheck: { at: string; what: string } | undefined;
+    for (const s of projectSites(p.dir)) {
+      const last = lastSiteChecks(p.dir, s.host);
+      for (const what of ["status", "page"] as const) {
+        const r = last[what]?.latest;
+        if (r && (!r.ok || (r.bad ?? 0) > 0) && (!failedCheck || r.at > failedCheck.at)) failedCheck = { at: r.at, what };
+      }
+    }
+    return { name: p.name, dir: p.dir, site: { problems, ...(failedCheck ? { failedCheck } : {}) } };
+  });
+}
+
 export async function factsFor(projects: Project[], runs: RunRecord[]): Promise<ProjectFacts[]> {
   const servers = listDevServers();
   const unsaved = await unsavedByDir(projects);
@@ -143,9 +168,11 @@ export interface HomeView {
 }
 
 export async function homeView(): Promise<HomeView> {
-  const projects = scanProjectsCached(loadConfig());
+  const config = loadConfig();
+  const projects = scanProjectsCached(config);
+  const websites = listUrlProjects(config);
   const runs = readRuns(2000);
-  const facts = await factsFor(projects, runs);
+  const facts = [...(await factsFor(projects, runs)), ...websiteFacts(websites)];
   const items = attentionItems(facts);
   const servers = listDevServers().filter((s) => s.status !== "stopped" && !s.snapshot && !s.service);
   const steps = startedSteps({
@@ -157,9 +184,9 @@ export async function homeView(): Promise<HomeView> {
   const withItems = new Set(items.map((i) => i.dir.toLowerCase()));
   return {
     at: new Date().toISOString(),
-    projects: projects.length,
+    projects: projects.length + websites.length,
     items,
-    quiet: projects.filter((p) => !withItems.has(p.dir.toLowerCase())).length,
+    quiet: [...projects, ...websites].filter((p) => !withItems.has(p.dir.toLowerCase())).length,
     running: servers.map((s) => ({ project: s.project, dir: s.dir, url: s.url, status: s.status, recorded: s.recorded, notRecorded: s.notRecorded })),
     started: { steps, done: steps.every((s) => s.done) },
     did: didByDx(),

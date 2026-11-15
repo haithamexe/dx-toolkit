@@ -289,3 +289,51 @@ test("a state file's site address is kept only when it is one dx would keep", ()
   assert.deepEqual(read.sites.map((s) => s.url), ["https://a.example.com/x", undefined, undefined]);
   assert.deepEqual(read.views?.map((v) => v.name), ["Mine"]);
 });
+
+test("a website project goes to another computer with its address, sites, mocks and rules, and undo takes it out again", async () => {
+  const { addUrlProject, listUrlProjects, putMocks, mocksFromActivity, putRule: addRule, loadRules: rulesOf, loadMocks: mocksOf, listSites } = core;
+  const a = tmp("dx-state-web-a-");
+  const b = tmp("dx-state-web-b-");
+  useComputer(a, tmp("dx-state-web-projects-a-"));
+  const site = addUrlProject({ url: "https://staging.shop-website.dev/app", name: "Shop staging", env: "staging" });
+  const cfg = loadConfig();
+  cfg.sites = (cfg.sites ?? []).map((s) => ({ ...s, apply: false }));
+  saveConfig(cfg);
+  const events = [
+    { id: 1, at: new Date().toISOString(), dir: site.dir, project: site.name, type: "request", text: "", method: "GET", url: "/api/cart", status: 200, responseHeaders: { "content-type": "application/json" }, responseBody: '{"items":[]}', from: "dx-browser" },
+  ] as never[];
+  putMocks(site.dir, site.name, mocksFromActivity(events));
+  addRule(site.dir, site.name, { id: "r1", name: "Cart down", on: true, method: "GET", path: "/api/cart", fail: "500" });
+  const exported = await exportState({ projects: scanProjects(loadConfig()) });
+  assert.equal(exported.websites?.length, 1);
+  assert.deepEqual(exported.websites?.[0].website, { url: "https://staging.shop-website.dev/app", env: "staging" });
+  assert.equal(exported.websites?.[0].mocks?.endpoints.length, 1);
+  assert.equal(exported.websites?.[0].rules?.length, 1);
+  const read = readState(JSON.parse(JSON.stringify(exported)));
+  assert.equal(read.websites?.[0].sites?.[0].apply, false);
+
+  useComputer(b, tmp("dx-state-web-projects-b-"));
+  assert.deepEqual(listUrlProjects(), []);
+  const plan = await planStateImport(read, scanProjects(loadConfig()));
+  assert.deepEqual(plan.websites.map((w) => [w.name, w.status, w.has.mocks, w.has.rules]), [["Shop staging", "new", 1, 1]]);
+  const r = await importState(read, { projects: scanProjects(loadConfig()) });
+  assert.ok(r.projects.some((p) => p.name === "Shop staging"));
+  const here = listUrlProjects();
+  assert.deepEqual(here.map((p) => [p.name, p.dir]), [["Shop staging", site.dir]]);
+  assert.equal(mocksOf(site.dir).endpoints.length, 1);
+  assert.equal(rulesOf(site.dir).rules[0].name, "Cart down");
+  assert.equal(listSites().find((s) => s.host === "staging.shop-website.dev")?.apply, false);
+  assert.equal((await planStateImport(read, scanProjects(loadConfig()))).websites[0].status, "here");
+
+  undoStateImport();
+  assert.deepEqual(listUrlProjects(), [], "undo takes the website out");
+  assert.deepEqual(listSites().filter((s) => s.host === "staging.shop-website.dev"), []);
+  assert.equal(fs.existsSync(core.mockFile(site.dir)), false);
+});
+
+test("a state file's website is read strictly: an address dx wouldn't keep is refused by name", () => {
+  const base = { format: "dx-state", version: 1, exportedAt: "", settings: {}, sites: [], journal: [], summaries: [], templates: [], projects: [] };
+  assert.throws(() => readState({ ...base, websites: [{ name: "Local", website: { url: "http://localhost:3000" } }] }), /Local: website/);
+  const ok = readState({ ...base, websites: [{ name: "Shop", website: { url: "https://shop.example.com/x?token=abc", env: "Staging" } }, { name: "Not a website" }] });
+  assert.deepEqual(ok.websites?.map((w) => [w.name, w.website]), [["Shop", { url: "https://shop.example.com/x", env: "staging" }]]);
+});

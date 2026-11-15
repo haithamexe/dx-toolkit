@@ -39,6 +39,8 @@ export interface SiteTarget {
 
 const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\]|[\w.-]+\.localhost)$/i;
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
+/** Addresses that are this computer or link-local (the cloud's metadata address among them), written as a number: never a site. */
+const UNSAFE_IP = /^(0(\.\d{1,3}){3}|169\.254(\.\d{1,3}){2}|\[(::|::1|fe[89ab][0-9a-f]:[0-9a-f:]*|::ffff:[0-9a-f:.]+)\])$/i;
 
 /**
  * A host as dx keeps it: lowercase, host or host:port, no scheme, path, user or wildcard other
@@ -91,6 +93,7 @@ export function normalizeSiteUrl(raw: string): { url: string; host: string } {
   if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("Only http and https sites can be added.");
   if (u.username || u.password) throw new Error("Leave the user name and password out of the address: dx never keeps them.");
   if (LOOPBACK.test(u.hostname)) throw new Error("That address is on this computer: run the project from dx instead, and dx answers there.");
+  if (UNSAFE_IP.test(u.hostname)) throw new Error("dx won't add an address like that (this computer, or a link-local address): give the site's name.");
   const host = normalizeSiteHost(u.host);
   const pathname = u.pathname.replace(/\/+$/, "");
   if (pathname.length > 200) throw new Error("That path is too long: give the site's front page or a short path.");

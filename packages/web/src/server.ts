@@ -135,6 +135,11 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   const server = http.createServer((req, res) => {
     void respond(req, res).catch((err: Error) => send(res, 500, { error: err.message }));
   });
+  // Node closes an idle connection after 5 s by default. A client that keeps connections (the page, the MCP server, a test's fetch)
+  // and sends its next request just as the server closes it gets "fetch failed" for a request that was fine: seen on a CI run when
+  // a call came a few seconds after the last. Idle connections stay a minute; this server is only on this computer.
+  server.keepAliveTimeout = 60_000;
+  server.headersTimeout = 65_000;
 
   async function respond(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const allowedHosts = [`127.0.0.1:${port}`, `localhost:${port}`];

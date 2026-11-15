@@ -7,6 +7,7 @@ import {
   aiFailure,
   recordAiUse,
   askAi,
+  fetchSiteText,
   findSpecFiles,
   forgetSpec,
   jsonFromAnswer,
@@ -321,10 +322,12 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
     const running = [...localRoutes().values()].some((r) => r.dir.toLowerCase() === project.dir.toLowerCase());
     const looking = lookForServedSpec(project);
     const files = findSpecFiles(project.dir);
+    // A website's own address, where a spec can be looked for by a press (never by itself: dx makes no call to your sites unasked).
+    const site = project.kind === "website" ? projectSites(project.dir)[0] : undefined;
     const summary = call(() => specsSummary(project));
     // Spec files in the project that aren't one of its APIs yet, offered to add.
     const have = new Set(listSpecs(project.dir).map((x) => x.source));
-    return { files, more: files.filter((f) => !have.has(`file:${f}`)), urls: SPEC_URL_PATHS, running, looking, removed: specTurnedOff(project.dir), specs: summary?.apis ?? [], undocumented: summary?.undocumented ?? [], overlaps: summary?.overlaps ?? [] };
+    return { files, more: files.filter((f) => !have.has(`file:${f}`)), urls: SPEC_URL_PATHS, running, looking, site: site ? new URL(site.url ?? `https://${site.host}`).origin : undefined, removed: specTurnedOff(project.dir), specs: summary?.apis ?? [], undocumented: summary?.undocumented ?? [], overlaps: summary?.overlaps ?? [] };
   },
   "POST /api/lab/spec": async (req) => {
     const project = knownProject(req.body.dir, { site: true });
@@ -337,12 +340,15 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
       doc = call(() => parseSpecText(String(req.body.text)));
       source = "pasted";
     } else {
-      // From the running app: the path given, or each usual one in turn.
-      const route = routeOf(project);
+      // From the running app (or, for a website, from its address): the path given, or each usual one in turn.
+      const website = project.kind === "website" ? projectSites(project.dir) : undefined;
+      const route = website ? undefined : routeOf(project);
+      if (website && !website.length) throw new HttpError(404, `${project.name} has no site to look at.`);
+      const origin = website ? new URL(website[0].url ?? `https://${website[0].host}`).origin : "";
       const tries = typeof req.body.url === "string" ? [pathOf(req.body.url)] : SPEC_URL_PATHS;
       for (const p of tries) {
         try {
-          doc = parseSpecText(await fetchSpec(route, p));
+          doc = parseSpecText(website ? await fetchSiteText(`${origin}${p}`, website) : await fetchSpec(route!, p));
           source = `url:${p}`;
           break;
         } catch (err) {

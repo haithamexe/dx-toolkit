@@ -133,6 +133,8 @@ interface Proc {
   trackers: Map<string, ErrorTracker>;
   flushTimer?: NodeJS.Timeout;
   lastOutputAt: number;
+  /** When its process was started: how long it has run, apart from the time spent getting the project ready. */
+  spawnedAt?: number;
   service?: string;
   role?: string;
   /** The stack this process belongs to. */
@@ -722,6 +724,7 @@ function launchNow(p: Proc, spec: Spec): void {
     stdio: ["ignore", "pipe", "pipe"],
   });
   p.child = child;
+  p.spawnedAt = Date.now();
   p.pid = child.pid;
   child.stdout?.on("data", (d: Buffer) => pushChunk(p, "out", d));
   child.stderr?.on("data", (d: Buffer) => pushChunk(p, "err", d));
@@ -807,8 +810,11 @@ async function watchReady(p: Proc): Promise<void> {
       p.port = p.portHint;
       continue;
     }
-    const age = Date.now() - Date.parse(p.startedAt);
-    const quiet = Date.now() - p.lastOutputAt;
+    // Counted from when the process started, not from when the project began getting ready: a slow machine that spent
+    // its first seconds on packages and .env steps must still give the server time to say where it listens.
+    const since = p.spawnedAt ?? Date.parse(p.startedAt);
+    const age = Date.now() - since;
+    const quiet = Date.now() - Math.max(p.lastOutputAt, since);
     if (p.port === undefined && age > 5000 && quiet > 2500) {
       p.status = "ready";
       push(p, "dx", p.split ? "Running." : "Running (it didn't say where it listens).");

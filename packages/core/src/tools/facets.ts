@@ -165,7 +165,7 @@ const FRAMEWORKS: [dep: string, label: string][] = [
   ["hono", "Node server"],
   ["koa", "Node server"],
 ];
-const KIND_WORDS: Record<string, string> = { node: "Node", go: "Go", rust: "Rust", python: "Python", dotnet: ".NET", other: "Other" };
+const KIND_WORDS: Record<string, string> = { node: "Node", go: "Go", rust: "Rust", python: "Python", dotnet: ".NET", other: "Other", website: "Website" };
 
 /** A framework from package.json's dependencies, else the language. Read from the one file, never run. */
 export function frameworkOf(p: Pick<Project, "dir" | "kind">): string {

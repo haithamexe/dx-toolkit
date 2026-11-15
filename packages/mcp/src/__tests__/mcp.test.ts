@@ -342,3 +342,27 @@ test("dx_status says where a project stands in one call, and dx_verify gives one
     await call("stop_dev_server", { project: "tiny-shop" });
   }
 });
+
+test("a website project is listed, its status says what dx knows without a call, and what needs code refuses it", async () => {
+  const { addUrlProject, appendActivity, removeUrlProject } = await import("@dx/core");
+  const site = addUrlProject({ url: "https://staging.shop-website.dev", name: "shop-staging", env: "staging" });
+  try {
+    appendActivity([{ id: 1, at: new Date().toISOString(), dir: site.dir, project: site.name, type: "error", level: "error", text: "Uncaught TypeError: x is undefined", from: "dx-browser" } as never]);
+    const list = JSON.parse((await call("list_projects", { query: "shop-staging" })).text) as { name: string; kind: string; url?: string }[];
+    assert.deepEqual(list.map((p) => [p.name, p.kind, p.url]), [["shop-staging", "website", "https://staging.shop-website.dev"]]);
+    const status = await call("dx_status", { project: "shop-staging" });
+    assert.ok(!status.isError, status.text);
+    assert.match(status.text, /shop-staging is a website/);
+    assert.match(status.text, /staging\.shop-website\.dev \(staging; mocks, rules and chaos on\): not checked yet/);
+    assert.match(status.text, /Problems recorded in the last hour: 1/);
+    for (const tool of ["start_dev_server", "dev_errors", "search_code", "run_tests"]) {
+      const r = await call(tool, tool === "search_code" ? { project: "shop-staging", query: "x" } : { project: "shop-staging" });
+      assert.ok(r.isError, tool);
+      assert.match(r.text, /is a website, so this needs its code on this computer/, tool);
+    }
+    const log = await call("activity_log", { project: "shop-staging", problems: true });
+    assert.match(log.text, /Uncaught TypeError/);
+  } finally {
+    removeUrlProject(site.dir);
+  }
+});

@@ -43,6 +43,25 @@ export function refusedAddress(address: string, allowLoopback = false): boolean 
   return false;
 }
 
+/**
+ * One address of a project's site as text (an API spec): only an address on one of the project's sites, the same
+ * connection rules as a check (nothing on this computer, no redirect followed), at most `maxBytes`. Asked for
+ * by a person's press, never by itself.
+ */
+export async function fetchSiteText(url: string, sites: SiteConfig[], options: { maxBytes?: number; timeoutMs?: number; allowLoopback?: boolean } = {}): Promise<string> {
+  if (!siteForUrl(url, sites)) throw new Error("That address isn't one of the project's sites.");
+  const u = new URL(url);
+  let hop: Hop;
+  try {
+    hop = await getOnce(u, options.allowLoopback === true, options.timeoutMs ?? 10_000, options.maxBytes ?? 5 * 1024 * 1024);
+  } catch (err) {
+    throw new Error(plainNetworkError(err as Error, u.host));
+  }
+  if (hop.status >= 300) throw new Error(`${u.pathname} answered ${hop.status}.`);
+  if (hop.truncated) throw new Error(`${u.pathname} is longer than ${Math.round((options.maxBytes ?? 5 * 1024 * 1024) / 1024 / 1024)} MB.`);
+  return hop.body;
+}
+
 /** A connection error in words: what a person would say about it, not Node's code. */
 function plainNetworkError(err: Error, host: string): string {
   const m = err.message;
@@ -84,10 +103,15 @@ interface Hop {
   status: number;
   headers: http.IncomingHttpHeaders;
   body: string;
+  /** The answer was longer than the part kept. */
+  truncated?: boolean;
 }
 
-function getOnce(u: URL, allowLoopback: boolean, timeoutMs: number): Promise<Hop> {
+function getOnce(u: URL, allowLoopback: boolean, timeoutMs: number, maxBytes = 64 * 1024): Promise<Hop> {
   return new Promise((resolve, reject) => {
+    // A number is connected to as it is, with no name lookup to check: refuse it here.
+    const literal = u.hostname.replace(/^\[|\]$/g, "");
+    if (net.isIP(literal) && refusedAddress(literal, allowLoopback)) return reject(new Error(`${u.host} is an address dx won't connect to.`));
     const lookup = (host: string, o: dns.LookupOptions, cb: (...args: unknown[]) => void) => {
       dns.lookup(host, { ...o, all: true }, (err, addrs) => {
         if (err) return cb(err);
@@ -104,9 +128,9 @@ function getOnce(u: URL, allowLoopback: boolean, timeoutMs: number): Promise<Hop
       res.on("data", (c: Buffer) => {
         size += c.length;
         chunks.push(c);
-        if (size > 64 * 1024) res.destroy(); // the head of the page is enough
+        if (size > maxBytes) res.destroy(); // the head of the page is enough
       });
-      const done = () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString("utf8", 0, 64 * 1024) });
+      const done = () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString("utf8", 0, maxBytes), truncated: size > maxBytes });
       res.on("end", done);
       res.on("close", done);
       res.on("error", done);

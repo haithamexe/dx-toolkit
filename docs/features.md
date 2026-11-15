@@ -333,8 +333,11 @@ A project doesn't have to be a folder. **＋ Add a project…** at the end of th
 - **Overview**: the address with its environment, mocks (**Mock this app**, once you've used the site in the dx browser), the last hour's requests and problems, its sites (add staging next to production, check each, see the last results), and its API spec.
 - **API**: the docs, mocks and rules (delays, failures and request headers apply to a site; changing an answer and pausing a call don't). **Activity**: everything the dx browser recorded on it. **Stress test**: Chaos mode and the weak phone.
 - **Left out, because there is no code here**: Git, Search, Secrets, Data, Tools, running it, and the stress tests that run from code (click everything, another date, long text, missing `.env` values, comparing versions, unused code, security). A link to one of those pages goes to the overview, and the server refuses their routes with the reason.
+- **Home and All projects** list it like any project: Home shows it when its recorded history has problems or its last check failed (dx makes no call of its own to know), and the filters put it under the **Website** kind.
+- **No spec to add?** On its API page, **Look on the site** asks the site for the usual spec paths (`/openapi.json`, `/swagger.json`, `/api-docs`…), only when you press it: one request at a time, no redirects, at most 5 MB, only to the project's own site.
+- **AI agents**: `list_projects` lists it, `dx_status` and `activity_log` take it, and `dx_do` reaches its mocks, rules, sites and checks; the tools that need code refuse it with the reason.
 - It works through the dx browser: **Open in dx browser** records the site's calls, and the project's mocks, rules and Chaos mode answer them, as for any site ([Sites on a project](#sites-on-a-project)).
-- **Remove** takes the project and its sites out; what was recorded, its mocks and its rules stay on this computer until cleared. The site itself is never touched. (Not carried to another computer by `dx state` yet.)
+- **Remove** takes the project and its sites out; what was recorded, its mocks and its rules stay on this computer until cleared. The site itself is never touched. It travels with `dx state` (its address, environment, sites and their switches, tags and pins; its mocks, rules and Chaos settings come along because they are kept under its name).
 
 ## Sites on a project
 

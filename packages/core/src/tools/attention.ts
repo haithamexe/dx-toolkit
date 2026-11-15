@@ -17,7 +17,7 @@ export interface AttentionAction {
   after?: "push" | "fix" | "tests";
 }
 
-export type AttentionKind = "errors" | "agent" | "unpushed" | "env" | "tests";
+export type AttentionKind = "errors" | "agent" | "unpushed" | "env" | "tests" | "site";
 
 export interface AttentionItem {
   id: string;
@@ -42,6 +42,8 @@ export interface ProjectFacts {
   env?: { exposed: { name: string; tracked: boolean }[]; missingRules: string[] };
   tests?: { ok: boolean; passed: number; failed: number; at: string; firstFailure?: string };
   waiting?: { label: string; minutes: number }[];
+  /** A website project: what its recorded calls and its last check say. dx makes no calls of its own to learn it. */
+  site?: { problems: number; failedCheck?: { at: string; what: string } };
 }
 
 const route = (page: string, dir: string) => `#/${page}?dir=${encodeURIComponent(dir)}`;
@@ -70,6 +72,29 @@ export function projectItems(f: ProjectFacts, now = Date.now()): AttentionItem[]
       title: plural(f.server.errorCount, "error") + " in the running app",
       detail: f.server.url ? `Running at ${f.server.url.replace(/^https?:\/\//, "")}` : "Running",
       actions: [{ label: "Open errors", primary: true, go: route("overview", f.dir) }],
+    });
+  }
+
+  if (f.site && f.site.problems > 0) {
+    items.push({
+      ...base,
+      id: `site-errors:${f.dir}`,
+      kind: "errors",
+      severity: 1,
+      title: plural(f.site.problems, "problem") + " on the site in the last hour",
+      detail: "Errors and failed requests the dx browser recorded",
+      actions: [{ label: "Open activity", primary: true, go: route("activity", f.dir) }],
+    });
+  }
+  if (f.site?.failedCheck && now - Date.parse(f.site.failedCheck.at) < 24 * 3_600_000) {
+    items.push({
+      ...base,
+      id: `site-check:${f.dir}`,
+      kind: "site",
+      severity: 2,
+      title: `The last ${f.site.failedCheck.what} check of the site found a problem`,
+      detail: `Checked ${ago(now - Date.parse(f.site.failedCheck.at))}`,
+      actions: [{ label: "Open the site", primary: true, go: route("overview", f.dir) }],
     });
   }
 
@@ -139,7 +164,7 @@ export function projectItems(f: ProjectFacts, now = Date.now()): AttentionItem[]
 /** Everything that needs attention across projects, the most urgent first. */
 export function attentionItems(facts: ProjectFacts[], now = Date.now()): AttentionItem[] {
   // Within a level, what blocks work first (an agent waiting), then what could leak or be lost.
-  const rank: Record<AttentionKind, number> = { errors: 0, agent: 1, env: 2, unpushed: 3, tests: 4 };
+  const rank: Record<AttentionKind, number> = { errors: 0, site: 0, agent: 1, env: 2, unpushed: 3, tests: 4 };
   return facts.flatMap((f) => projectItems(f, now)).sort((a, b) => a.severity - b.severity || rank[a.kind] - rank[b.kind] || a.project.localeCompare(b.project));
 }
 

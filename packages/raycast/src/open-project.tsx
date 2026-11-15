@@ -29,6 +29,7 @@ const KIND_COLOR: Record<ProjectKind, Color> = {
   rust: Color.Orange,
   python: Color.Yellow,
   dotnet: Color.Purple,
+  website: Color.Magenta,
   other: Color.SecondaryText,
 };
 

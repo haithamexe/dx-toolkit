@@ -16,6 +16,7 @@ import {
   removeView,
   saveView,
   scanProjectsCached,
+  listUrlProjects,
   setPinned,
   setProjectTags,
   type FacetItem,
@@ -23,7 +24,7 @@ import {
   type StatusFacet,
 } from "@dx/core";
 import { HttpError, knownProject, type ApiRequest } from "./api.js";
-import { factsFor } from "./homeapi.js";
+import { factsFor, websiteFacts } from "./homeapi.js";
 
 /**
  * Slicing the projects (`GET /api/facets`, tags, pins and saved views): the facts about every
@@ -67,8 +68,12 @@ export const forgetFacets = (): void => {
 /** Every project with the facts its facets are made of. */
 export async function facetItems(): Promise<FacetItem[]> {
   if (itemsKept && Date.now() - itemsKept.at < 5_000) return itemsKept.value;
-  const projects = scanProjectsCached(loadConfig());
-  const [facts, behind] = await Promise.all([factsFor(projects, readRuns(2000)), behindByDir(projects)]);
+  const config = loadConfig();
+  const folders = scanProjectsCached(config);
+  const websites = listUrlProjects(config);
+  const projects = [...folders, ...websites];
+  const [folderFacts, behind] = await Promise.all([factsFor(folders, readRuns(2000)), behindByDir(folders)]);
+  const facts = [...folderFacts, ...websiteFacts(websites)];
   const needs = new Map<string, string>();
   for (const a of attentionItems(facts)) if (!needs.has(a.dir.toLowerCase())) needs.set(a.dir.toLowerCase(), a.title);
   const meta = readMeta();
@@ -131,13 +136,13 @@ export const facetRoutes: Record<string, (req: ApiRequest) => unknown> = {
     return { total: items.length, filter, query: filterToQuery(filter), items: filterItems(items, filter), counts: facetCounts(items, filter), views };
   },
   "POST /api/facets/tags": (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     const tags = facetCall(() => setProjectTags(project.dir, req.body.tags));
     forgetFacets();
     return { tags };
   },
   "POST /api/facets/pin": (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     setPinned(project.dir, req.body.pinned === true);
     forgetFacets();
     return { pinned: req.body.pinned === true };

@@ -141,3 +141,39 @@ test("the last checks of a site are kept as numbers, newest first, a dozen per k
   assert.ok(!text.includes("token") && !text.includes("Secret page") && !text.includes("not a commit"));
   if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });
+
+test("a spec is read from a site's own address: only a site of the project, no redirect followed, nothing too big", async () => {
+  const { fetchSiteText } = await import("../tools/sitecheck.js");
+  const big = "x".repeat(200_000);
+  const port = await serve((req, res) => {
+    if (req.url === "/openapi.json") return void res.writeHead(200, { "content-type": "application/json" }).end('{"openapi":"3.0.0","paths":{}}');
+    if (req.url === "/moved") return void res.writeHead(302, { location: "/openapi.json" }).end();
+    if (req.url === "/big.json") return void res.writeHead(200).end(big);
+    res.writeHead(404).end("no");
+  });
+  const sites = [siteOf(port)];
+  const base = `http://127.0.0.1:${port}`;
+  assert.equal(JSON.parse(await fetchSiteText(`${base}/openapi.json`, sites, { allowLoopback: true })).openapi, "3.0.0");
+  await assert.rejects(() => fetchSiteText(`${base}/missing`, sites, { allowLoopback: true }), /answered 404/);
+  await assert.rejects(() => fetchSiteText(`${base}/moved`, sites, { allowLoopback: true }), /answered 302/);
+  await assert.rejects(() => fetchSiteText(`${base}/big.json`, sites, { allowLoopback: true, maxBytes: 100_000 }), /longer than/);
+  await assert.rejects(() => fetchSiteText("https://example.com/openapi.json", sites, { allowLoopback: true }), /isn't one of the project's sites/);
+  await assert.rejects(() => fetchSiteText(`${base}/openapi.json`, sites), /./, "without the test-only allowance an address on this computer is refused");
+});
+
+test("an address written as a number can't reach this computer or the cloud's metadata address, however it's spelled", async () => {
+  const { normalizeSiteUrl } = await import("../tools/sites.js");
+  for (const url of ["http://169.254.169.254/latest/meta-data", "http://0.0.0.0:8080", "http://0x7f.1/", "http://2130706433/", "http://[::1]:3000", "http://[fe80::1]/", "http://[::ffff:127.0.0.1]/", "http://[::ffff:169.254.169.254]/"]) {
+    assert.throws(() => normalizeSiteUrl(url), /this computer|link-local|on this computer/, url);
+  }
+  // A public number is allowed as a site (a server with no name).
+  assert.equal(normalizeSiteUrl("http://203.0.113.5/app").host, "203.0.113.5");
+  // And the connection itself refuses one even if a site were written to the config by hand.
+  const { siteStatus, fetchSiteText } = await import("../tools/sitecheck.js");
+  const sites = [{ host: "169.254.169.254", project: "/p", env: "production", url: "http://169.254.169.254" }];
+  const st = await siteStatus("http://169.254.169.254/", sites);
+  assert.match(st.error ?? "", /won't connect/);
+  await assert.rejects(() => fetchSiteText("http://169.254.169.254/openapi.json", sites), /won't connect/);
+  const lo = [{ host: "127.0.0.1:9", project: "/p", env: "production", url: "http://127.0.0.1:9" }];
+  await assert.rejects(() => fetchSiteText("http://127.0.0.1:9/x", lo), /won't connect/);
+});

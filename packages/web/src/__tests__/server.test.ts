@@ -827,3 +827,22 @@ test("Remove dx: refused for a DX_HOME copy, which never looks at the computer's
   assert.equal((await api("/api/ping")).status, 200, "still running");
   assert.ok(fs.existsSync(path.join(home, "config.json")), "nothing was removed");
 });
+
+test("an idle connection to the dashboard stays open past Node's 5 s default, so a client's next request doesn't fail", { timeout: 30_000 }, async () => {
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  const get = () =>
+    new Promise<boolean>((resolve, reject) => {
+      const req = http.get(new URL("/api/ping", dashboard.url), { agent, headers: { "X-DX-Token": dashboard.token } }, (res) => {
+        res.resume();
+        res.on("end", () => resolve(req.reusedSocket));
+      });
+      req.on("error", reject);
+    });
+  try {
+    assert.equal(await get(), false, "the first request opens the connection");
+    await new Promise((r) => setTimeout(r, 6000));
+    assert.equal(await get(), true, "the second, after 6 s, reuses it: the server hadn't closed it");
+  } finally {
+    agent.destroy();
+  }
+});

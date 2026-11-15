@@ -340,6 +340,25 @@ function btn(label, onclick, { kind = "", iconName, small = false, disabled = fa
 }
 
 /** Runs an action from a button: disables it, shows "…" text while busy, reports errors. */
+/**
+ * Buttons whose work is running or just finished. A plain "it worked" message (a short toast with no action) said
+ * while one is in flight, or within a moment of it finishing, is the button's own result: it shows on the button,
+ * not in a toast. A longer message, one with an Undo, and what dx did in the background stay toasts.
+ */
+const busyNow = new Set();
+let lastBusy;
+const SAID_MAX = 70;
+
+/** Shows a message on a button for a moment, then puts the button back as it was. */
+function sayOnButton(entry, message) {
+  const { button } = entry;
+  clearTimeout(entry.timer);
+  button.classList.add("btn-done");
+  button.replaceChildren(icon("check"), message);
+  announce(message);
+  entry.timer = setTimeout(entry.restore, 2600);
+}
+
 async function busy(button, busyLabel, fn) {
   const original = [...button.childNodes];
   button.disabled = true;
@@ -350,16 +369,26 @@ async function busy(button, busyLabel, fn) {
     button.classList.remove("btn-done");
     button.replaceChildren(...original);
   };
+  const entry = { button, restore, said: undefined, at: 0, timer: 0 };
+  busyNow.add(entry);
   try {
     const result = await fn();
+    busyNow.delete(entry);
+    entry.at = Date.now();
+    lastBusy = entry;
     // What it did shows on the button itself (a check, then back), not in a toast. A page that redraws takes the button with it.
-    if (result !== undefined && button.isConnected) {
+    if (entry.said && button.isConnected) {
+      button.disabled = false;
+      sayOnButton(entry, entry.said);
+    } else if (entry.said) showToast(entry.said, "ok", {});
+    else if (result !== undefined && button.isConnected) {
       button.classList.add("btn-done");
       button.replaceChildren(icon("check"), ...original);
-      setTimeout(restore, 1100);
+      entry.timer = setTimeout(restore, 1100);
     } else restore();
     return result;
   } catch (err) {
+    busyNow.delete(entry);
     restore();
     // A failure: the button shakes and says why beside it, with the ways out. With no button left on the page, it's the one place left to say it.
     if (button.isConnected) {
@@ -465,7 +494,21 @@ async function morph(button, run, { busy: working = "Working…", done = "Done",
  * A message that slides in and goes by itself (staying while the pointer is on it). `action` adds a button
  * for the obvious next step: { label: "Push", run }.
  */
-function toast(message, kind = "ok", { ms, action } = {}) {
+function toast(message, kind = "ok", options = {}) {
+  const { ms, action } = options;
+  if (kind === "ok" && !action && ms === undefined && typeof message === "string" && message.length <= SAID_MAX) {
+    // The result of a button that is working, or just finished: it belongs on that button.
+    const working = [...busyNow].at(-1);
+    if (working) {
+      working.said = message;
+      return;
+    }
+    if (lastBusy && Date.now() - lastBusy.at < 1500 && lastBusy.button.isConnected) return sayOnButton(lastBusy, message);
+  }
+  showToast(message, kind, options);
+}
+
+function showToast(message, kind = "ok", { ms, action } = {}) {
   // An error is announced at once (role=alert); the rest wait their turn in the polite region.
   const el = h(
     "div",
@@ -2116,7 +2159,12 @@ function specCard(dir) {
     const several = specs.length > 1;
     const line = (...children) => fill(el, h("div", { class: "card card-pad spec-line" }, h("strong", null, several ? "API specs" : "API spec"), ...children));
     if (!specs.length) {
-      line(h("span", { class: "dim" }, r.looking ? "Looking…" : r.removed ? "Removed." : "None found."), r.looking ? null : toApiPage("Add", "primary"));
+      line(
+        h("span", { class: "dim" }, r.looking ? "Looking…" : r.removed ? "Removed." : "None found."),
+        // On a website dx doesn't look by itself: a press looks at the usual addresses of the site.
+        r.site && !r.looking ? btn("Look on the site", (ev) => morph(ev.currentTarget, () => api("/api/lab/spec", { method: "POST", body: { dir } }), { busy: "Looking…", done: (x) => `✓ ${plural(x.endpoints.length, "endpoint")}` }).then((x) => x !== undefined && setTimeout(load, 900)), { small: true, kind: "second", title: `Asks ${r.site} for ${r.urls.slice(0, 3).join(", ")}…` }) : null,
+        r.looking ? null : toApiPage("Add", r.site ? "" : "primary"),
+      );
     } else {
       // One line: how many endpoints, how many were called this week, and only what's wrong.
       const endpoints = specs.reduce((n, sp) => n + sp.endpoints.length, 0);
@@ -2381,7 +2429,11 @@ function projectsPage(root, { only } = {}) {
   );
   if (only) listSection.setAttribute("aria-label", "This project");
 
-  function drawWebsites(sites) {
+  let websiteList = [];
+  function drawWebsites(all = websiteList) {
+    websiteList = all;
+    // The same slice as the folders: the choices on facets apply to a website too.
+    const sites = facets ? all.filter((w) => facets.visible(w.dir)) : all;
     websitesSection.hidden = !sites.length;
     if (!sites.length) return;
     fill(
@@ -2486,6 +2538,7 @@ function projectsPage(root, { only } = {}) {
   }
 
   function renderList() {
+    if (!only) drawWebsites();
     const own = projects.filter((p) => !p.snapshot);
     const sliced = facets ? own.filter((p) => facets.visible(p.dir)) : own;
     const list = (query ? sliced.filter((p) => p.name.toLowerCase().includes(query) || p.dir.toLowerCase().includes(query)) : sliced).slice();
@@ -5324,7 +5377,7 @@ function requestsPage(root) {
         { class: "section api-add" },
         first ? h("p", { class: "dim" }, "") : null,
         files.length ? h("div", { class: "section" }, h("p", null, first ? "Found in the project:" : "Also in the project:"), h("div", { class: "toolbar" }, files.map((f) => btn(f, (ev) => useSpec(ev.currentTarget, { file: f, ...extra() }), { small: true, iconName: "check" })))) : first ? h("p", { class: "dim" }, "No openapi.json, openapi.yaml or swagger file in the project.") : null,
-        h("div", { class: "toolbar" }, btn("Read it from the running app", (ev) => useSpec(ev.currentTarget, extra()), { small: true, iconName: "external", disabled: !s.running, title: s.running ? `Looks at ${s.urls.slice(0, 4).join(", ")}…` : "Start the project's dev server first" })),
+        h("div", { class: "toolbar" }, btn(s.site ? "Read it from the site" : "Read it from the running app", (ev) => useSpec(ev.currentTarget, extra()), { small: true, iconName: "external", disabled: !s.running && !s.site, title: s.site ? `Asks ${s.site} for ${s.urls.slice(0, 4).join(", ")}…` : s.running ? `Looks at ${s.urls.slice(0, 4).join(", ")}…` : "Start the project's dev server first" })),
         h("label", { class: "field" }, h("span", { class: "field-label" }, "Or paste it"), paste),
         h("div", { class: "toolbar" }, btn("Use it", (ev) => paste.value.trim() && useSpec(ev.currentTarget, { text: paste.value, ...extra() }), { small: true })),
         h(
@@ -9909,7 +9962,7 @@ function envBadge(env, showLocal = false) {
 }
 
 /** The hue a kind of project has everywhere it shows: what it is, not where you are. */
-const KIND_HUES = { "Next.js": "violet", Remix: "violet", "React Router": "violet", Vite: "cyan", Astro: "cyan", SvelteKit: "cyan", Nuxt: "cyan", "Node server": "blue", Angular: "blue", "Create React App": "blue", Gatsby: "blue", Python: "orange", Go: "lime", Rust: "lime" };
+const KIND_HUES = { "Next.js": "violet", Remix: "violet", "React Router": "violet", Vite: "cyan", Astro: "cyan", SvelteKit: "cyan", Nuxt: "cyan", "Node server": "blue", Angular: "blue", "Create React App": "blue", Gatsby: "blue", Python: "orange", Go: "lime", Rust: "lime", Website: "blue" };
 const kindHue = (kind) => KIND_HUES[kind] ?? "";
 const kindChip = (kind) => (kind ? h("span", { class: `badge${kindHue(kind) ? ` tint-${kindHue(kind)}` : ""}`, title: "What kind of project it is" }, kind) : null);
 
@@ -13828,6 +13881,7 @@ function healthPage(root) {
         plan.roots.length ? h("li", null, h("strong", null, "Projects folders added: "), plan.roots.map(tildify).join(", ")) : null,
         plan.sites ? h("li", null, h("strong", null, "Recorded sites: "), String(plan.sites)) : null,
         plan.views ? h("li", null, h("strong", null, "Saved views: "), String(plan.views)) : null,
+        plan.websites?.length ? h("li", null, h("strong", null, "Websites: "), plan.websites.map((w) => `${w.name} (${w.status === "new" ? "will be added" : "already here"})`).join(", ")) : null,
         plan.journal.adds ? h("li", null, h("strong", null, "Journal: "), `${plural(plan.journal.adds, "entry", "entries")} you don't have here`) : null,
         plan.summaries.adds || plan.summaries.changes ? h("li", null, h("strong", null, "Saved summaries: "), [plan.summaries.adds && `${plan.summaries.adds} new`, plan.summaries.changes && `${plan.summaries.changes} different`].filter(Boolean).join(", ")) : null,
         plan.templates.some((t) => t.status !== "same") ? h("li", null, h("strong", null, "Templates: "), plan.templates.filter((t) => t.status !== "same").map((t) => `${t.name} (${t.status === "new" ? "new" : "changes"})`).join(", ")) : null,

@@ -141,3 +141,46 @@ test("a website project is removed with its sites, and its history stays", async
   assert.equal((await call("POST", "/api/projects/url/remove", { dir: folder })).status, 404, "a folder project isn't removed this way");
   assert.equal((await call("GET", `/api/mocks?dir=${encodeURIComponent(DIR)}`)).status, 404, "it isn't a project any more");
 });
+
+test("Home says what is wrong with a website, and the projects list slices it like any project", async () => {
+  const site = await call("POST", "/api/projects/url/add", { url: "https://home.shop-website.dev", name: "shop-home", env: "production" });
+  assert.equal(site.status, 200);
+  const dir = site.json.dir as string;
+  core.appendActivity([{ id: 1, at: new Date().toISOString(), dir, project: "shop-home", type: "error", level: "error", text: "Uncaught TypeError: x is undefined", from: "dx-browser" } as never, { id: 2, at: new Date().toISOString(), dir, project: "shop-home", type: "error", level: "error", text: "Failed to fetch", from: "dx-browser" } as never]);
+  const home = (await call("GET", "/api/home")).json as { items: { dir: string; kind: string; title: string; actions: { go?: string }[] }[]; projects: number };
+  const mine = home.items.filter((i) => i.dir === dir);
+  assert.equal(mine.length, 1, JSON.stringify(mine));
+  assert.match(mine[0].title, /2 problems on the site in the last hour/);
+  assert.ok(mine[0].actions[0].go?.startsWith("#/activity?dir="));
+  assert.ok(home.projects >= 2, "websites count among the projects");
+
+  // A failed check is news for a day.
+  core.recordSiteCheck(dir, "home.shop-website.dev", { what: "status", ok: false, status: 503, ms: 900, bad: 1 });
+  const after = (await call("GET", "/api/home")).json as { items: { dir: string; kind: string; title: string }[] };
+  assert.ok(after.items.some((i) => i.dir === dir && i.kind === "site" && /last status check of the site found a problem/.test(i.title)));
+
+  const facets = (await call("GET", "/api/facets")).json as { items: { dir: string; kind: string; status: string[]; tags: string[] }[] };
+  const row = facets.items.find((p) => p.dir === dir);
+  assert.equal((await call("POST", "/api/facets/tags", { dir, tags: ["client"] })).status, 200, "a website takes tags");
+  assert.equal((await call("POST", "/api/facets/pin", { dir, pinned: true })).status, 200);
+  assert.equal(row?.kind, "Website");
+  assert.ok(row?.status.includes("needs"));
+  await call("POST", "/api/projects/url/remove", { dir });
+});
+
+test("a website's API spec is looked for on its site by a press, never by itself", async () => {
+  const added = await call("POST", "/api/projects/url/add", { url: "https://spec.shop-website.invalid", name: "spec-site" });
+  const dir = added.json.dir as string;
+  const state = (await call("GET", `/api/lab/spec?dir=${encodeURIComponent(dir)}`)).json;
+  assert.equal(state.site, "https://spec.shop-website.invalid", "it says where it would look");
+  assert.equal(state.looking, false, "nothing is looked for unasked");
+  assert.deepEqual(state.specs, []);
+  const looked = await call("POST", "/api/lab/spec", { dir });
+  assert.equal(looked.status, 404);
+  assert.match(looked.json.error, /doesn't serve a spec at the usual addresses/);
+  // A pasted spec works as it does for any project.
+  const pasted = await call("POST", "/api/lab/spec", { dir, text: JSON.stringify({ openapi: "3.0.0", info: { title: "Shop", version: "1" }, paths: { "/api/cart": { get: { responses: { "200": { description: "ok" } } } } } }) });
+  assert.equal(pasted.status, 200, JSON.stringify(pasted.json));
+  assert.equal((await call("GET", `/api/lab/spec?dir=${encodeURIComponent(dir)}`)).json.specs.length, 1);
+  await call("POST", "/api/projects/url/remove", { dir });
+});

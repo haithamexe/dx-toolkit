@@ -190,3 +190,83 @@ test("a recorded site's service worker doesn't hide its API calls from dx", { sk
     }
   }
 });
+
+// A signed-in session: the page logs in (a POST that sets a cookie), then calls with the cookie and posts a body.
+// dx changing a header or answering one call mustn't cost the others their cookie.
+const SESSION_PAGE = `<!doctype html><title>Session</title><body>session<script>
+(async () => {
+  const out = {};
+  await fetch("/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ user: "octocat" }) });
+  out.me = await fetch("/api/me", { credentials: "include" }).then((r) => r.json());
+  out.edited = await fetch("/api/profile", { credentials: "include" }).then((r) => r.json());
+  out.order = await fetch("/api/orders", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ item: 3 }) }).then((r) => r.json());
+  out.other = await fetch("/api/orders", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ item: 4 }) }).then((r) => r.json());
+  await fetch("/report", { method: "POST", body: JSON.stringify(out) });
+})();
+</script>`;
+
+test("a signed-in session keeps its cookies when dx edits a header, and a POST's body reaches the decision and the server", { skip: findBrowser() ? false : "no Chrome, Edge, Chromium or Brave here", timeout: 60_000 }, async () => {
+  const served: { url: string; cookie?: string; debug?: string; body?: string }[] = [];
+  let sessionReport: Record<string, unknown> | undefined;
+  const srv = http.createServer((req, res) => {
+    const url = req.url ?? "/";
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      served.push({ url, cookie: req.headers.cookie, debug: String(req.headers["x-debug"] ?? ""), body });
+      if (url === "/login") return void res.writeHead(200, { "set-cookie": "sid=abc123; Path=/; HttpOnly", "content-type": "application/json" }).end('{"ok":true}');
+      if (url === "/report") {
+        sessionReport = JSON.parse(body);
+        return void res.end("ok");
+      }
+      if (url === "/api/me") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ signedIn: /sid=abc123/.test(req.headers.cookie ?? ""), from: "server" }));
+      if (url === "/api/profile") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ signedIn: /sid=abc123/.test(req.headers.cookie ?? ""), debug: String(req.headers["x-debug"] ?? "") }));
+      if (url === "/api/orders") return void res.writeHead(201, { "content-type": "application/json" }).end(JSON.stringify({ from: "server", got: body }));
+      res.writeHead(200, { "content-type": "text/html" }).end(SESSION_PAGE);
+    });
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  const host = `127.0.0.1:${(srv.address() as AddressInfo).port}`;
+  const sites: SiteConfig[] = [{ host, env: "staging", project: "/path/to/shop-website" }];
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "dx-intercept-session-"));
+  const decided: string[] = [];
+  const browser = await launchDxBrowser({
+    headless: true,
+    profileDir,
+    url: `http://${host}/`,
+    targetFor: (u) => (new URL(u).host === host ? siteTarget(u, sites) : undefined),
+    onEvent: () => undefined,
+    intercept: (req): SiteAction | undefined => {
+      const p = new URL(req.url).pathname;
+      decided.push(`${req.method} ${p} body=${req.postData ?? ""}`);
+      // A header edit on a call that has a cookie, and a mock chosen by the body of a POST.
+      if (p === "/api/profile") return { kind: "continue", headers: { ...req.headers, "x-debug": "1" }, tags: { rules: ["Debug header"] } };
+      if (p === "/api/orders" && req.postData?.includes('"item":3')) return { kind: "fulfill", status: 200, headers: { "content-type": "application/json" }, body: '{"from":"dx mock for item 3"}', tags: { mocked: true } };
+      return undefined;
+    },
+  });
+  try {
+    const end = Date.now() + 30_000;
+    while (!sessionReport && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(sessionReport, `the page finished: ${JSON.stringify(decided)}`);
+    assert.deepEqual(sessionReport.me, { signedIn: true, from: "server" }, "a call dx let through carried the cookie");
+    assert.deepEqual(sessionReport.edited, { signedIn: true, debug: "1" }, "a call with an edited header kept its cookie, and got the header");
+    assert.deepEqual(sessionReport.order, { from: "dx mock for item 3" }, "a POST answered from its body");
+    assert.equal((sessionReport.other as { from: string }).from, "server", "another body goes to the server");
+    assert.equal((sessionReport.other as { got: string }).got, '{"item":4}', "with its body whole");
+    assert.ok(decided.some((d) => d === 'POST /api/orders body={"item":3}'), "the decision saw the body");
+    assert.ok(!served.some((s) => s.url === "/api/orders" && s.body === '{"item":3}'), "the mocked POST never reached the server");
+  } finally {
+    await browser.close();
+    await browser.closed;
+    srv.close();
+    for (let i = 0; i < 10; i++) {
+      try {
+        fs.rmSync(profileDir, { recursive: true, force: true });
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+  }
+});

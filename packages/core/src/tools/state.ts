@@ -18,6 +18,7 @@ import { importNote, readSession } from "./sessions.js";
 import { cleanFilter, cleanTags, readMeta, saveView, setPinned, setProjectTags, type Filter } from "./facets.js";
 import { normalizeEnv, normalizeSiteHost, normalizeSiteUrl, type SiteConfig } from "./sites.js";
 import { summariesDir } from "./summary.js";
+import { addUrlProject, findUrlProject, listUrlProjects, urlProjectDir } from "./urlprojects.js";
 
 /**
  * dx's state as one file, to carry to another computer: settings, the journal, saved summaries,
@@ -67,6 +68,8 @@ export interface StateProject {
   /** Tags and the pin, as the projects list keeps them. */
   tags?: string[];
   pinned?: true;
+  /** A website project (no folder): its address and environment. Its mocks, rules, spec, chaos settings and sites come in the fields above. */
+  website?: { url: string; env?: string };
 }
 
 export interface DxState {
@@ -81,6 +84,8 @@ export interface DxState {
   templates: { name: string; files: { path: string; data: string }[] }[];
   /** Saved views of the projects list. */
   views?: { name: string; filter: Filter }[];
+  /** Websites added as projects. */
+  websites?: StateProject[];
   /** The dashboard's preferences, when it made the file. */
   page?: Record<string, string>;
   projects: StateProject[];
@@ -203,8 +208,9 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
   const remotes = await projectRemotes(options.projects);
   let sceneBytes = 0;
   const projects: StateProject[] = [];
+  const websites: StateProject[] = [];
   const meta = readMeta();
-  for (const p of options.projects) {
+  for (const p of [...options.projects, ...listUrlProjects(config)]) {
     const sp: StateProject = { name: p.name, ...(remotes.get(p.dir) ? { remote: remotes.get(p.dir) } : {}) };
     const tools = loadTools(p.dir).map(({ createdAt: _c, updatedAt: _u, ...t }) => t);
     if (tools.length) sp.tools = tools;
@@ -248,6 +254,11 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
     const tags = meta.tags[p.dir.toLowerCase()];
     if (tags?.length) sp.tags = tags;
     if (meta.pinned.some((d) => d.toLowerCase() === p.dir.toLowerCase())) sp.pinned = true;
+    if (p.kind === "website") {
+      sp.website = { url: p.url!, ...((config.sites ?? []).find((x) => x.project && same(x.project, p.dir))?.env ? { env: (config.sites ?? []).find((x) => x.project && same(x.project, p.dir))!.env } : {}) };
+      websites.push(sp);
+      continue;
+    }
     if (Object.keys(sp).some((k) => k !== "name" && k !== "remote")) projects.push(sp);
   }
 
@@ -297,6 +308,7 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
     summaries,
     templates,
     ...(meta.views.length ? { views: meta.views.map((v) => ({ name: v.name, filter: v.filter })) } : {}),
+    ...(websites.length ? { websites } : {}),
     ...(page && Object.keys(page).length ? { page } : {}),
     projects,
     ...(left.length ? { left } : {}),
@@ -306,8 +318,8 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
 // ------------------------------------------------------------------ reading a file, strictly
 
 const SUMMARY_NAME = /^[\w-][\w.-]{0,99}\.md$/;
-const TOP = new Set(["format", "version", "exportedAt", "settings", "sites", "journal", "summaries", "templates", "views", "page", "projects", "left"]);
-const PROJECT_FIELDS = new Set(["name", "remote", "tools", "mocks", "rules", "spec", "specs", "specsOff", "chaos", "scenes", "note", "alerts", "sites", "tags", "pinned"]);
+const TOP = new Set(["format", "version", "exportedAt", "settings", "sites", "journal", "summaries", "templates", "views", "websites", "page", "projects", "left"]);
+const PROJECT_FIELDS = new Set(["name", "remote", "tools", "mocks", "rules", "spec", "specs", "specsOff", "chaos", "scenes", "note", "alerts", "sites", "tags", "pinned", "website"]);
 
 function obj(v: unknown, where: string): Record<string, unknown> {
   if (!v || typeof v !== "object" || Array.isArray(v)) throw new StateError(`${where} isn't an object.`);
@@ -478,6 +490,15 @@ function cleanProject(input: unknown, i: number): StateProject {
     if (tags.length) p.tags = tags;
   }
   if (o.pinned === true) p.pinned = true;
+  if (o.website !== undefined) {
+    const w = obj(o.website, `${at} website`);
+    try {
+      const u = normalizeSiteUrl(String(w.url ?? ""));
+      p.website = { url: u.url, ...(w.env !== undefined ? { env: normalizeEnv(w.env, u.host) } : {}) };
+    } catch (err) {
+      throw new StateError(`${at} website: ${(err as Error).message}`);
+    }
+  }
   return p;
 }
 
@@ -524,6 +545,9 @@ export function readState(input: unknown): DxState {
   });
   if (templateBytes > TEMPLATES_MAX + 1024 * 1024) throw new StateError("The templates take more than 10 MB.");
   const projects = list(o.projects, "Projects", 2000).map(cleanProject);
+  const websites = list(o.websites, "Websites", 200)
+    .map(cleanProject)
+    .filter((w) => w.website);
   const views = list(o.views, "Views", 20).flatMap((v) => {
     const x = obj(v, "A view");
     const name = typeof x.name === "string" ? x.name.trim().slice(0, 40) : "";
@@ -536,6 +560,7 @@ export function readState(input: unknown): DxState {
     settings: cleanSettings(o.settings),
     sites: list(o.sites, "Sites", 200).map((s, n) => cleanSite(s, `Site ${n + 1}`)),
     ...(views.length ? { views } : {}),
+    ...(websites.length ? { websites } : {}),
     journal,
     summaries,
     templates,
@@ -559,6 +584,14 @@ export interface StatePlanProject {
   cloneUrl?: string;
 }
 
+export interface StatePlanWebsite {
+  name: string;
+  url: string;
+  has: Record<string, number>;
+  /** Added as a project, or already a project here. */
+  status: "new" | "here";
+}
+
 export interface StatePlan {
   exportedAt: string;
   /** Settings that would change: the key, its name in words, and both values as text. */
@@ -567,6 +600,7 @@ export interface StatePlan {
   roots: string[];
   sites: number;
   views: number;
+  websites: StatePlanWebsite[];
   journal: { entries: number; adds: number };
   summaries: { adds: number; changes: number };
   templates: { name: string; status: "new" | "changes" | "same" }[];
@@ -696,8 +730,9 @@ export async function planStateImport(state: DxState, projects: Project[], confi
     exportedAt: state.exportedAt,
     settings: settingsChanges(state, config),
     roots: rootsToAdd(state, config),
-    sites: state.sites.length + state.projects.reduce((n, p) => n + (p.sites?.length ?? 0), 0),
+    sites: state.sites.length + [...state.projects, ...(state.websites ?? [])].reduce((n, p) => n + (p.sites?.length ?? 0), 0),
     views: state.views?.length ?? 0,
+    websites: (state.websites ?? []).map((w) => ({ name: w.name, url: w.website!.url, has: hasOf(w), status: findUrlProject(urlProjectDir(new URL(w.website!.url).host), config) ? ("here" as const) : ("new" as const) })),
     journal: { entries: state.journal.length, adds: mergeJournalText(journalText, state.journal).added },
     summaries,
     templates: state.templates.map((t) => {
@@ -825,9 +860,29 @@ export async function importState(state: DxState, options: { projects: Project[]
 
   try {
   // Per project.
-  for (const [index, sp] of state.projects.entries()) {
-    const chosen = options.map && Object.hasOwn(options.map, String(index)) ? options.map[String(index)] : matches[index]?.dir;
-    const project = chosen ? options.projects.find((p) => same(p.dir, chosen)) : undefined;
+  const entries = [...state.projects.map((sp, index) => ({ sp, index })), ...(state.websites ?? []).map((sp) => ({ sp, index: -1 }))];
+  for (const { sp, index } of entries) {
+    let project: Project | undefined;
+    if (sp.website) {
+      // A website is a project made from its address: found if it's here, added if not (with the config as it was kept, so undo takes it out).
+      const dirOfSite = urlProjectDir(new URL(sp.website.url).host);
+      project = findUrlProject(dirOfSite, config);
+      if (!project) {
+        before.touch(configPath());
+        try {
+          project = addUrlProject({ url: sp.website.url, name: sp.name, env: sp.website.env });
+          const fresh = loadConfig();
+          config.urlProjects = fresh.urlProjects;
+          config.sites = fresh.sites;
+        } catch (err) {
+          result.skipped.push(`${sp.name} (${(err as Error).message})`);
+          continue;
+        }
+      }
+    } else {
+      const chosen = options.map && Object.hasOwn(options.map, String(index)) ? options.map[String(index)] : matches[index]?.dir;
+      project = chosen ? options.projects.find((p) => same(p.dir, chosen)) : undefined;
+    }
     if (!project) {
       result.skipped.push(sp.name);
       continue;
