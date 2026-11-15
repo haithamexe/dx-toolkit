@@ -87,6 +87,14 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Decisions
 
+### A website as a project (`core/src/tools/urlprojects.ts`, `web/src/api.ts` `knownProject`, `websiteOverview` and `addProjectDialog` in `app.js`)
+
+- **The maintainer asked that already-deployed sites, or anything with a URL, be choosable as a project from the picker ("Add a project"), and that the whole application adapt to it**, except what needs the live codebase (git, secrets and the like).
+- **A website project is a config entry** (`urlProjects`: name, address, environment) whose address is also a site (`sites`, linked by `project: "site:<host>"`). Its key is `site:<host>`, the activity history's own key for a site, so what was recorded before it became a project is its history, and mocks, rules, Chaos settings and the spec (all keyed by that string) just work. `scanProjects` never sees it: nothing that walks folders can.
+- **Closed by default, opened route by route**: `knownProject` refuses a `site:` key unless the route passes `{ site: true }`. Of about 130 callers, the ones opened are the sites routes, mocks (including Mock this app), rules, the API spec, Chaos mode's settings and report, and the activity reads; each was read for folder access (spec discovery and mock making read only stored data and the history; `findSpecFiles` on a missing folder returns nothing). A new route is closed to websites until someone decides otherwise.
+- **The pages**: `code: true` on Git, Search, Secrets, Data and Tools hides them for a website and sends a link to them to the overview; Stress test is always there for a website (its Chaos mode and weak phone tabs only: the rest run from code or the recorder script); the API page keeps docs and rules (Resend and Pause need a dev server of its own). Overview is a website's own (`websiteOverview`): the address, Mocks, Activity, the sites card (without its duplicate mock control) and the spec.
+- **Not done**: carrying website projects in `dx state` (their mocks and rules are keyed by the `site:` string, not a folder), the Home attention list and the facets for websites, finding an API spec from the site itself, and MCP tools that pick a project by folder (`list_projects`, `search_code`) don't list them.
+
 ### Search, and the round of "make what exists better" (Nov 2026: `core/src/tools/codesearch.ts`, `web/public/search.js`, `caches.ts`, `mongoquery.ts`, `sitehistory.ts`)
 
 - **The maintainer said "proceed with all" of the list of fifteen enhancements, and asked for a search of files and of words inside files "with a very exciting display" and "a very good modern engine".** An exception to "no new features", asked for by name.

@@ -211,6 +211,7 @@ import { graphRoutes } from "./graphapi.js";
 import { autonomyRoutes } from "./autonomyapi.js";
 import { siteRoutes } from "./siteapi.js";
 import { searchRoutes } from "./searchapi.js";
+import { addUrlProject, findUrlProject, isSiteDir, listUrlProjects, removeUrlProject, UrlProjectError } from "@dx/core";
 import { cleanCache, CacheError, listCaches } from "@dx/core";
 import { navRoutes } from "./navapi.js";
 import { noteGitViewed } from "./gitfetch.js";
@@ -264,10 +265,24 @@ const routes: Record<string, Handler> = {
   "GET /api/ping": () => ({ ok: true, pid: process.pid, version: dxVersion() }),
 
   // ------------------------------------------------------------ projects
+  // The folders dx found, then the websites added as projects (an address, no folder).
   "GET /api/projects": () => {
     const running = new Map(listDevServers().map((d) => [d.dir.toLowerCase(), d]));
     const sessionOf = sessionLookup();
-    return scanProjects(loadConfig()).map((p) => {
+    const config = loadConfig();
+    const websites = listUrlProjects(config).map((p) => ({
+      name: p.name,
+      dir: p.dir,
+      kind: p.kind,
+      url: p.url,
+      website: true,
+      hasGit: false,
+      lastActive: p.lastActive,
+      env: (config.sites ?? []).find((s) => s.project?.toLowerCase() === p.dir)?.env,
+      sites: (config.sites ?? []).filter((s) => s.project?.toLowerCase() === p.dir).length,
+      mocks: mockSummary(p.dir),
+    }));
+    return scanProjects(config).map((p) => {
       const stack = detectStack(p);
       const s = sessionOf(p.dir);
       return {
@@ -288,7 +303,27 @@ const routes: Record<string, Handler> = {
       runModes: runModes(p).filter((m) => m.id !== "dev").map((m) => ({ id: m.id, label: m.label, command: m.build ? `${m.build} && ${m.command}` : m.command, envFile: m.envFile })),
       envFiles: runEnvFiles(p.dir).map((e) => ({ file: e.file, name: e.name, count: e.count })),
     };
-    });
+    }).concat(websites as never[]);
+  },
+
+  // A website as a project: add it by its address (and a name and environment if you like), or remove it.
+  "POST /api/projects/url/add": (req) => {
+    try {
+      const p = addUrlProject({ url: String(req.body.url ?? ""), name: typeof req.body.name === "string" ? req.body.name : undefined, env: typeof req.body.env === "string" ? req.body.env : undefined });
+      forgetSites();
+      recordRun("project-url", true, `added the website ${new URL(p.url!).host} as ${p.name}`, "web", { project: p.name });
+      return { name: p.name, dir: p.dir, url: p.url, kind: p.kind, website: true };
+    } catch (err) {
+      if (err instanceof UrlProjectError) throw new HttpError(err.status, err.message);
+      throw err;
+    }
+  },
+  "POST /api/projects/url/remove": (req) => {
+    const p = removeUrlProject(String(req.body.dir ?? ""));
+    if (!p) throw new HttpError(404, "That website isn't one of your projects.");
+    forgetSites();
+    recordRun("project-url", true, `removed the website ${p.name}`, "web", { project: p.name });
+    return { ok: true, name: p.name };
   },
 
   "POST /api/projects/open": async (req) => {
@@ -436,7 +471,7 @@ const routes: Record<string, Handler> = {
   // ------------------------------------------------------------ mock mode
   // Mocks apply only in dx's own proxy, for dev servers dx runs; files are 0600; bodies at most 1 MB.
   "GET /api/mocks": (req) => {
-    const project = knownProject(req.query.get("dir"), { snapshots: true });
+    const project = knownProject(req.query.get("dir"), { snapshots: true, site: true });
     const set = loadMocks(project.dir, project.name);
     // The list without whole bodies; one endpoint's whole body comes with ?id.
     const id = req.query.get("id");
@@ -452,7 +487,7 @@ const routes: Record<string, Handler> = {
     };
   },
   "POST /api/mocks/make": (req) => {
-    const project = knownProject(req.body.dir, { snapshots: true });
+    const project = knownProject(req.body.dir, { snapshots: true, site: true });
     flushActivity();
     const visit = typeof req.body.visit === "string" ? req.body.visit.slice(0, 40) : "";
     const events = visit ? visitRequests(project.dir, visit) : sinceRequests(project.dir, req.body.since);
@@ -463,7 +498,7 @@ const routes: Record<string, Handler> = {
     return { added: r.added, replaced: r.replaced, kept: r.kept, endpoints: r.set.endpoints.length, on: r.set.on };
   },
   "POST /api/mocks/mode": (req) => {
-    const project = knownProject(req.body.dir, { snapshots: true });
+    const project = knownProject(req.body.dir, { snapshots: true, site: true });
     const bool = (v: unknown) => (typeof v === "boolean" ? v : undefined);
     const set = mockCall(() =>
       setMockMode(project.dir, project.name, { on: bool(req.body.on), strict: bool(req.body.strict), cache: bool(req.body.cache) }),
@@ -479,7 +514,7 @@ const routes: Record<string, Handler> = {
     return { on: set.on, strict: set.strict, cache: !!set.cache, endpoints: set.endpoints.length };
   },
   "POST /api/mocks/update": (req) => {
-    const project = knownProject(req.body.dir, { snapshots: true });
+    const project = knownProject(req.body.dir, { snapshots: true, site: true });
     const ep = mockCall(() =>
       updateMock(project.dir, String(req.body.id ?? ""), {
         status: req.body.status,
@@ -495,7 +530,7 @@ const routes: Record<string, Handler> = {
     return ep;
   },
   "POST /api/mocks/remove": (req) => {
-    const project = knownProject(req.body.dir, { snapshots: true });
+    const project = knownProject(req.body.dir, { snapshots: true, site: true });
     if (req.body.all === true) clearMocks(project.dir);
     else mockCall(() => removeMock(project.dir, String(req.body.id ?? "")));
     forgetMocks();
@@ -1421,7 +1456,14 @@ export async function handleApi(req: ApiRequest): Promise<unknown> {
  * ~/.dx/snapshots, and only while registered), for running it, reading its output and history,
  * and opening it; nothing that changes files or git takes one.
  */
-export function knownProject(dir: unknown, { snapshots = false } = {}): Project {
+export function knownProject(dir: unknown, { snapshots = false, site = false } = {}): Project {
+  // A website project has no folder: only the routes that work on an address say they take one (`site: true`);
+  // every other route, the ones that read, run or change code, refuse it with the reason.
+  if (typeof dir === "string" && isSiteDir(dir)) {
+    const website = findUrlProject(dir);
+    if (site && website) return website;
+    if (website) throw new HttpError(409, `${website.name} is a website, so this needs its code on this computer.`);
+  }
   // From the kept scan (read again for this one project); a folder that isn't in it gets a fresh scan first.
   const project = findKnownProject(String(dir ?? ""));
   if (project) return project;
@@ -1564,7 +1606,8 @@ function activityDirOf(dir: unknown, site: unknown): string | undefined {
     }
   }
   if (dir === undefined || dir === null || dir === "") return undefined;
-  return knownProject(dir, { snapshots: true }).dir;
+  // A website project's history is under its own key, like a folder's.
+  return knownProject(dir, { snapshots: true, site: true }).dir;
 }
 
 /** The recorded sites, with the name of the project each belongs to. */

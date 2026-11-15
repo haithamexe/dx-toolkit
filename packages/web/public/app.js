@@ -1380,15 +1380,15 @@ const pages = [
   { id: "overview", label: "Overview", icon: "map", render: overviewPage, project: true, under: "projects", tab: "This project" },
   { id: "stack", label: "Stack map", icon: "map", render: stackPage, project: true, under: "projects", tab: "Stack", when: "stack", aka: "services map architecture calls" },
   { id: "projects", label: "Projects", icon: "projects", render: projectsPage, main: true, tab: "All projects", aka: "all projects new clone" },
-  { id: "search", label: "Search", title: "Search", icon: "search", render: (root) => window.dxSearch({ h, fill, api, btn, icon, plural, pref, setPref, hashParams, setHashParams, currentProject, toast, announce, morph, problemBlock, loadingView, errorView })(root), project: true, main: true, wide: true, aka: "find grep file name word text code content" },
-  { id: "git", label: "Git", title: "Git", icon: "git", render: gitPage, project: true, main: true, wide: true, aka: "code commit branch release" },
+  { id: "search", label: "Search", code: true, title: "Search", icon: "search", render: (root) => window.dxSearch({ h, fill, api, btn, icon, plural, pref, setPref, hashParams, setHashParams, currentProject, toast, announce, morph, problemBlock, loadingView, errorView })(root), project: true, main: true, wide: true, aka: "find grep file name word text code content" },
+  { id: "git", label: "Git", code: true, title: "Git", icon: "git", render: gitPage, project: true, main: true, wide: true, aka: "code commit branch release" },
   { id: "requests", label: "Requests", title: "Requests", icon: "requests", render: requestsPage, project: true, main: true, tab: "API", aka: "api spec mocks rules repeater intercept" },
   { id: "activity", label: "Activity", icon: "activity", render: activityPage, project: true, wide: true, under: "requests" },
   // Shown only when they have something in them (see navState): a page you're on always stays.
   { id: "chaos", label: "Stress test", title: "Stress test", icon: "chaos", render: chaosPage, project: true, main: true, when: "running", aka: "break it chaos gremlins clock weak phone languages" },
-  { id: "tools", label: "Tools", icon: "template", render: toolsPage, project: true, main: true, when: "tools" },
-  { id: "data", label: "Data", icon: "data", render: dataPage, project: true, main: true, when: "data" },
-  { id: "env", label: "Secrets", title: "Secrets", icon: "key", render: envPage, project: true, main: true, when: "env", aka: "env secrets .env" },
+  { id: "tools", label: "Tools", code: true, icon: "template", render: toolsPage, project: true, main: true, when: "tools" },
+  { id: "data", label: "Data", code: true, icon: "data", render: dataPage, project: true, main: true, when: "data" },
+  { id: "env", label: "Secrets", code: true, title: "Secrets", icon: "key", render: envPage, project: true, main: true, when: "env", aka: "env secrets .env" },
   { id: "agents", label: "Agents", icon: "ai", render: agentsPage, group: "everything", when: "agents" },
   { id: "machine", label: "Computer", title: "Computer", icon: "machine", render: machinePage, group: "everything", tab: "Machine", aka: "this computer tools docker processes" },
   { id: "summary", label: "Summary", icon: "summary", render: summaryPage, group: "everything", tab: "Summary", aka: "look back week year" },
@@ -1471,8 +1471,9 @@ async function loadNavState() {
 }
 
 function pageShown(p, lit) {
+  if (p.code && isWebsite(currentProject())) return false;
   if (!p.when || p.id === lit) return true;
-  if (p.when === "running") return projectServers.some((x) => sameDir(x.dir, currentProject()) && x.status !== "stopped");
+  if (p.when === "running") return isWebsite(currentProject()) ||  projectServers.some((x) => sameDir(x.dir, currentProject()) && x.status !== "stopped");
   return !!navState[p.when];
 }
 
@@ -1523,6 +1524,8 @@ function route() {
   let page = pages.find((p) => p.id === (raw || "home")) ?? pages.find((p) => p.id === "home");
   if (linked && page.project && projectList.some((p) => sameDir(p.dir, linked))) setPref("project", projectList.find((p) => sameDir(p.dir, linked)).dir);
   if (page.project && !currentProject()) page = pages.find((p) => p.id === "home");
+  // A website has no code here: the pages that read, run or change code give way to its overview.
+  if (page.code && isWebsite(currentProject())) return void (location.hash = "#/overview");
   leaveCurrent();
   leaveCurrent = () => {};
   renderNav(page.id);
@@ -1571,6 +1574,9 @@ function currentProject() {
   // The listed spelling, so pages comparing folders exactly agree with it.
   return projectList.find((p) => sameDir(p.dir, dir))?.dir ?? projectList[0]?.dir ?? "";
 }
+/** The listed website project for a folder-shaped key (site:<host>), or undefined for a folder of code. */
+const websiteOf = (dir) => projectList.find((p) => p.website && sameDir(p.dir, dir));
+const isWebsite = (dir) => !!websiteOf(dir);
 function projectName() {
   return projectList.find((p) => sameDir(p.dir, currentProject()))?.name ?? "";
 }
@@ -1585,6 +1591,12 @@ const projectPicker = h("select", {
   id: "project-picker",
   "aria-label": "Project",
   onchange: (e) => {
+    // The last choice isn't a project: it opens the way to add one, and the picker goes back to the one you were on.
+    if (e.target.value === "__add") {
+      e.target.value = currentProject();
+      addProjectDialog();
+      return;
+    }
     setPref("project", e.target.value);
     const page = pages.find((p) => p.id === location.hash.replace(/^#\/?/, "").split("?")[0]);
     // On a project page you stay on it, now for this project; elsewhere you go to its overview.
@@ -1603,16 +1615,78 @@ function drawSwitcher() {
   if (sig !== switcherSig) {
     switcherSig = sig;
     projectPicker.replaceChildren(
-      ...(projectList.length ? projectList.map((p) => h("option", { value: p.dir, selected: sameDir(p.dir, dir) }, p.name)) : [h("option", { value: "" }, "No projects yet")]),
+      ...(projectList.length ? projectList.map((p) => h("option", { value: p.dir, selected: sameDir(p.dir, dir) }, p.website ? `${p.name} (site)` : p.name)) : [h("option", { value: "" }, "No projects yet")]),
+      h("option", { value: "__add" }, "＋ Add a project…"),
     );
-    projectPicker.disabled = !projectList.length;
   }
   const s = projectServers.find((x) => sameDir(x.dir, dir) && x.status !== "stopped");
   const errors = s?.errorCount ?? 0;
   projectState.className = `project-switch-state ${s ? (errors || s.status === "failed" ? "status-fail" : s.status === "starting" ? "status-warn" : "status-ok") : ""}`;
   projectState.replaceChildren(
-    !dir ? "" : !s ? "Not running" : s.status === "failed" ? "Didn't start" : s.status === "starting" ? "Starting…" : `Running${errors ? ` · ${plural(errors, "error")}` : ""}`,
+    !dir ? "" : isWebsite(dir) ? `A website${websiteOf(dir)?.env ? ` · ${websiteOf(dir).env}` : ""}` : !s ? "Not running" : s.status === "failed" ? "Didn't start" : s.status === "starting" ? "Starting…" : `Running${errors ? ` · ${plural(errors, "error")}` : ""}`,
   );
+}
+
+/**
+ * "Add a project…" from the picker: a website (an address, with no code here), or a project of code (the
+ * New project page: from a template, or cloned). A website is added by its address; dx guesses the
+ * environment from the name unless you say.
+ */
+function addProjectDialog(start = "website") {
+  if (document.querySelector("dialog[open]")) return;
+  const dialog = h("dialog", { class: "dialog add-project", "aria-label": "Add a project" });
+  const url = h("input", { class: "input input-wide", id: "add-url", placeholder: "https://staging.shop-website.dev", autocomplete: "off", spellcheck: "false", "aria-label": "Address of the website" });
+  const name = h("input", { class: "input", id: "add-name", placeholder: "Name (optional)", autocomplete: "off", "aria-label": "Name" });
+  const env = h(
+    "select",
+    { class: "input", "aria-label": "Which environment" },
+    [["", "Environment: from the address"], ["production", "Production"], ["staging", "Staging"], ["preview", "Preview"], ["qa", "QA"], ["dev", "Development"]].map(([v, t]) => h("option", { value: v }, t)),
+  );
+  const add = btn(
+    "Add website",
+    async (ev) => {
+      if (!url.value.trim()) {
+        shake(url);
+        inlineProblem(add, "Give the website's address, like https://staging.shop-website.dev.");
+        return;
+      }
+      const r = await morph(ev.currentTarget, () => api("/api/projects/url/add", { method: "POST", body: { url: url.value, name: name.value || undefined, env: env.value || undefined } }), { busy: "Adding…", done: (x) => `✓ ${x.name}`, holdMs: 700 });
+      if (!r) return;
+      setTimeout(async () => {
+        await loadProjectList();
+        setPref("project", r.dir);
+        dialog.close();
+        location.hash = "#/overview";
+        route();
+      }, 700);
+    },
+    { kind: "primary" },
+  );
+  url.addEventListener("keydown", (e) => e.key === "Enter" && add.click());
+  const close = btn("Cancel", () => dialog.close(), { kind: "ghost" });
+  const site = h(
+    "div",
+    { class: "add-project-body" },
+    h("p", { class: "dim" }, "An address dx can check, record and answer: mocks, rules and Chaos mode on its API calls, its API spec, its activity. No code needed here."),
+    h("label", { class: "field", for: "add-url" }, h("span", { class: "visually-hidden" }, "Address"), url),
+    h("div", { class: "toolbar" }, name, env),
+    h("div", { class: "toolbar add-project-actions" }, add, close),
+  );
+  const code = h(
+    "div",
+    { class: "add-project-body" },
+    h("p", { class: "dim" }, "A folder of code on this computer: start from a template, or clone a repository."),
+    h("div", { class: "toolbar add-project-actions" }, h("a", { class: "btn btn-primary", href: "#/new", onclick: () => dialog.close() }, icon("new"), "New project"), close.cloneNode(true)),
+  );
+  code.querySelector("button")?.addEventListener("click", () => dialog.close());
+  const tabs = segmented("What to add", [["website", "A website"], ["code", "A project of code"]], start, (v) => ((site.hidden = v !== "website"), (code.hidden = v !== "code")));
+  site.hidden = start !== "website";
+  code.hidden = start !== "code";
+  fill(dialog, h("h2", { class: "dialog-title" }, "Add a project"), tabs, site, code);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  url.focus();
 }
 
 async function loadProjectList() {
@@ -1659,6 +1733,7 @@ async function updateRunningCount() {
  */
 function overviewPage(root) {
   const dir = currentProject();
+  if (isWebsite(dir)) return websiteOverview(root, dir);
   const leave = projectsPage(root, { only: dir });
   const chunks = projectChunks(dir);
   // The chunks come right under the project's name.
@@ -1784,6 +1859,84 @@ function homePage(root) {
  * The top of a project's page: what to do next, and Run, Code, Health and Activity each saying one
  * thing with its one action. Read from one call (`/api/project/summary`) and kept current.
  */
+/** A website's overview: the address, what dx knows of it, its checks, mocks and API spec. No code, no git, no dev server. */
+function websiteOverview(root, dir) {
+  const p = websiteOf(dir);
+  const host = new URL(p.url).host;
+  const openDx = btn("Open in dx browser", (ev) => morph(ev.currentTarget, () => api("/api/browser/open", { method: "POST", body: { url: p.url } }), { busy: "Opening…", done: "✓ Opened", holdMs: 1200 }), { kind: "second", title: "dx records its calls there, and answers them from this project's mocks, rules and Chaos mode" });
+  const remove = btn(
+    "Remove",
+    async (ev) => {
+      const button = ev.currentTarget;
+      const yes = await confirmDialog({ title: `Remove ${p.name}?`, text: ["dx stops recording and answering it. Its mocks, rules and history stay on this computer until you clear them or they get old.", "The site itself isn't touched."], confirm: "Remove", danger: false });
+      if (!yes) return;
+      const r = await morph(button, () => api("/api/projects/url/remove", { method: "POST", body: { dir } }), { busy: "Removing…", done: "✓ Removed", holdMs: 600 });
+      if (r) setTimeout(async () => (await loadProjectList(), (location.hash = "#/projects")), 600);
+    },
+    { kind: "ghost" },
+  );
+  const glance = h("section", { class: "section chunks", "aria-label": "This website at a glance" }, loadingView("Reading…"));
+  const spec = specCard(dir);
+  // The mocks have their own card on a website's overview, so the sites card leaves them out.
+  const sites = sitesCard(dir, { mocks: false });
+  append(
+    root,
+    pageHead(p.name, "", h("a", { class: "btn", href: p.url, target: "_blank", rel: "noreferrer", title: "Open in your own browser" }, icon("external"), "Open"), openDx, remove),
+    glance,
+    sites.el,
+    spec.el,
+  );
+
+  async function load() {
+    let calls = [];
+    let problems = [];
+    let mocks;
+    try {
+      [calls, problems, mocks] = await Promise.all([
+        api(`/api/activity?dir=${encodeURIComponent(dir)}&since=1h&types=request&limit=2000`),
+        api(`/api/activity?dir=${encodeURIComponent(dir)}&since=1h&problems=1&limit=200`),
+        api(`/api/mocks?dir=${encodeURIComponent(dir)}`).catch(() => undefined),
+      ]);
+    } catch (err) {
+      return fill(glance, errorView(err, load));
+    }
+    const list = (v) => (Array.isArray(v) ? v : (v?.events ?? []));
+    const nCalls = list(calls).length;
+    const nProblems = list(problems).length;
+    fill(
+      glance,
+      h(
+        "div",
+        { class: "chunk-grid" },
+        h(
+          "div",
+          { class: "card card-pad chunk" },
+          h("div", { class: "label-pixel" }, "Site"),
+          h("div", { class: "chunk-big" }, envBadge(p.env, true), h("span", { class: "mono" }, host)),
+          h("div", { class: "dim" }, "A website: dx has no code for it here, so git, search and running it aren't offered."),
+        ),
+        h(
+          "div",
+          { class: "card card-pad chunk" },
+          h("div", { class: "label-pixel" }, "Mocks"),
+          mockControl(dir, { on: !!mocks?.on, strict: !!mocks?.strict, endpoints: mocks?.endpoints?.length ?? 0 }, { onChange: load }),
+        ),
+        h(
+          "div",
+          { class: "card card-pad chunk" },
+          h("div", { class: "label-pixel" }, "Activity"),
+          h("div", { class: "chunk-big" }, nCalls ? `${plural(nCalls, "request")} in the last hour` : "Nothing recorded in the last hour"),
+          nProblems ? h("div", { class: "badge badge-danger" }, plural(nProblems, "problem")) : null,
+          h("div", { class: "chunk-actions" }, h("a", { class: "btn btn-sm", href: `#/activity?dir=${encodeURIComponent(dir)}` }, "Open activity")),
+        ),
+      ),
+    );
+  }
+  void load();
+  const stopPoll = livePoll(load, 15_000, { events: true });
+  return () => (spec.stop(), sites.stop(), stopPoll());
+}
+
 function projectChunks(dir) {
   const el = h("section", { class: "section chunks", "aria-label": "This project at a glance" }, loadingView("Reading the project…"));
   let sig = "";
@@ -2048,7 +2201,7 @@ function siteResult(out, what, r) {
  * A project's deployed sites: add one by its address, open it in the dx browser, check it, and have the
  * mocks, rules and Chaos mode of the project answer its API calls while you use it there.
  */
-function sitesCard(dir) {
+function sitesCard(dir, { mocks: withMocks = true } = {}) {
   const el = h("section", { class: "section", "aria-label": "Sites" }, h("div", { class: "card card-pad" }, loadingView("Reading sites…")));
   let stopped = false;
 
@@ -2153,7 +2306,7 @@ function sitesCard(dir) {
         sites.length
           ? h("div", { class: "site-list" }, sites.map(row))
           : h("p", { class: "dim" }, "Add the address of a deployed site and dx can check it, record what it calls, and answer its API from this project's mocks."),
-        sites.length
+        sites.length && withMocks
           ? h(
               "div",
               { class: "site-mocks" },
@@ -2208,6 +2361,7 @@ function projectsPage(root, { only } = {}) {
   const devSection = h("section", { class: "section", "aria-labelledby": "dev-title", hidden: true });
   const unsavedSection = h("section", { class: "section", "aria-label": "Work that isn't backed up", hidden: true });
   const listSection = h("section", { class: "section", "aria-label": "All projects" });
+  const websitesSection = h("section", { class: "section", "aria-label": "Websites", hidden: true });
   const listHolder = h("div", { class: "card" }, loadingView("Finding your projects…"));
   append(listSection, listHolder);
 
@@ -2219,18 +2373,45 @@ function projectsPage(root, { only } = {}) {
           "All projects",
           "",
           search,
+          btn("Add a website", () => addProjectDialog("website"), { iconName: "external" }),
           h("a", { class: "btn", href: "#/new" }, icon("new"), "New project"),
         ),
     // On Overview the project comes first and its server under it; on All projects the slice, then the running ones.
-    ...(only ? [listSection, devSection, unsavedSection] : [facets.el, devSection, unsavedSection, listSection]),
+    ...(only ? [listSection, devSection, unsavedSection] : [facets.el, devSection, unsavedSection, listSection, websitesSection]),
   );
   if (only) listSection.setAttribute("aria-label", "This project");
+
+  function drawWebsites(sites) {
+    websitesSection.hidden = !sites.length;
+    if (!sites.length) return;
+    fill(
+      websitesSection,
+      h("h2", { class: "section-title" }, "Websites"),
+      h(
+        "div",
+        { class: "card" },
+        sites.map((w) =>
+          h(
+            "div",
+            { class: "website-row" },
+            envBadge(w.env, true),
+            h("a", { href: `#/overview?dir=${encodeURIComponent(w.dir)}`, class: "website-name" }, h("strong", null, w.name)),
+            h("a", { class: "mono dim", href: w.url, target: "_blank", rel: "noreferrer" }, w.url.replace(/^https?:\/\//, "")),
+            w.mocks?.on ? h("span", { class: "badge badge-second" }, `Mocked: ${plural(w.mocks.endpoints, "endpoint")}`) : null,
+            h("span", { class: "toolbar website-actions" }, btn("Open in dx browser", (ev) => morph(ev.currentTarget, () => api("/api/browser/open", { method: "POST", body: { url: w.url } }), { busy: "Opening…", done: "✓ Opened", holdMs: 1200 }), { small: true, kind: "second" })),
+          ),
+        ),
+      ),
+    );
+  }
 
   async function load() {
     try {
       // Snapshots (a project as it was at a commit) show here while their dev server is around.
       const [list, snaps] = await Promise.all([api("/api/projects"), api("/api/snapshots").catch(() => [])]);
-      projects = [...list, ...snaps.filter((s) => s.dev).map((s) => ({ name: s.name, dir: s.dir, snapshot: s, dev: s.dev }))];
+      // Websites have no folder, dev server or git: they have their own list under the folders.
+      projects = [...list.filter((p) => !p.website), ...snaps.filter((s) => s.dev).map((s) => ({ name: s.name, dir: s.dir, snapshot: s, dev: s.dev }))];
+      if (!only) drawWebsites(list.filter((p) => p.website));
       if (only) projects = projects.filter((p) => sameDir(p.dir, only));
       renderList();
       renderDev();
@@ -3988,8 +4169,11 @@ const CLOCK_PRESETS = [
 
 function chaosPage(root) {
   let dir = currentProject();
+  // On a website: Chaos mode and the weak phone. The date, long text, missing .env values, comparing versions, unused code,
+  // security and clicking everything run against the app on this computer, from its code.
+  const chaosTabs = isWebsite(dir) ? CHAOS_TABS.filter(([t]) => t === "chaos" || t === "phone") : CHAOS_TABS;
   let tab = pref("chaosTab", "chaos");
-  if (!CHAOS_TABS.some(([t]) => t === tab)) tab = "chaos";
+  if (!chaosTabs.some(([t]) => t === tab)) tab = "chaos";
   let projects = [];
   let state = null;
   let stopped = false;
@@ -3997,7 +4181,7 @@ function chaosPage(root) {
 
   const holder = h("div", { class: "section" });
   // Each tab reads the settings and runs again: a run started from the CLI or another tab shows up.
-  const tabs = segmented("Tool", CHAOS_TABS, tab, (v) => ((tab = v), setPref("chaosTab", v), load()));
+  const tabs = segmented("Tool", chaosTabs, tab, (v) => ((tab = v), setPref("chaosTab", v), load()));
   tabs.classList.add("segmented-wrap");
   append(
     root,
@@ -4691,8 +4875,10 @@ function chaosPage(root) {
 
 function requestsPage(root) {
   let dir = currentProject();
+  // A website has no dev server of its own to resend to or pause: its API docs, mocks and rules are what apply.
+  const labTabs = isWebsite(dir) ? LAB_TABS.filter(([t]) => t === "api" || t === "rules") : LAB_TABS;
   let tab = pref("labTab", "api");
-  if (!LAB_TABS.some(([t]) => t === tab)) tab = "api";
+  if (!labTabs.some(([t]) => t === tab)) tab = "api";
   let projects = [];
   let stopped = false;
   let pollTimer = 0;
@@ -4702,7 +4888,7 @@ function requestsPage(root) {
   if (draft) ((dir = draft.dir), (tab = draft.tab), useProject(dir));
 
   const holder = h("div", { class: "section" });
-  const tabs = segmented("Tool", LAB_TABS, tab, (v) => ((tab = v), setPref("labTab", v), draw()));
+  const tabs = segmented("Tool", labTabs, tab, (v) => ((tab = v), setPref("labTab", v), draw()));
   tabs.classList.add("segmented-wrap");
   append(
     root,

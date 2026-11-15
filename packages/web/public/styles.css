@@ -7194,3 +7194,40 @@ body.is-stale .main {
 .mock-more > summary {
   cursor: pointer;
 }
+
+/* Websites as projects: their rows under the folders, and the "Add a project" dialog. */
+.website-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--border);
+}
+.website-row:last-child {
+  border-bottom: 0;
+}
+.website-row .mono {
+  overflow-wrap: anywhere;
+}
+.website-actions {
+  margin-inline-start: auto;
+}
+.add-project {
+  width: min(34rem, calc(100vw - 2 * var(--s4)));
+  padding: var(--s5);
+}
+.add-project-body {
+  display: grid;
+  gap: var(--s3);
+  margin-top: var(--s4);
+}
+.add-project-body[hidden] {
+  display: none;
+}
+.add-project-actions {
+  justify-content: flex-end;
+}
+.add-project .segmented {
+  margin-top: var(--s3);
+}

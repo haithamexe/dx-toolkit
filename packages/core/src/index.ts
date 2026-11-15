@@ -38,6 +38,7 @@ export * from "./tools/sitecheck.js";
 export * from "./tools/sitehistory.js";
 export * from "./tools/codesearch.js";
 export * from "./tools/caches.js";
+export * from "./tools/urlprojects.js";
 export * from "./tools/mongoquery.js";
 export * from "./tools/dxbrowser.js";
 export * from "./tools/activityReport.js";

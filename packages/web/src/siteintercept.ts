@@ -37,7 +37,6 @@ const json = (status: number, message: string, extra: Record<string, string> = {
 /** The decision for one held call; undefined lets it go on untouched. `sites` is the project's own list. */
 export function decideSite(req: PausedRequest, sites: SiteConfig[]): SiteAction | undefined {
   const dir = req.target.dir;
-  if (dir.startsWith("site:")) return undefined; // a site that isn't any project's has no mocks, rules or chaos
   const own = sites.filter((s) => s.project?.toLowerCase() === dir.toLowerCase());
   // Only calls to the project's own sites: a third party's API is never answered by dx.
   // And only a site the person left it on for: production is off until turned on.

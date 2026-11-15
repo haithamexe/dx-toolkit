@@ -2,6 +2,12 @@
 
 Notable changes to dx, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **A website as a project**: **＋ Add a project…** at the end of the project picker (and **Add a website** on All projects) takes an address, with a name and environment if you like, and adds a project with no folder of code. The whole app follows it: its **Overview** (the address, mocks, activity in the last hour, its sites with their checks and last results, the API spec), **API** (docs, mocks, and rules), **Activity**, and **Stress test** (Chaos mode and the weak phone) all work; its mocks, rules and Chaos mode answer its API calls in the dx browser, and its history is kept under it. What needs the code on this computer isn't offered: **Git, Search, Secrets, Data, Tools, running it**, and the stress-test tools that run from code. Every server route that reads, runs or changes code refuses it with the reason ("… is a website, so this needs its code on this computer"). Several addresses (staging and production) can belong to one website project. `POST /api/projects/url/add|remove`, `projects.url-add`, `projects.url-remove`. Not carried by `dx state` yet.
+
 ## 1.12.0 (2026-11-15)
 
 dx searches your code, treats a project's deployed sites like the app running here, shows the result of a button on the button, and has a new look: Arcade, in light and dark.

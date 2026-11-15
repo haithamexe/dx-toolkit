@@ -136,7 +136,7 @@ function git(dir: string, args: string[]): Promise<string> {
 
 export const chaosRoutes: Record<string, (req: ApiRequest) => unknown> = {
   "GET /api/chaos": (req) => {
-    const project = knownProject(req.query.get("dir"));
+    const project = knownProject(req.query.get("dir"), { site: true });
     const config = loadChaos(project.dir, project.name);
     const mine = [...jobs.values()].filter((j) => j.dir === project.dir).map(view);
     const latest = (kind: JobKind) => mine.filter((j) => j.kind === kind).at(-1);
@@ -150,7 +150,7 @@ export const chaosRoutes: Record<string, (req: ApiRequest) => unknown> = {
   },
 
   "POST /api/chaos": async (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     const patch: Record<string, unknown> = {};
     for (const k of ["on", "level", "faults", "seed", "paths", "clock", "phone", "locale", "restart"]) if (req.body[k] !== undefined) patch[k] = req.body[k];
     let config;
@@ -172,7 +172,7 @@ export const chaosRoutes: Record<string, (req: ApiRequest) => unknown> = {
   },
 
   "GET /api/chaos/report": (req) => {
-    const project = knownProject(req.query.get("dir"));
+    const project = knownProject(req.query.get("dir"), { site: true });
     const config = loadChaos(project.dir, project.name);
     flushActivity();
     const since = config.startedAt ? new Date(config.startedAt) : new Date(Date.now() - 3_600_000);

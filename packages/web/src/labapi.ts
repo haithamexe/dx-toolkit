@@ -245,18 +245,18 @@ function quickMock(project: Project, refresh: boolean) {
 export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
   // One press: mocks from what the app called (or its spec), mock mode on. `refresh` makes them again from the latest calls.
   "POST /api/mocks/quick": (req) => {
-    const project = knownProject(req.body.dir, { snapshots: true });
+    const project = knownProject(req.body.dir, { snapshots: true, site: true });
     const r = call(() => quickMock(project, req.body.refresh === true));
     if (r.state === "on") recordRun("mock", true, `${project.name}: mock mode on (${r.endpoints} endpoints, from ${r.source === "calls" ? "what the app called" : r.source === "spec" ? "the API spec" : "its mocks"})`, "web", { project: project.name });
     return r;
   },
   // ------------------------------------------------------------ rules
   "GET /api/lab/rules": (req) => {
-    const project = knownProject(req.query.get("dir"));
+    const project = knownProject(req.query.get("dir"), { site: true });
     return loadRules(project.dir, project.name).rules.map((r) => ({ ...r, hits: ruleHits.get(r.id) ?? 0 }));
   },
   "POST /api/lab/rules": (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     const rule = call(() => putRule(project.dir, project.name, req.body.rule));
     forgetRules();
     // A rule that no longer holds requests lets go of the ones it was holding.
@@ -265,7 +265,7 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
     return rule;
   },
   "POST /api/lab/rules/remove": (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     call(() => removeRule(project.dir, String(req.body.id ?? "")));
     forgetRules();
     recordRun("rules", true, `${project.name}: a rule removed`, "web", { project: project.name });
@@ -317,7 +317,7 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
   // ------------------------------------------------------------ the API spec
   // Also the project's Overview and Activity: the spec it has (found by itself when it wasn't given one).
   "GET /api/lab/spec": (req) => {
-    const project = knownProject(req.query.get("dir"));
+    const project = knownProject(req.query.get("dir"), { site: true });
     const running = [...localRoutes().values()].some((r) => r.dir.toLowerCase() === project.dir.toLowerCase());
     const looking = lookForServedSpec(project);
     const files = findSpecFiles(project.dir);
@@ -327,7 +327,7 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
     return { files, more: files.filter((f) => !have.has(`file:${f}`)), urls: SPEC_URL_PATHS, running, looking, removed: specTurnedOff(project.dir), specs: summary?.apis ?? [], undocumented: summary?.undocumented ?? [], overlaps: summary?.overlaps ?? [] };
   },
   "POST /api/lab/spec": async (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     let doc: Record<string, unknown> | undefined;
     let source = "";
     if (typeof req.body.file === "string") {
@@ -363,20 +363,20 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
   },
   // Renames an API, or says which service it is or where it's served; its mocks keep their ids.
   "POST /api/lab/spec/update": (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     const saved = call(() => updateSpec(project.dir, String(req.body.id ?? ""), { name: req.body.name, service: req.body.service, mount: req.body.mount }));
     recordRun("spec", true, `${project.name}: API "${saved.name}" changed`, "web", { project: project.name });
     return specsSummary(project)!.apis.find((a) => a.id === saved.id);
   },
   "POST /api/lab/spec/forget": (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     const id = typeof req.body.id === "string" && req.body.id ? req.body.id : undefined;
     call(() => forgetSpec(project.dir, id));
     recordRun("spec", true, `${project.name}: ${id ? `API ${id}` : "every API"} removed`, "web", { project: project.name });
     return { ok: true };
   },
   "POST /api/lab/spec/mocks": (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     const all = projectApis(project.dir);
     if (!all.length) throw new HttpError(404, `${project.name} has no API spec yet.`);
     // One API (by id) or every one; each API's mocks keep to it, so two with the same path don't overwrite each other.
@@ -408,7 +408,7 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
     return { ok: true };
   },
   "POST /api/mocks/purge": (req) => {
-    const project = knownProject(req.body.dir, { snapshots: true });
+    const project = knownProject(req.body.dir, { snapshots: true, site: true });
     const source = req.body.source === undefined ? undefined : (String(req.body.source) as MockSource);
     if (source !== undefined && !SOURCES.includes(source)) throw new HttpError(400, `Sources: ${SOURCES.join(", ")}.`);
     const api = typeof req.body.api === "string" && /^[a-z0-9-]{1,40}$/.test(req.body.api) ? req.body.api : undefined;

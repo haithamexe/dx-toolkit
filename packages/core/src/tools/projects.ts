@@ -4,7 +4,7 @@ import { loadConfig, stripBom, type DxConfig } from "../config.js";
 import { fuzzyRank } from "../fuzzy.js";
 import { devCommandFromFiles } from "./runfiles.js";
 
-export type ProjectKind = "node" | "go" | "rust" | "python" | "dotnet" | "other";
+export type ProjectKind = "node" | "go" | "rust" | "python" | "dotnet" | "other" | "website";
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
 export interface Project {

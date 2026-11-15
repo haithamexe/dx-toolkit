@@ -326,6 +326,16 @@ Find a file by name, or a word inside your code, in the project you're on or in 
 
 **Cleanup** also lists the caches package managers keep (npm, pnpm, Yarn, Bun, pip, Go) with their sizes. **Clean** asks, then runs the tool's own command (`npm cache clean --force`, `pnpm store prune`, `yarn cache clean`, `bun pm cache rm`, `pip cache purge`, `go clean -cache`) and says how much it freed. dx never deletes a cache folder itself; what is removed comes back when a project needs it, and it can't be undone.
 
+## A website as a project
+
+A project doesn't have to be a folder. **＋ Add a project…** at the end of the project picker (or **Add a website** on All projects) takes a website's address, and its name and environment if you want them: for a site that's already deployed, or anything you only have a URL for. The picker marks it **(site)**, and the whole app adapts to it:
+
+- **Overview**: the address with its environment, mocks (**Mock this app**, once you've used the site in the dx browser), the last hour's requests and problems, its sites (add staging next to production, check each, see the last results), and its API spec.
+- **API**: the docs, mocks and rules (delays, failures and request headers apply to a site; changing an answer and pausing a call don't). **Activity**: everything the dx browser recorded on it. **Stress test**: Chaos mode and the weak phone.
+- **Left out, because there is no code here**: Git, Search, Secrets, Data, Tools, running it, and the stress tests that run from code (click everything, another date, long text, missing `.env` values, comparing versions, unused code, security). A link to one of those pages goes to the overview, and the server refuses their routes with the reason.
+- It works through the dx browser: **Open in dx browser** records the site's calls, and the project's mocks, rules and Chaos mode answer them, as for any site ([Sites on a project](#sites-on-a-project)).
+- **Remove** takes the project and its sites out; what was recorded, its mocks and its rules stay on this computer until cleared. The site itself is never touched. (Not carried to another computer by `dx state` yet.)
+
 ## Sites on a project
 
 A project can have deployed sites (staging, production, a preview), and dx does for them what it does for the app running here. On the project's Overview, **Sites** lists them: add one by its address, choose which environment it is (or let dx guess from the name). `dx sites add` does the same from a terminal; a site belongs to one project.

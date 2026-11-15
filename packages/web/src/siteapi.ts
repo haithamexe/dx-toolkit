@@ -51,7 +51,7 @@ function pathOn(site: SiteView, raw: unknown): string {
 const running = new Set<string>();
 
 function projectSite(dir: unknown, host: unknown): { project: ReturnType<typeof knownProject>; site: SiteConfig; sites: SiteConfig[] } {
-  const project = knownProject(dir);
+  const project = knownProject(dir, { site: true });
   const sites = projectSites(project.dir);
   const wanted = String(host ?? "").toLowerCase();
   const site = sites.find((s) => s.host.toLowerCase() === wanted);
@@ -64,11 +64,11 @@ const pageResult = ({ screenshot: _s, ...rest }: PageCheck) => rest;
 
 export const siteRoutes: Record<string, (req: ApiRequest) => unknown> = {
   "GET /api/project/sites": (req) => {
-    const dir = knownProject(req.query.get("dir")).dir;
+    const dir = knownProject(req.query.get("dir"), { site: true }).dir;
     return { sites: projectSites(dir).map((s) => ({ ...view(s), last: lastSiteChecks(dir, s.host) })) };
   },
   "POST /api/project/sites/add": (req) => {
-    const project = knownProject(req.body.dir);
+    const project = knownProject(req.body.dir, { site: true });
     try {
       const probe = addSiteProbe(req.body.url);
       const other = listSites().find((s) => s.host === probe && s.project && s.project.toLowerCase() !== project.dir.toLowerCase());
