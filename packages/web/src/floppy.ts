@@ -113,7 +113,7 @@ export async function startFloppy(): Promise<{ started: boolean; pid?: number; m
  */
 export function settleFloppyStartup(): { message?: string; warning?: string } {
   const floppy = loadConfig().floppy ?? {};
-  writeFloppySprites(floppySpritesDir(), floppy.colourway ?? "navy");
+  writeFloppySprites(floppySpritesDir(), floppy.colourway ?? "violet");
   if (process.env.DX_HOME) return {};
   if (floppy.startup === undefined) {
     const r = setFloppyStartup(true, floppyLauncher());

@@ -154,7 +154,7 @@ function createWindow() {
     icon,
     show: false,
     // The desk teal behind the page, so it doesn't flash white while it loads.
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#002828" : "#008080",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#1d0a44" : "#6741ca",
     webPreferences: {
       sandbox: true,
       contextIsolation: true,

@@ -9,6 +9,7 @@
     <link rel="icon" href="floppy.svg" type="image/svg+xml" />
     <link rel="preload" href="fonts/geist.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="styles.css" />
+    <script src="search.js" defer></script>
     <script type="module" src="app.js"></script>
   </head>
   <body>
@@ -23,6 +24,7 @@
         <button class="palette-open" id="palette-open" type="button" aria-keyshortcuts="Control+K Meta+K">Jump to… <kbd>Ctrl K</kbd></button>
         <nav class="nav" aria-label="Main" id="nav"></nav>
         <div class="sidebar-foot">
+          <div class="live-state" id="live-state" data-state="connecting" role="status"></div>
           <div class="sidebar-floppy-row" id="floppy-row">
             <img class="sidebar-floppy" src="floppy-idle.svg" alt="" width="64" height="60" />
           </div>

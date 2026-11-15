@@ -18,7 +18,7 @@ export function floppySnapshot(): FloppySnapshot {
       status: s.status,
       startedBy: s.startedBy,
       errorCount: s.errorCount,
-      url: s.localUrl ?? s.url,
+      url: s.url ?? s.localUrl,
       step: s.status === "starting" ? s.prepare?.find((p) => p.status === "running")?.title : undefined,
     }));
   const snapshot: FloppySnapshot = { dashboard: true, servers };

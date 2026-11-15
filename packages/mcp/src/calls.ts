@@ -189,6 +189,8 @@ export function describeCall(tool: string, args: Args, ok: boolean, result?: Cal
         const m = /: (\d+) passed, (\d+) failed/.exec(text);
         return `Ran ${of("tests")}${m ? `: ${m[1]} passed, ${m[2]} failed` : ""}`;
       }
+      case "search_code":
+        return `Searched ${p ?? "a project"}'s code`;
       case "list_projects":
         return "Listed your projects";
       case "open_project":

@@ -18,9 +18,46 @@ import { deploymentFrom, type SiteTarget } from "./sites.js";
  * console output and errors. Anything else you browse in it is dropped as it arrives.
  */
 
+/** An API call (fetch or XHR) a page on a recorded site is about to make, held until dx has decided. */
+export interface PausedRequest {
+  url: string;
+  method: string;
+  /** Header names in lower case. */
+  headers: Record<string, string>;
+  postData?: string;
+  /** XHR or Fetch. */
+  type: string;
+  /** The address of the page making the call. */
+  pageUrl: string;
+  /** The recorded site the page is on. */
+  target: SiteTarget;
+}
+
+/** What to do with a held call. A call dx has no answer for just goes on. */
+export type SiteAction =
+  | { kind: "continue"; headers?: Record<string, string>; delayMs?: number; tags?: SiteTags }
+  | { kind: "fulfill"; status: number; headers?: Record<string, string>; body?: string; delayMs?: number; tags?: SiteTags }
+  | { kind: "fail"; reason?: "Failed" | "TimedOut" | "ConnectionClosed" | "ConnectionReset" | "ConnectionRefused" | "InternetDisconnected"; delayMs?: number; tags?: SiteTags };
+
+/** What the history says about a call dx touched. */
+export interface SiteTags {
+  mocked?: boolean;
+  rules?: string[];
+}
+
+/** A held call waits at most this long for its decision, then goes on as it was. */
+const DECISION_MS = 5000;
+const MAX_DELAY_MS = 30_000;
+
 export interface DxBrowserOptions {
   /** Where events go: a recorded site's project and environment, or undefined to record nothing for this address. */
   targetFor: (url: string) => SiteTarget | undefined;
+  /**
+   * Decides what happens to each API call of a page on a recorded site (mocks, rules, chaos). Only
+   * fetch and XHR are held, never page loads, scripts or styles; an error or a late answer lets the
+   * call go on untouched.
+   */
+  intercept?: (req: PausedRequest) => SiteAction | undefined | Promise<SiteAction | undefined>;
   /** Each recorded event, masked already. */
   onEvent: (e: ActivityInput) => void;
   /** Requests never recorded, even from a recorded page (the dashboard's own API). */
@@ -248,6 +285,8 @@ interface Session {
   pendingPage?: { event: ActivityInput; timer: NodeJS.Timeout };
   /** dx is loading an address in it already. */
   claimed?: boolean;
+  /** What dx did to a call, by the network's id for it, until its event is written. */
+  tags: Map<string, SiteTags>;
 }
 
 interface RemoteObject {
@@ -317,7 +356,7 @@ export class CdpRecorder {
   }
 
   constructor(
-    private options: Pick<DxBrowserOptions, "targetFor" | "onEvent" | "ignore"> & { send: CdpSend; settleMs?: number },
+    private options: Pick<DxBrowserOptions, "targetFor" | "onEvent" | "ignore" | "intercept"> & { send: CdpSend; settleMs?: number },
   ) {}
 
   pages(): number {
@@ -340,7 +379,7 @@ export class CdpRecorder {
       if (waiting) await send("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => undefined);
       return;
     }
-    this.sessions.set(sessionId, { id: sessionId, targetId: info.targetId, type: info.type, url: info.url ?? "", requests: new Map() });
+    this.sessions.set(sessionId, { id: sessionId, targetId: info.targetId, type: info.type, url: info.url ?? "", requests: new Map(), tags: new Map() });
     const steps = [
       send("Runtime.addBinding", { name: BINDING, executionContextName: RECORDER_WORLD }, sessionId),
       send("Page.addScriptToEvaluateOnNewDocument", { source: CLICK_SCRIPT, worldName: RECORDER_WORLD, runImmediately: true }, sessionId),
@@ -350,6 +389,8 @@ export class CdpRecorder {
       send("Log.enable", {}, sessionId),
       send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId),
     ];
+    // Only API calls are ever held; everything else loads as it would without dx.
+    if (this.options.intercept) steps.push(send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "XHR" }, { urlPattern: "*", resourceType: "Fetch" }] }, sessionId));
     if (info.type === "page" && (this.emulation.phone || this.emulation.timeZone)) steps.push(applyEmulation((m, p) => send(m, p, sessionId), this.emulation));
     await Promise.all(steps.map((p) => p.catch(() => undefined)));
     if (waiting) await send("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => undefined);
@@ -391,6 +432,8 @@ export class CdpRecorder {
     const s = sessionId ? this.sessions.get(sessionId) : undefined;
     if (!s) return;
     switch (method) {
+      case "Fetch.requestPaused":
+        return void this.paused(s, p);
       case "Network.requestWillBeSent":
         return this.requestStarted(s, p);
       case "Network.responseReceived": {
@@ -419,6 +462,10 @@ export class CdpRecorder {
           s.visit = newVisitId();
           s.visitLoader = frame.loaderId;
         }
+        // A site's service worker (a PWA) answers its page's calls itself, so DevTools never holds them and
+        // dx couldn't answer, slow or fail them: in a tab on a recorded site it's bypassed while dx decides
+        // calls. Other tabs keep theirs. (Found on a deployed site: the second visit's calls went past dx.)
+        if (this.options.intercept && s.type === "page") void this.options.send("Network.setBypassServiceWorker", { bypass: !!this.options.targetFor(s.url) }, s.id).catch(() => undefined);
         return;
       }
       case "Page.navigatedWithinDocument": {
@@ -461,6 +508,58 @@ export class CdpRecorder {
 
   private emit(target: SiteTarget, e: Omit<ActivityInput, "dir" | "from">): void {
     this.options.onEvent({ ...e, dir: target.dir, project: target.project, service: target.service, site: target.site, env: target.env, from: "dx-browser" } as ActivityInput);
+  }
+
+  /**
+   * A held API call. Whatever happens, it is let go: on no decision, an error, or one that comes
+   * after DECISION_MS, it continues as the page sent it.
+   */
+  private async paused(s: Session, p: Record<string, unknown>): Promise<void> {
+    const send = this.options.send;
+    const fetchId = p.requestId as string;
+    const go = (params: object = {}) => send("Fetch.continueRequest", { requestId: fetchId, ...params }, s.id).catch(() => undefined);
+    try {
+      const request = p.request as { url: string; method: string; headers?: Record<string, unknown>; postData?: string; hasPostData?: boolean } | undefined;
+      const intercept = this.options.intercept;
+      const target = this.options.targetFor(s.url);
+      if (!request || !intercept || !target || !/^https?:/i.test(request.url) || (p.resourceType !== "XHR" && p.resourceType !== "Fetch")) return void (await go());
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(request.headers ?? {})) headers[k.toLowerCase()] = String(v);
+      let postData = request.postData;
+      const networkId = typeof p.networkId === "string" ? p.networkId : undefined;
+      if (postData === undefined && request.hasPostData && networkId) {
+        postData = await send<{ postData: string }>("Network.getRequestPostData", { requestId: networkId }, s.id)
+          .then((x) => x.postData)
+          .catch(() => undefined);
+      }
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), DECISION_MS);
+        timer.unref?.();
+      });
+      const action = await Promise.race([
+        Promise.resolve(intercept({ url: request.url, method: (request.method || "GET").toUpperCase(), headers, postData, type: String(p.resourceType), pageUrl: s.url, target })).catch(() => undefined),
+        late,
+      ]);
+      if (timer) clearTimeout(timer);
+      if (!action) return void (await go());
+      if (action.tags && networkId) s.tags.set(networkId, action.tags);
+      const delay = Math.max(0, Math.min(MAX_DELAY_MS, Math.round(action.delayMs ?? 0)));
+      if (delay) await new Promise<void>((resolve) => setTimeout(resolve, delay).unref?.());
+      if (action.kind === "fulfill") {
+        const out = Object.entries(action.headers ?? {}).map(([name, value]) => ({ name, value }));
+        const body = Buffer.from(action.body ?? "", "utf8").toString("base64");
+        await send("Fetch.fulfillRequest", { requestId: fetchId, responseCode: action.status, responseHeaders: out, body }, s.id).catch(() => go());
+        return;
+      }
+      if (action.kind === "fail") {
+        await send("Fetch.failRequest", { requestId: fetchId, errorReason: action.reason ?? "Failed" }, s.id).catch(() => go());
+        return;
+      }
+      await go(action.headers ? { headers: Object.entries(action.headers).map(([name, value]) => ({ name, value })) } : {});
+    } catch {
+      await go();
+    }
   }
 
   private requestStarted(s: Session, p: Record<string, unknown>): void {
@@ -509,6 +608,8 @@ export class CdpRecorder {
     const r = s.requests.get(id);
     if (!r) return;
     s.requests.delete(id);
+    const tags = s.tags.get(id);
+    s.tags.delete(id);
     let path = r.url;
     try {
       path = new URL(r.url).pathname;
@@ -541,6 +642,11 @@ export class CdpRecorder {
       dir: r.target.dir,
       from: "dx-browser",
     };
+    if (tags?.mocked) {
+      event.mocked = true;
+      event.text += " (mocked)";
+    }
+    if (tags?.rules?.length) event.rules = tags.rules;
     if (r.bodies) {
       const reqType = headerOf(r.headers, "content-type");
       let post = r.postData;
@@ -745,7 +851,7 @@ export async function launchDxBrowser(options: DxBrowserOptions): Promise<DxBrow
     `--user-data-dir=${profileDir}`,
     "--no-first-run",
     "--no-default-browser-check",
-    ...(options.headless ? ["--headless=new", "--mute-audio", "--disable-extensions", "--disable-background-networking", "--disable-component-update", "--disable-sync"] : []),
+    ...(options.headless ? ["--headless=new", "--window-size=1280,900", "--mute-audio", "--disable-extensions", "--disable-background-networking", "--disable-component-update", "--disable-sync"] : []),
     ...(process.getuid?.() === 0 ? ["--no-sandbox"] : []),
     // The first address is loaded once dx is attached, so its first page load is recorded too.
     "about:blank",
@@ -757,7 +863,7 @@ export async function launchDxBrowser(options: DxBrowserOptions): Promise<DxBrow
     said = (said + c).slice(-2000);
   });
   const conn = new PipeConnection(proc.stdio[3] as Writable, proc.stdio[4] as Readable);
-  const recorder = new CdpRecorder({ targetFor: options.targetFor, onEvent: options.onEvent, ignore: options.ignore, send: conn.send });
+  const recorder = new CdpRecorder({ targetFor: options.targetFor, onEvent: options.onEvent, ignore: options.ignore, intercept: options.intercept, send: conn.send });
   conn.onEvent = (method, params, sessionId) => recorder.handle(method, params, sessionId);
 
   let markClosed: () => void = () => undefined;

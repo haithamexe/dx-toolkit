@@ -102,8 +102,8 @@ export function readyUrl(d: ReturnType<typeof devServer>, job: { phase: string; 
     job.step = "Waiting for the dev server";
     return undefined;
   }
-  // Through its .localhost address when it has one, so the replay's requests are recorded too.
-  return d.localUrl ?? d.url;
+  // At the app's own address when dx answers there; else through its .localhost address, so the replay is recorded too.
+  return d.recorded ? d.url : (d.localUrl ?? d.url);
 }
 
 export async function waitFor<T>(ms: number, check: () => T | undefined): Promise<T> {

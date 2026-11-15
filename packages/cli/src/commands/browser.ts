@@ -88,7 +88,9 @@ export const sitesCommand: Command = {
       const project = values.project ? resolveProject(values.project) : undefined;
       let site;
       try {
-        site = addSite({ host, project: project?.dir, env: values.env, label: values.label }, loadConfig());
+        // A whole address (https://staging.shop-website.dev/app) keeps its path, which checks of the site use.
+        const where = /^[a-z][a-z0-9+.-]*:\/\//i.test(host) ? { url: host } : { host };
+        site = addSite({ ...where, project: project?.dir, env: values.env, label: values.label }, loadConfig());
       } catch (err) {
         throw new UsageError((err as Error).message);
       }

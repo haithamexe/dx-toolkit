@@ -55,7 +55,7 @@ try {
 }
 
 const config = loadConfig();
-writeFloppySprites(floppySpritesDir(), config.floppy?.colourway ?? "navy");
+writeFloppySprites(floppySpritesDir(), config.floppy?.colourway ?? "violet");
 const windowEnv = { DX_FLOPPY_DIR: floppySpritesDir(), DX_FLOPPY_X: config.floppy?.x !== undefined ? String(config.floppy.x) : "" };
 
 /** The window: dx's PowerShell script on Windows; elsewhere dx's Electron folder, installed first if it isn't there. */

@@ -50,7 +50,7 @@ function realNode(): string {
 
 /** Floppy as the app's icon: the .ico with every size on Windows, the .icns on macOS, a large PNG elsewhere. */
 export function appIcon(platform: NodeJS.Platform = process.platform): string {
-  const manifest = writeFloppySprites(floppySpritesDir(), loadConfig().floppy?.colourway ?? "navy");
+  const manifest = writeFloppySprites(floppySpritesDir(), loadConfig().floppy?.colourway ?? "violet");
   return path.join(floppySpritesDir(), platform === "win32" ? manifest.icon : platform === "darwin" ? "floppy.icns" : "floppy-256.png");
 }
 

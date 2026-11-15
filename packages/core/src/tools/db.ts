@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { recordRun } from "../runs.js";
 import type { Project } from "./projects.js";
+import { mongoScript, mongoTable, parseMongoQuery } from "./mongoquery.js";
 import { readCompose } from "./stacks.js";
 
 /**
@@ -11,7 +12,7 @@ import { readCompose } from "./stacks.js";
  * give. Only reading statements get through, and the session itself is read-only.
  */
 
-export type DbKind = "postgres" | "mysql" | "redis";
+export type DbKind = "postgres" | "mysql" | "redis" | "mongo";
 
 export interface DbService {
   service: string;
@@ -37,6 +38,7 @@ const MAX_ROWS = 200;
 export function kindOfImage(image: string): DbKind | undefined {
   const name = image.toLowerCase().split("@")[0].split(":")[0].split("/").pop() ?? "";
   if (/^(postgres|postgis|timescaledb|pgvector)/.test(name)) return "postgres";
+  if (/^(mongo|percona-server-mongodb)/.test(name)) return "mongo";
   if (/^(mysql|mariadb|percona)/.test(name)) return "mysql";
   if (/^(redis|valkey|keydb)/.test(name)) return "redis";
   return undefined;
@@ -91,14 +93,24 @@ export interface QueryOptions {
 
 export async function queryDatabase(project: Pick<Project, "name" | "dir">, options: QueryOptions = {}): Promise<DbResult> {
   const dbs = findDatabases(project);
-  if (!dbs.length) throw new Error(`${project.name} has no Postgres, MySQL or Redis in a docker-compose file.`);
+  if (!dbs.length) throw new Error(`${project.name} has no Postgres, MySQL, MongoDB or Redis in a docker-compose file.`);
   const db = options.service ? dbs.find((d) => d.service === options.service) : dbs[0];
   if (!db) throw new Error(`No database service called ${options.service}. ${project.name} has: ${dbs.map((d) => d.service).join(", ")}.`);
   if (!(await running(db))) throw new Error(`The ${db.service} container isn't running. Start the stack first (dx up ${project.name}, or start_dev_server).`);
 
   const started = Date.now();
   let r: DbResult;
-  if (db.kind === "redis") {
+  if (db.kind === "mongo") {
+    // Read into parts and rebuilt as a script from JSON only: what was typed never reaches the shell (mongoquery.ts).
+    const script = mongoScript(parseMongoQuery(options.query ?? ""));
+    const sh =
+      'S="$1"; D="${MONGO_INITDB_DATABASE:-test}"; C="$(command -v mongosh || command -v mongo)"; ' +
+      'if [ -n "$MONGO_INITDB_ROOT_USERNAME" ]; then "$C" --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin "$D" --eval "$S"; else "$C" --quiet "$D" --eval "$S"; fi';
+    const out = await exec(db, ["sh", "-c", sh, "sh", script]);
+    if (!out.ok) throw new Error(firstLine(out.stderr || out.stdout));
+    const table = mongoTable(out.stdout);
+    r = { service: db.service, kind: db.kind, columns: table.columns, rows: table.rows, truncated: table.truncated, ms: 0 };
+  } else if (db.kind === "redis") {
     const words = options.query ? splitRedisCommand(options.query) : ["SCAN", "0", "COUNT", "200"];
     if (!REDIS_READS.has(words[0]?.toLowerCase() ?? "")) throw new Error(`${words[0] ?? "That"} isn't a reading Redis command. Allowed: GET, MGET, KEYS, SCAN, HGETALL, LRANGE, SMEMBERS, ZRANGE, TTL, TYPE, INFO, DBSIZE and similar.`);
     const out = await exec(db, ["redis-cli", "--no-raw", ...words]);
@@ -142,7 +154,7 @@ export async function queryDatabase(project: Pick<Project, "name" | "dir">, opti
  * from a request; the read-only queries above are the way in for those.
  */
 export async function runSceneSql(project: Pick<Project, "name" | "dir">, sql: string, options: { service?: string } = {}): Promise<{ db: DbService; stdout: string }> {
-  const dbs = findDatabases(project).filter((d) => d.kind !== "redis");
+  const dbs = findDatabases(project).filter((d) => d.kind === "postgres" || d.kind === "mysql");
   const db = options.service ? dbs.find((d) => d.service === options.service) : dbs[0];
   if (!db) throw new Error(`${project.name} has no Postgres or MySQL in a docker-compose file.`);
   if (!(await running(db))) throw new Error(`The ${db.service} container isn't running. Start the stack first (dx up ${project.name}).`);

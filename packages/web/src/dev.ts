@@ -1,7 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import {
+  classifyFailure,
   detectStack,
   ErrorTracker,
+  listListeningPorts,
+  type Problem,
   getProjectPort,
   hasWork,
   planPrepare,
@@ -12,6 +15,7 @@ import {
   loadConfig,
   mainService,
   moveDevPort,
+  planMove,
   recordRun,
   rememberSession,
   resolveEnvFile,
@@ -73,12 +77,18 @@ export interface DevServerInfo {
   note?: string;
   /** dx answers at `url` itself, so a visit there is in the activity history too. */
   recorded?: boolean;
+  /** Why dx isn't answering at its usual address, when it isn't (so nothing is recorded there). */
+  notRecorded?: string;
   /** The project as it was at a commit, run from ~/.dx/snapshots. */
   snapshot?: boolean;
   /** Getting it ready before it starts: packages, .env, Docker, migrations… with each step's state. */
   prepare?: PrepareView[];
   /** How it was run, when not as the plain dev server: the mode and the .env file laid over it. */
   run?: RunInfo;
+  /** When it failed: what happened and the ways out, in the one shape every failure has. */
+  problem?: Problem;
+  /** While it starts: what it's doing now ("Installing packages", "Starting next dev"). */
+  step?: string;
 }
 
 /** A run mode and env file (core's runmodes.ts), as the page shows them. Never the values. */
@@ -135,6 +145,8 @@ interface Proc {
   docker?: { compose: string; hostPort?: number };
   /** dx at the server's usual address (`port`), passing to where the server runs (`hidden`). */
   front?: { door: FrontDoor; port: number; hidden: number };
+  /** Why it isn't recorded at its usual address, said on its card. */
+  recordNote?: string;
   snapshot?: boolean;
   portHint?: number;
   prepare?: PrepareStep[];
@@ -303,7 +315,7 @@ function errorsOf(list: Proc[], options: { all?: boolean; after?: number; servic
  * it was at a commit, under ~/.dx/snapshots) runs on a port of its own, next to the project's
  * usual dev server, and isn't remembered as where you left off.
  */
-export function startDevServer(project: Project, startedBy: StartedBy = "dashboard", options: { snapshot?: boolean; mode?: string; env?: string } = {}): DevServerInfo {
+export function startDevServer(project: Project, startedBy: StartedBy = "dashboard", options: { snapshot?: boolean; mode?: string; env?: string; ownPort?: boolean } = {}): DevServerInfo {
   const choice: RunChoice = { mode: options.mode || undefined, env: options.env };
   const plainDev = !choice.mode || choice.mode === "dev";
   // A stack runs as it is; a run mode (production, a script) is the project's one command instead.
@@ -366,16 +378,20 @@ function safePlan(project: Project, options: Parameters<typeof planPrepare>[1]):
   }
 }
 
-function launchProject(project: Project, spec: Spec, options: { snapshot?: boolean }, existing?: Proc): Proc {
+function launchProject(project: Project, spec: Spec, options: { snapshot?: boolean; ownPort?: boolean }, existing?: Proc): Proc {
   if (options.snapshot) return startOnOwnPort(project, { ...spec, url: undefined, port: undefined, snapshot: true }, existing);
+  // "Use another port" on a failed start: the usual one is busy, so it runs on a free one.
+  if (options.ownPort) return startOnOwnPort(project, { ...spec, url: undefined, port: undefined }, existing, "The usual port is busy");
   // Recorded at localhost:<port> too, when its tool can be moved to another port.
   const usual = spec.port;
-  if (usual && localhostRecording() && moveDevPort(project, 1)) return startBehindDoor(project, spec, usual, existing);
-  if (existing) {
-    launch(existing, spec);
-    return existing;
-  }
-  return spawnProc(spec);
+  const plan = localhostRecording() ? planMove(project, 1) : undefined;
+  if (usual && plan?.moved) return startBehindDoor(project, spec, usual, existing);
+  let proc = existing;
+  if (proc) launch(proc, spec);
+  else proc = spawnProc(spec);
+  // Said on the card, so a feature that needs the usual address doesn't just silently not work.
+  proc.recordNote = plan ? (plan.moved ? "dx can't tell which port it will use" : plan.reason) : undefined;
+  return proc;
 }
 
 function startStack(project: Project, stack: Stack, startedBy: StartedBy, snapshot = false, choice: RunChoice = {}): DevServerInfo {
@@ -593,7 +609,9 @@ function startBehindDoor(project: Project, spec: Spec, usual: number, existing?:
   void (async () => {
     let run = spec;
     try {
-      if (!(await isPortOpen(usual))) {
+      p.recordNote = undefined;
+      if (await isPortOpen(usual)) p.recordNote = `localhost:${usual} is already in use by another program`;
+      else {
         const hidden = await freePort();
         const moved = moveDevPort(project, hidden);
         const door = moved
@@ -605,7 +623,7 @@ function startBehindDoor(project: Project, spec: Spec, usual: number, existing?:
           p.front = { door, port: usual, hidden };
           run = { ...spec, command: moved.command, env: { ...spec.env, ...moved.env }, url: `http://localhost:${hidden}`, port: hidden };
           push(p, "dx", `Recording at http://localhost:${usual}: dx answers there and runs the dev server on port ${hidden}.`);
-        }
+        } else p.recordNote = `dx couldn't open localhost:${usual} to answer there`;
       }
     } catch {
       // started as it always was
@@ -626,7 +644,7 @@ function startBehindDoor(project: Project, spec: Spec, usual: number, existing?:
  * read, and the address it prints wins as always. No localhost door: its usual port belongs to
  * the project.
  */
-function startOnOwnPort(project: Project, spec: Spec, existing?: Proc): Proc {
+function startOnOwnPort(project: Project, spec: Spec, existing?: Proc, why?: string): Proc {
   const p = existing ?? newProc(spec);
   void (async () => {
     let run = spec;
@@ -636,7 +654,8 @@ function startOnOwnPort(project: Project, spec: Spec, existing?: Proc): Proc {
       run = moved
         ? { ...spec, command: moved.command, env: { ...spec.env, ...moved.env }, url: `http://localhost:${port}`, port }
         : { ...spec, env: { ...spec.env, PORT: String(port) }, portHint: port };
-      push(p, "dx", moved ? `Snapshot: runs on port ${port}, so the project's own dev server keeps its port.` : `Snapshot: given PORT=${port}; if it listens somewhere else, the address it prints is used.`);
+      const lead = why ? `${why}: ` : "Snapshot: ";
+      push(p, "dx", moved ? `${lead}runs on port ${port}${why ? "." : ", so the project's own dev server keeps its port."}` : `${lead}given PORT=${port}; if it listens somewhere else, the address it prints is used.`);
     } catch {
       // started with its own settings; the address it prints is used
     }
@@ -899,6 +918,44 @@ export async function restartDevServer(project: Project, startedBy: StartedBy = 
   return startDevServer(project, by, { snapshot, mode: choice.mode, env: choice.env });
 }
 
+/**
+ * Restarts one service of a running stack: its process is stopped and started again with the same command and
+ * environment, or its container is restarted (`docker compose restart <service>`). The rest keep running. Not
+ * for a stack that runs through one command (turbo, concurrently…): its services are one process.
+ */
+export async function restartStackService(project: Project, serviceName: string): Promise<DevServerInfo> {
+  const run = stacks.get(key(project.dir));
+  if (!run || run.phase !== "running") throw new Error(`${project.name}'s stack isn't running. Start it first.`);
+  if (run.stack.runner) throw new Error("This stack runs through one command, so its services restart together: restart the stack.");
+  const svc = run.stack.services.find((s) => s.name === serviceName);
+  if (!svc) throw new Error(`${project.name} has no service called ${serviceName}: ${run.stack.services.map((s) => s.name).join(", ")}.`);
+  const k = `${run.key}#${svc.name}`;
+  const p = procs.get(k);
+  if (svc.kind === "docker") {
+    // The project's own container: only on this run's own stack (a copy shares the project's and leaves them be).
+    if (run.snapshot) throw new Error("A copy uses the project's own containers, so it doesn't restart them.");
+    if (p) push(p, "dx", "Restarting the container…");
+    const code = await new Promise<number>((resolve) => {
+      const child = spawn("docker", ["compose", "restart", svc.composeService ?? svc.name], { cwd: run.stack.composeFile ? dirOf(run.stack.composeFile) : run.dir, windowsHide: true, stdio: "ignore" });
+      child.once("error", () => resolve(1));
+      child.once("exit", (c) => resolve(c ?? 1));
+    });
+    if (p) push(p, "dx", code === 0 ? "Container restarted." : "docker compose restart failed.");
+    if (code !== 0) throw new Error(`docker compose restart ${svc.composeService ?? svc.name} didn't work. Is Docker running?`);
+  } else {
+    if (p?.child) {
+      const exited = new Promise<void>((resolve) => p.child?.once("exit", () => resolve()));
+      await stopProc(p);
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
+    }
+    procs.delete(k);
+    const fresh = run.snapshot ? await startServiceOnOwnPort(run, svc) : startService(run, svc);
+    await waitSettled(fresh, 60_000);
+  }
+  recordRun("go", true, `${run.name}: restarted ${svc.name}`, "web", { project: run.name });
+  return stackInfo(run);
+}
+
 /** Forgets a stopped server or stack, so its card and output go away. */
 export function clearDevServer(dir: string): void {
   const k = key(dir);
@@ -1072,6 +1129,7 @@ function push(p: Proc, stream: DevLine["stream"], raw: string): void {
   if (p.front && p.status === "starting" && Number(m[2]) !== p.front.hidden && Number(m[2]) !== p.front.port) {
     const usual = p.front.port;
     void closeDoor(p);
+    p.recordNote = "it didn't take the port dx gave it";
     push(p, "dx", `The dev server didn't take the port dx gave it, so localhost:${usual} isn't recorded this time.`);
   }
   if (p.split) {
@@ -1094,11 +1152,54 @@ function info(p: Proc): DevServerInfo {
   const shown = p.front ? `http://localhost:${p.front.port}` : url;
   const out: DevServerInfo = { project, dir, command, url: shown, pid, status, startedBy, errorCount, startedAt, stoppedAt, exitCode, lastLine, service, role };
   if (p.front) out.recorded = true;
+  else if (p.recordNote && p.child) out.notRecorded = p.recordNote;
   if (p.snapshot) out.snapshot = true;
   if (!p.stackKey && url && p.child) out.localUrl = localUrlOf(`${serviceName(project)}.localhost`);
   if (p.prepare && !p.stackKey) out.prepare = prepareView(p.prepare);
   if (p.run && !p.stackKey) out.run = p.run;
+  if (status === "failed") out.problem = classifyFailure(lastTexts(p), { dir, port: p.portHint ?? p.port });
+  else if (status === "starting" && !p.stackKey) out.step = startingStep(p);
   return out;
+}
+
+/** The end of a server's own output, as plain lines. */
+const lastTexts = (p: Proc, n = 120): string[] => p.lines.slice(-n).map((l) => l.text);
+
+/** What a server that is starting is doing: the step that runs, else the command it is starting. */
+function startingStep(p: Proc): string {
+  const running = p.prepare?.find((s) => s.status === "running");
+  if (running) return running.title;
+  const waiting = p.prepare?.find((s) => s.status === "todo" && s.blocking);
+  if (waiting && !p.child) return `Getting ready: ${waiting.title.toLowerCase()}`;
+  return `Starting ${p.command.length > 48 ? `${p.command.slice(0, 45)}…` : p.command}`;
+}
+
+const ownerKept = new Map<number, { at: number; owner?: { pid: number; name?: string } }>();
+
+/** Who has a port, asked at most every 10 s per port (the listing takes a moment on Windows). */
+async function portOwnerOf(port: number): Promise<{ pid: number; name?: string } | undefined> {
+  const kept = ownerKept.get(port);
+  if (kept && Date.now() - kept.at < 10_000) return kept.owner;
+  const entry = (await listListeningPorts(port).catch(() => []))[0];
+  const owner = entry ? { pid: entry.pid, name: entry.processName } : undefined;
+  ownerKept.set(port, { at: Date.now(), owner });
+  return owner;
+}
+
+/**
+ * Why a project's dev server failed, with who has the port when that is the reason. The same
+ * Problem the card carries, with the one thing a sync read can't know.
+ */
+export async function devProblem(dir: string): Promise<Problem | undefined> {
+  const run = stacks.get(key(dir));
+  const procList = run ? procsFor(dir).filter((p) => p.status === "failed") : [procs.get(key(dir))].filter((p): p is Proc => !!p && p.status === "failed");
+  if (!procList.length && !run?.failed) return undefined;
+  const lines = [...procList.flatMap((p) => lastTexts(p)), ...(run?.note ? [run.note] : [])];
+  const first = classifyFailure(lines, { dir, canMove: !run });
+  if (first.code !== "port-in-use") return first;
+  const port = Number(/Port (\d+)/.exec(first.message)?.[1]) || procList[0]?.portHint || procList[0]?.port;
+  const owner = port ? await portOwnerOf(port) : undefined;
+  return classifyFailure(lines, { dir, port, owner, canMove: !run });
 }
 
 interface ServiceInfo extends DevServerInfo {
@@ -1163,6 +1264,8 @@ function stackInfo(run: StackRun): DevServerInfo {
     note: run.note,
     run: run.run,
     prepare: prepareView(run.prepare),
+    problem: status === "failed" ? classifyFailure([...procsFor(run.dir).filter((p) => p.status === "failed").flatMap((p) => lastTexts(p)), ...(run.note ? [run.note] : [])], { dir: run.dir, canMove: false }) : undefined,
+    step: status === "starting" ? (services.find((s) => s.status === "starting")?.service ? `Starting ${services.find((s) => s.status === "starting")?.service}` : "Getting ready") : undefined,
   };
 }
 

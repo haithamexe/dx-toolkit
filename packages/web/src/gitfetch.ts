@@ -1,4 +1,4 @@
-import { gitRun, loadConfig, recordRun, scanProjectsCached, type GitRunOptions, type GitResult } from "@dx/core";
+import { gitRun, levelOf, loadConfig, propose, recordRun, scanProjectsCached, type GitRunOptions, type GitResult } from "@dx/core";
 import { listDevServers } from "./dev.js";
 
 /**
@@ -57,7 +57,18 @@ export function startGitFetch(): () => void {
       const open = new Set(listDevServers().map((s) => s.dir.toLowerCase()));
       for (const [dir, at] of viewed) if (now - at > VIEWED_MS) viewed.delete(dir);
       const targets = scanProjectsCached(loadConfig()).filter((p) => p.hasGit && (open.has(p.dir.toLowerCase()) || viewed.has(p.dir.toLowerCase())));
-      await fetchDue(targets, now);
+      const level = levelOf("git-fetch");
+      if (level === "do") await fetchDue(targets, now);
+      else if (targets.length) {
+        // Told to ask or only suggest: nothing is fetched, it's put to you (one question for all of them).
+        propose({
+          capability: "git-fetch",
+          level,
+          what: `Fetch the remotes of ${targets.length} project${targets.length === 1 ? "" : "s"} you're working in`,
+          why: "So \"behind\" is true. Fetch only: never a merge, pull or push",
+          action: { kind: "git-fetch", data: { dirs: targets.map((t) => t.dir) } },
+        });
+      }
     } catch {
       // the next look tries again
     } finally {

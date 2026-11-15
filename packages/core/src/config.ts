@@ -30,6 +30,8 @@ export interface DxConfig {
   templatesDir?: string;
   /** Connect dx to newly installed AI tools automatically (default true). */
   autoConnectAi?: boolean;
+  /** How much dx does on its own, per capability: suggest, ask or do (tools/autonomy.ts). Missing means the default. */
+  autonomy?: Record<string, string>;
   /** AI tools dx has already offered itself to, so one you disconnected stays disconnected. */
   aiToolsSeen?: string[];
   /** Serve running apps at name.localhost (default true). */
@@ -75,7 +77,7 @@ export interface DxConfig {
    * Sites the dx browser records, besides addresses on this computer (`dx sites add`): a host
    * (or host:port, or *.domain), the project it belongs to, and its environment.
    */
-  sites?: { host: string; project?: string; env?: string; label?: string }[];
+  sites?: { host: string; project?: string; env?: string; label?: string; url?: string; apply?: boolean }[];
   /**
    * Floppy, the desktop assistant (`dx floppy`): whether it starts with Windows (asked once, the
    * first time it runs), where along the taskbar you left it, and its colours.
@@ -83,7 +85,7 @@ export interface DxConfig {
   floppy?: {
     startup?: boolean;
     x?: number;
-    colourway?: "navy" | "charcoal" | "maroon";
+    colourway?: "violet" | "navy" | "charcoal" | "maroon";
     /** You sent Floppy away (Quit, or `dx floppy --stop`), so the dx app doesn't bring it back; `dx floppy` clears it. */
     off?: boolean;
   };

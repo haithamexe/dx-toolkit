@@ -44,7 +44,7 @@ export function printServices(server: DevInfo): void {
   const width = Math.max(...list.map((s) => (s.service ?? s.project).length));
   for (const s of list) {
     const name = (s.service ?? s.project).padEnd(width);
-    const where = s.localUrl ?? s.url;
+    const where = s.url ?? s.localUrl;
     const errors = s.errorCount ? c.red(` ${s.errorCount} error(s)`) : "";
     console.log(`  ${c.bold(name)}  ${(STATUS[s.status] ?? String)(s.status.padEnd(8))} ${where ? c.cyan(where) : c.dim(s.command)}${errors}`);
   }
@@ -85,9 +85,9 @@ export async function follow(client: DashboardClient, project: Project, openWhen
         after = l.n;
       }
       const server = r.server;
-      if (!opened && server?.status === "ready" && (server.localUrl ?? server.url)) {
+      if (!opened && server?.status === "ready" && (server.url ?? server.localUrl)) {
         opened = true;
-        const url = server.localUrl ?? server.url!;
+        const url = server.url ?? server.localUrl!;
         try {
           await openUrl(url);
           ok(`Ready, opened ${c.cyan(url)}`);
@@ -128,7 +128,7 @@ export const upCommand: Command = {
     info(`Starting ${c.bold(project.name)}…`);
     const { server } = await startInDashboard(project);
     printServices(server);
-    const url = server.localUrl ?? server.url;
+    const url = server.url ?? server.localUrl;
     if (server.status === "ready") ok(`${project.name} is up${url ? ` at ${c.cyan(url)}` : ""}`);
     else warn(`${project.name} is ${server.status}. dx logs ${project.name} shows why.`);
     if (values.open && url) await openUrl(url).catch(() => undefined);

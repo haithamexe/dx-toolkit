@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 import { handleApi, HttpError } from "./api.js";
-import { certCovers, dxPath, ensureCert, loadConfig, projectHostNames, type CertFiles, type DxConfig } from "@dx/core";
+import { certCovers, dxPath, ensureCert, loadConfig, problemOf, projectHostNames, withActor, type CertFiles, type DxConfig } from "@dx/core";
+import { serveEvents, stopEvents } from "./events.js";
 import { releaseAll } from "./intercept.js";
 import { flushCache, listMockServers, startMockServer, stopAllMockServers } from "./mocks.js";
 import { prunePhones, stopAllPhones } from "./phone.js";
@@ -144,12 +145,17 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
 
     if (url.pathname.startsWith("/api/")) {
       if (!tokenMatches(req.headers["x-dx-token"], token)) {
-        return send(res, 401, { error: "Missing or wrong dashboard token. Reload the page, or run dx ui again." });
+        return send(res, 401, { error: "Missing or wrong dashboard token. Reload the page, or run dx ui again.", problem: { code: "stale-token", message: "Missing or wrong dashboard token. Reload the page, or run dx ui again." } });
       }
       const origin = req.headers.origin;
       if (origin && !allowedHosts.some((h) => origin === `http://${h}`)) return send(res, 403, { error: "Wrong origin." });
       // Floppy asks every few seconds what's going on; that alone doesn't keep a background dashboard running.
       if (req.headers["x-dx-quiet"] !== "1") lastActivity = Date.now();
+      // The live stream: kept open, read with fetch (the token is a header, which EventSource can't send).
+      if (url.pathname === "/api/events" && req.method === "GET") {
+        const last = req.headers["last-event-id"] ?? url.searchParams.get("after");
+        return serveEvents(req, res, last === undefined || last === null || last === "" ? undefined : Number(last));
+      }
       if (url.pathname === "/api/shutdown" && req.method === "POST") {
         send(res, 200, { ok: true });
         setTimeout(() => void close(), 50);
@@ -164,11 +170,14 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
         }
       }
       try {
-        const result = await handleApi({ method: req.method ?? "GET", path: url.pathname, query: url.searchParams, body });
+        // An AI tool's dx server labels itself, so what it changes is listed as the agent's (a label, never a permission).
+        const actor = req.headers["x-dx-actor"] === "ai" ? "ai" : "you";
+        const result = await withActor(actor, () => handleApi({ method: req.method ?? "GET", path: url.pathname, query: url.searchParams, body }));
         return send(res, 200, result ?? null);
       } catch (err) {
         const status = err instanceof HttpError ? err.status : 500;
-        return send(res, status, { error: (err as Error).message });
+        // The same words as before in `error`, and the failure in the one shape every failure has.
+        return send(res, status, { error: (err as Error).message, problem: problemOf(err, STATUS_CODES[status] ?? "error") });
       }
     }
 
@@ -251,6 +260,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       // This dashboard's restart handler goes (not another's), and a build or test it started stops with it.
       setShutdownHandler(undefined, shutdownHere);
       stopDevJobs();
+      stopEvents();
       stopHeadWatch();
       stopEnvWatch();
       stopAgentWatch();
@@ -354,6 +364,9 @@ function readJson(req: http.IncomingMessage, max = MAX_BODY): Promise<Record<str
     req.on("error", reject);
   });
 }
+
+/** A stable code for an error that has no code of its own, by its HTTP status. */
+const STATUS_CODES: Record<number, string> = { 400: "invalid", 401: "unauthorized", 403: "forbidden", 404: "not-found", 405: "not-allowed", 409: "conflict", 500: "internal" };
 
 function send(res: http.ServerResponse, status: number, body: unknown): void {
   if (res.headersSent) return;

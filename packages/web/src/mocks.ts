@@ -64,7 +64,7 @@ export function forgetMocks(): void {
 }
 
 /** An API call by its look, for strict mode: not a page, not a script, style or image. */
-function looksLikeApi(method: string, url: string, headers: http.IncomingHttpHeaders): boolean {
+export function looksLikeApi(method: string, url: string, headers: http.IncomingHttpHeaders): boolean {
   if (method !== "GET" && method !== "HEAD") return true;
   if (/\/api\/|\/graphql|\/trpc\//i.test(url.split("?")[0] + "/")) return true;
   return /json|xml/i.test(String(headers.accept ?? "")) && !/text\/html/i.test(String(headers.accept ?? ""));

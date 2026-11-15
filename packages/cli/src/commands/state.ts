@@ -87,7 +87,7 @@ export const stateCommand: Command = {
       }
       const r = await importState(state, { projects, settings });
       recordRun("state", true, `imported ${r.projects.length} project${r.projects.length === 1 ? "" : "s"}${r.skipped.length ? ` (${r.skipped.length} not on this computer)` : ""}`, "cli");
-      const parts = [`${r.projects.length} project${r.projects.length === 1 ? "" : "s"}`, r.settings && `${r.settings} settings`, r.roots && `${r.roots} projects folders`, r.journal && `${r.journal} journal entries`, r.summaries && `${r.summaries} summaries`, r.templates && `${r.templates} templates`, r.sites && `${r.sites} sites`].filter(Boolean);
+      const parts = [`${r.projects.length} project${r.projects.length === 1 ? "" : "s"}`, r.settings && `${r.settings} settings`, r.roots && `${r.roots} projects folders`, r.journal && `${r.journal} journal entries`, r.summaries && `${r.summaries} summaries`, r.templates && `${r.templates} templates`, r.sites && `${r.sites} sites`, r.views && `${r.views} saved views`].filter(Boolean);
       ok(`Imported ${parts.join(", ")}.`);
       for (const p of r.projects) console.log(`  ${c.bold(p.name)}  ${Object.entries(p.brought).map(([k, n]) => `${n} ${k}`).join(", ") || c.dim("nothing new")}`);
       if (r.skipped.length) info(`Not on this computer, so left out: ${r.skipped.join(", ")}. Clone them (dx clone) and import again.`);

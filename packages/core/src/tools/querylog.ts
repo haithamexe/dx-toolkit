@@ -127,7 +127,7 @@ export function queryLogState(dir: string): LogState | undefined {
 }
 
 function pickDb(project: Pick<Project, "name" | "dir">, service?: string): DbService {
-  const dbs = findDatabases(project).filter((d) => d.kind !== "redis");
+  const dbs = findDatabases(project).filter((d) => d.kind === "postgres" || d.kind === "mysql");
   const db = service ? dbs.find((d) => d.service === service) : dbs[0];
   if (!db) throw new Error(`${project.name} has no Postgres or MySQL in a docker-compose file, so dx can't see its queries.`);
   return db;

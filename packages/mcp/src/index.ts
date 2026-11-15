@@ -73,10 +73,14 @@ import {
   type Project,
 } from "@dx/core";
 import { dataTarget, listScenes, loadData, loadScene, makeScene, readDataSchema, saveScene, sceneSlug, type AttackReport, describeHealth, CHAOS_LEVELS, chaosReport, findGraveyard, loadChaos, probeEnv, setChaos, type BehaviourDiff, type GremlinRun } from "@dx/core";
+import { searchProject, type SearchMode } from "@dx/core";
 import { describeLocaleProblem, prProof, projectTour, queryLogState, queryReport, readActivity as readActivityLog, setQueryLog, tourMarkdown, type LocaleReport, type UpgradeReport } from "@dx/core";
 import { ensureDashboard, findDashboard, type DashboardClient } from "@dx/web/link";
 import { ACTION_GROUPS, DX_ACTIONS, actionRequest, dxAction } from "@dx/web/actions";
 import { callRecord, recordCall, type CallResult } from "./calls.js";
+
+// Every call this server makes to the dashboard says an AI tool is asking, so what it changes is listed as the agent's.
+process.env.DX_ACTOR = "ai";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 /** Shown to the model by clients that support it: why these tools, and when to prefer them to a shell. */
@@ -158,6 +162,38 @@ server.registerTool(
         lastActive: p.lastActive ? new Date(p.lastActive).toISOString() : undefined,
       })),
     );
+  },
+);
+
+server.registerTool(
+  "search_code",
+  {
+    title: "Search a project's code",
+    description:
+      "Find a file by name (fuzzy: 'cartserv' finds CartService.ts) or a word, phrase or regular expression inside a project's files, ranked, with the matching lines and where they are. " +
+      "Use it instead of grep or find: it reads only what git lists for the project, skips build folders and never reads .env files, keys or certificates.",
+    inputSchema: {
+      project: z.string().describe("Project name, or part of it"),
+      query: z.string().min(1).max(200).describe("What to find: part of a file name, a word, or a regular expression with regex: true"),
+      mode: z.enum(["all", "files", "content"]).optional().describe("files: names only; content: inside the files only; all (default): both"),
+      regex: z.boolean().optional(),
+      wholeWord: z.boolean().optional(),
+      caseSensitive: z.boolean().optional().describe("Default: smart case (case-sensitive only when the query has a capital letter)"),
+      ext: z.array(z.string()).optional().describe("Only these extensions, e.g. ['ts', 'tsx']"),
+      folder: z.string().optional().describe("Only under this folder of the project, e.g. 'src/cart'"),
+      maxFiles: z.number().int().min(1).max(50).optional().describe("Files to list (default 15)"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ project: name, query, mode, regex, wholeWord, caseSensitive, ext, folder, maxFiles }) => {
+    const project = pickProject(name);
+    if (typeof project === "string") return failure(project);
+    const r = await searchProject(project.dir, { query, mode: (mode ?? "all") as SearchMode, regex, wholeWord, caseSensitive, ext, folders: folder ? [folder] : undefined, maxFiles: maxFiles ?? 15, perFile: 3, context: 0 });
+    if (r.patternError) return failure(r.patternError);
+    if (!r.files.length) return text(`Nothing for "${query}" in ${project.name} (${r.totals.scanned} files read).`);
+    const lines = r.files.map((f) => [`${f.path}${f.matches ? ` (${f.matches} match${f.matches === 1 ? "" : "es"})` : " (name)"}`, ...f.hits.map((h) => `  ${h.line}: ${h.text.trim().slice(0, 160)}`)].join("\n"));
+    const more = r.truncated ? `\n…${r.totals.files - r.files.length} more files: narrow with ext, folder or a longer query.` : "";
+    return text(`${r.totals.files} files, ${r.totals.matches} matches in ${project.name}:\n\n${lines.join("\n\n")}${more}`);
   },
 );
 
@@ -1126,7 +1162,7 @@ server.registerTool(
   {
     title: "Query the development database",
     description:
-      "Run a read-only query against a project's development database, the Postgres, MySQL/MariaDB or Redis its docker-compose runs. " +
+      "Run a read-only query against a project's development database, the Postgres, MySQL/MariaDB, MongoDB or Redis its docker-compose runs. " +
       "It runs inside the container as the user it was set up with, so no credentials are needed. Only SELECT, WITH, SHOW, EXPLAIN and " +
       "DESCRIBE (or Redis commands that read: GET, HGETALL, SCAN, …), one statement at a time, in a read-only session. Leave query out " +
       "to list the tables. Use it to check what an action actually stored. The stack must be running.",
@@ -2027,7 +2063,7 @@ server.registerTool(
     const words = (search ?? "").toLowerCase().split(/\s+/).filter(Boolean);
     const list = DX_ACTIONS.filter((a) => (!group || a.group === group) && words.every((w) => `${a.id} ${a.title}`.toLowerCase().includes(w)));
     if (!list.length) return failure(group && !ACTION_GROUPS[group] ? `No group "${group}". Groups: ${Object.keys(ACTION_GROUPS).join(", ")}.` : "No action matches.");
-    return text(list.map((a) => ({ action: a.id, does: a.title, inputs: a.params, ...(a.risky ? { risky: "use dx_do_risky (the user is asked first)" } : {}) })));
+    return text(list.map((a) => ({ action: a.id, does: a.title, inputs: a.params, risk: a.risk, ...(a.risky ? { risky: "use dx_do_risky (the user is asked first)" } : {}) })));
   },
 );
 
@@ -2086,7 +2122,7 @@ server.registerResource(
   "actions",
   "dx://actions",
   { title: "Everything dx can do", description: "The catalog behind dx_actions, dx_do and dx_do_risky: every group and action with its inputs, risky ones marked.", mimeType: JSON_TYPE },
-  async (uri) => asJson(uri, { groups: ACTION_GROUPS, actions: DX_ACTIONS.map((a) => ({ action: a.id, group: a.group, does: a.title, inputs: a.params, ...(a.risky ? { risky: true } : {}) })) }),
+  async (uri) => asJson(uri, { groups: ACTION_GROUPS, actions: DX_ACTIONS.map((a) => ({ action: a.id, group: a.group, does: a.title, inputs: a.params, risk: a.risk, ...(a.risky ? { risky: true } : {}) })) }),
 );
 
 server.registerResource(

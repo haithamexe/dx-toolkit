@@ -5,7 +5,7 @@ import { c, info, table, UsageError } from "../ui.js";
 
 export const dbCommand: Command = {
   name: "db",
-  summary: "Read-only queries against a project's development database (Postgres, MySQL, Redis in docker-compose)",
+  summary: "Read-only queries against a project's development database (Postgres, MySQL, MongoDB, Redis in docker-compose)",
   usage: [
     'dx db <project>                         its tables (Redis: some keys)',
     'dx db <project> "select * from orders"  run a reading query',

@@ -46,6 +46,7 @@ The dashboard shows only what a project has: pages with nothing in them (Tools, 
 | [AI tools and Raycast](docs/ai-tools.md) | The MCP server, resources, prompts, connecting by hand |
 | [What dx stores](docs/files.md) | The `~/.dx` folder |
 | [Working on dx](docs/development.md) | Adding a tool, tests, CLAUDE.md |
+| [Design standards and the brand](docs/design.md) | How dx looks, behaves and speaks: the UI/UX rules, Arcade, the checklist |
 | [Releasing](docs/releasing.md) | For maintainers |
 | [Changelog](CHANGELOG.md) · [Decisions and backlog](docs/MEMORY.md) · [Enhancements](docs/ENHANCEMENTS.md) | |
 

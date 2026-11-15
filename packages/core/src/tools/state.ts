@@ -15,7 +15,8 @@ import { cleanRule, loadRules, rulesFile, RULES_MAX, saveRules, type TrafficRule
 import { isValidProjectName, templatesDir } from "./scaffold.js";
 import { listScenes, loadScene, sceneSlug, scenesFolder, type Scene } from "./seeddata.js";
 import { importNote, readSession } from "./sessions.js";
-import { normalizeEnv, normalizeSiteHost, type SiteConfig } from "./sites.js";
+import { cleanFilter, cleanTags, readMeta, saveView, setPinned, setProjectTags, type Filter } from "./facets.js";
+import { normalizeEnv, normalizeSiteHost, normalizeSiteUrl, type SiteConfig } from "./sites.js";
 import { summariesDir } from "./summary.js";
 
 /**
@@ -45,7 +46,7 @@ export const STATE_PAGE_PREFS = ["theme", "detailMode", "aiLane", "toolAgent", "
 export interface StateSettings extends Partial<Pick<DxConfig, PortableKey>> {
   /** Projects folders under the home folder, as ~/… */
   projectsRoots?: string[];
-  floppyColourway?: "navy" | "charcoal" | "maroon";
+  floppyColourway?: "violet" | "navy" | "charcoal" | "maroon";
 }
 
 export interface StateProject {
@@ -63,6 +64,9 @@ export interface StateProject {
   note?: { text: string; by: "you" | "ai"; at: string };
   alerts?: { off?: boolean; osOff?: boolean };
   sites?: Omit<SiteConfig, "project">[];
+  /** Tags and the pin, as the projects list keeps them. */
+  tags?: string[];
+  pinned?: true;
 }
 
 export interface DxState {
@@ -75,6 +79,8 @@ export interface DxState {
   journal: JournalEntry[];
   summaries: { name: string; text: string }[];
   templates: { name: string; files: { path: string; data: string }[] }[];
+  /** Saved views of the projects list. */
+  views?: { name: string; filter: Filter }[];
   /** The dashboard's preferences, when it made the file. */
   page?: Record<string, string>;
   projects: StateProject[];
@@ -197,6 +203,7 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
   const remotes = await projectRemotes(options.projects);
   let sceneBytes = 0;
   const projects: StateProject[] = [];
+  const meta = readMeta();
   for (const p of options.projects) {
     const sp: StateProject = { name: p.name, ...(remotes.get(p.dir) ? { remote: remotes.get(p.dir) } : {}) };
     const tools = loadTools(p.dir).map(({ createdAt: _c, updatedAt: _u, ...t }) => t);
@@ -238,6 +245,9 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
     if (alerts && (alerts.off || alerts.osOff)) sp.alerts = { ...(alerts.off ? { off: true } : {}), ...(alerts.osOff ? { osOff: true } : {}) };
     const sites = (config.sites ?? []).filter((s) => s.project && same(s.project, p.dir)).map(({ project: _p, ...s }) => s);
     if (sites.length) sp.sites = sites;
+    const tags = meta.tags[p.dir.toLowerCase()];
+    if (tags?.length) sp.tags = tags;
+    if (meta.pinned.some((d) => d.toLowerCase() === p.dir.toLowerCase())) sp.pinned = true;
     if (Object.keys(sp).some((k) => k !== "name" && k !== "remote")) projects.push(sp);
   }
 
@@ -286,6 +296,7 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
     journal,
     summaries,
     templates,
+    ...(meta.views.length ? { views: meta.views.map((v) => ({ name: v.name, filter: v.filter })) } : {}),
     ...(page && Object.keys(page).length ? { page } : {}),
     projects,
     ...(left.length ? { left } : {}),
@@ -295,8 +306,8 @@ export async function exportState(options: { projects: Project[]; config?: DxCon
 // ------------------------------------------------------------------ reading a file, strictly
 
 const SUMMARY_NAME = /^[\w-][\w.-]{0,99}\.md$/;
-const TOP = new Set(["format", "version", "exportedAt", "settings", "sites", "journal", "summaries", "templates", "page", "projects", "left"]);
-const PROJECT_FIELDS = new Set(["name", "remote", "tools", "mocks", "rules", "spec", "specs", "specsOff", "chaos", "scenes", "note", "alerts", "sites"]);
+const TOP = new Set(["format", "version", "exportedAt", "settings", "sites", "journal", "summaries", "templates", "views", "page", "projects", "left"]);
+const PROJECT_FIELDS = new Set(["name", "remote", "tools", "mocks", "rules", "spec", "specs", "specsOff", "chaos", "scenes", "note", "alerts", "sites", "tags", "pinned"]);
 
 function obj(v: unknown, where: string): Record<string, unknown> {
   if (!v || typeof v !== "object" || Array.isArray(v)) throw new StateError(`${where} isn't an object.`);
@@ -338,7 +349,7 @@ function cleanSettings(input: unknown): StateSettings {
   if (o.aiCli === "claude" || o.aiCli === "codex") out.aiCli = o.aiCli;
   if (Array.isArray(o.ignore)) out.ignore = o.ignore.filter((x): x is string => typeof x === "string" && /^[^\\/\0\r\n]{1,100}$/.test(x)).slice(0, 100);
   if (Array.isArray(o.projectsRoots)) out.projectsRoots = o.projectsRoots.filter((r): r is string => !!fromHome(r)).slice(0, 20);
-  if (o.floppyColourway === "navy" || o.floppyColourway === "charcoal" || o.floppyColourway === "maroon") out.floppyColourway = o.floppyColourway;
+  if (o.floppyColourway === "violet" || o.floppyColourway === "navy" || o.floppyColourway === "charcoal" || o.floppyColourway === "maroon") out.floppyColourway = o.floppyColourway;
   return out;
 }
 
@@ -347,7 +358,17 @@ function cleanSite(input: unknown, where: string): SiteConfig {
   try {
     const host = normalizeSiteHost(String(o.host ?? ""));
     const label = typeof o.label === "string" ? o.label.trim().slice(0, 60) : "";
-    return { host, env: normalizeEnv(o.env, host), ...(label ? { label } : {}) };
+    // The address is kept only when it is one dx would have kept; a site added another way has none.
+    let url: string | undefined;
+    if (typeof o.url === "string") {
+      try {
+        const u = normalizeSiteUrl(o.url);
+        if (u.host === host) url = u.url;
+      } catch {
+        // an address dx wouldn't keep is left out
+      }
+    }
+    return { host, env: normalizeEnv(o.env, host), ...(url ? { url } : {}), ...(label ? { label } : {}), ...(typeof o.apply === "boolean" ? { apply: o.apply } : {}) };
   } catch (err) {
     throw new StateError(`${where}: ${(err as Error).message}`);
   }
@@ -452,6 +473,11 @@ function cleanProject(input: unknown, i: number): StateProject {
   }
   const sites = list(o.sites, `${at} sites`, 50);
   if (sites.length) p.sites = sites.map((s, n) => cleanSite(s, `${at} site ${n + 1}`));
+  if (o.tags !== undefined) {
+    const tags = cleanTags(o.tags);
+    if (tags.length) p.tags = tags;
+  }
+  if (o.pinned === true) p.pinned = true;
   return p;
 }
 
@@ -498,12 +524,18 @@ export function readState(input: unknown): DxState {
   });
   if (templateBytes > TEMPLATES_MAX + 1024 * 1024) throw new StateError("The templates take more than 10 MB.");
   const projects = list(o.projects, "Projects", 2000).map(cleanProject);
+  const views = list(o.views, "Views", 20).flatMap((v) => {
+    const x = obj(v, "A view");
+    const name = typeof x.name === "string" ? x.name.trim().slice(0, 40) : "";
+    return name ? [{ name, filter: cleanFilter(x.filter) }] : [];
+  });
   return {
     format: "dx-state",
     version: 1,
     exportedAt: typeof o.exportedAt === "string" && !Number.isNaN(Date.parse(o.exportedAt)) ? new Date(o.exportedAt).toISOString() : "",
     settings: cleanSettings(o.settings),
     sites: list(o.sites, "Sites", 200).map((s, n) => cleanSite(s, `Site ${n + 1}`)),
+    ...(views.length ? { views } : {}),
     journal,
     summaries,
     templates,
@@ -534,6 +566,7 @@ export interface StatePlan {
   /** Projects folders it adds (they exist here). */
   roots: string[];
   sites: number;
+  views: number;
   journal: { entries: number; adds: number };
   summaries: { adds: number; changes: number };
   templates: { name: string; status: "new" | "changes" | "same" }[];
@@ -581,7 +614,7 @@ function settingsChanges(state: DxState, config: DxConfig): StatePlan["settings"
     const from = config[k];
     if (JSON.stringify(from) !== JSON.stringify(to)) out.push({ key: k, name: SETTING_NAMES[k] ?? k, from: show(from), to: show(to) });
   }
-  if (state.settings.floppyColourway && state.settings.floppyColourway !== (config.floppy?.colourway ?? "navy")) out.push({ key: "floppyColourway", name: SETTING_NAMES.floppyColourway, from: config.floppy?.colourway ?? "navy", to: state.settings.floppyColourway });
+  if (state.settings.floppyColourway && state.settings.floppyColourway !== (config.floppy?.colourway ?? "violet")) out.push({ key: "floppyColourway", name: SETTING_NAMES.floppyColourway, from: config.floppy?.colourway ?? "violet", to: state.settings.floppyColourway });
   return out;
 }
 
@@ -609,6 +642,8 @@ function hasOf(p: StateProject): Record<string, number> {
   if (p.note) has.note = 1;
   if (p.alerts) has.alerts = 1;
   if (p.sites?.length) has.sites = p.sites.length;
+  if (p.tags?.length) has.tags = p.tags.length;
+  if (p.pinned) has.pinned = 1;
   return has;
 }
 
@@ -662,6 +697,7 @@ export async function planStateImport(state: DxState, projects: Project[], confi
     settings: settingsChanges(state, config),
     roots: rootsToAdd(state, config),
     sites: state.sites.length + state.projects.reduce((n, p) => n + (p.sites?.length ?? 0), 0),
+    views: state.views?.length ?? 0,
     journal: { entries: state.journal.length, adds: mergeJournalText(journalText, state.journal).added },
     summaries,
     templates: state.templates.map((t) => {
@@ -742,6 +778,7 @@ export interface StateImportResult {
   settings: number;
   roots: number;
   sites: number;
+  views: number;
   journal: number;
   summaries: number;
   templates: number;
@@ -764,7 +801,7 @@ export async function importState(state: DxState, options: { projects: Project[]
   // Templates always go into this computer's own templates folder: a file never says where dx writes.
   const tdir = path.resolve(templatesDir(config));
   const before = new Before(tdir);
-  const result: StateImportResult = { backup: "", projects: [], skipped: [], settings: 0, roots: 0, sites: 0, journal: 0, summaries: 0, templates: 0, notes: [] };
+  const result: StateImportResult = { backup: "", projects: [], skipped: [], settings: 0, roots: 0, sites: 0, views: 0, journal: 0, summaries: 0, templates: 0, notes: [] };
   const matches = matchProjects(state, options.projects, await projectRemotes(options.projects));
   let configChanged = false;
 
@@ -867,7 +904,29 @@ export async function importState(state: DxState, options: { projects: Project[]
       putSite({ ...s, project: dir });
       brought.sites = (brought.sites ?? 0) + 1;
     }
+    if (sp.tags?.length || sp.pinned) {
+      before.touch(dxPath("projectmeta.json"));
+      if (sp.tags?.length) {
+        setProjectTags(dir, [...new Set([...(readMeta().tags[dir.toLowerCase()] ?? []), ...sp.tags])].slice(0, 8));
+        brought.tags = sp.tags.length;
+      }
+      if (sp.pinned) {
+        setPinned(dir, true);
+        brought.pinned = 1;
+      }
+    }
     result.projects.push({ name: project.name, dir, brought });
+  }
+
+  // Saved views of the projects list: the same name replaces, a full list keeps what it has.
+  for (const v of state.views ?? []) {
+    before.touch(dxPath("projectmeta.json"));
+    try {
+      saveView(v.name, v.filter);
+      result.views++;
+    } catch (err) {
+      result.notes.push(`The view "${v.name}" stayed behind: ${(err as Error).message}`);
+    }
   }
 
   // The journal, saved summaries and templates.

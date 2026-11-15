@@ -10,6 +10,8 @@ const nav = document.getElementById("nav");
 // One banner says when dx has stopped or restarted, instead of every poll failing quietly in its own way.
 const offlineBanner = document.getElementById("offline");
 let connection = "ok";
+/** When dx last answered this page: what's shown is from then once dx stops. */
+let lastHeard = Date.now();
 /** Set once Settings' Remove dx has started: the dashboard going away is expected then. */
 let dxRemoved = false;
 function setConnection(next) {
@@ -18,6 +20,8 @@ function setConnection(next) {
   const was = connection;
   connection = next;
   offlineBanner.hidden = next === "ok";
+  // What the page shows while dx is away is marked as old, not left looking current.
+  document.body.classList.toggle("is-stale", next !== "ok");
   if (next === "ok") {
     toast("dx is back");
     if (was === "gone") route();
@@ -28,7 +32,7 @@ function setConnection(next) {
     icon("warn"),
     next === "stale"
       ? h("span", null, "dx was restarted, so this page can't talk to it any more. ")
-      : h("span", null, "dx isn't running, so this page has stopped updating. "),
+      : h("span", null, `dx isn't running, so this page has stopped updating. What's shown is from ${new Date(lastHeard).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. `),
     next === "stale"
       ? h("button", { class: "btn btn-sm", type: "button", onclick: () => location.reload() }, "Reload")
       : inApp
@@ -37,22 +41,31 @@ function setConnection(next) {
   );
 }
 
-async function api(path, { method = "GET", body } = {}) {
+async function api(path, { method = "GET", body, signal } = {}) {
   let res;
   try {
     res = await fetch(path, {
+      signal,
       method,
       headers: { "X-DX-Token": TOKEN, ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
-  } catch {
+  } catch (err) {
+    // A search that was replaced by a newer one is not a lost connection.
+    if (err?.name === "AbortError") throw err;
     setConnection("gone");
     throw new Error("dx isn't running any more.");
   }
   // 401 means this page belongs to an earlier run of dx (its token changed when dx restarted).
   setConnection(res.status === 401 ? "stale" : "ok");
+  if (res.status !== 401) lastHeard = Date.now();
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.error ?? `Request failed (${res.status})`);
+  if (!res.ok) {
+    // Every failure comes in one shape: a code, the words, and ways out where there are any.
+    const err = new Error(data?.error ?? `Request failed (${res.status})`);
+    err.problem = data?.problem;
+    throw err;
+  }
   return data;
 }
 
@@ -88,6 +101,7 @@ function append(el, ...children) {
 
 const ICONS = {
   projects: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4",
   new: "M12 5v14M5 12h14",
   ports: "M7 3v5M17 3v5M5 8h14v3a7 7 0 0 1-14 0zM12 18v3",
   machine: "M3 5h18v11H3zM8 20h8M12 16v4",
@@ -163,17 +177,158 @@ function pollWhileVisible(fn, ms) {
  * becomes visible again. Returns the function that stops it (a page returns it from its render).
  * This is why dx has no Refresh buttons: a page that has to be refreshed by hand is out of date.
  */
-function livePoll(fn, ms) {
+function livePoll(fn, ms, { events = false } = {}) {
   const run = () => {
     if (!document.hidden) void Promise.resolve(fn()).catch(() => {});
   };
-  const timer = setInterval(run, ms);
+  // A page that also listens to the live stream only polls every fourth time while the stream is up:
+  // the poll is the safety net, the events are what keeps it current.
+  let beat = 0;
+  const timer = setInterval(() => {
+    if (events && liveStream.state === "live" && ++beat % 4) return;
+    run();
+  }, ms);
   document.addEventListener("visibilitychange", run);
   return () => {
     clearInterval(timer);
     document.removeEventListener("visibilitychange", run);
   };
 }
+
+/** `fn` once things have been quiet for `ms`: a burst of events reads once. */
+function soon(fn, ms = 150) {
+  let timer = 0;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+// ------------------------------------------------------------------ the live stream
+
+/**
+ * dx tells the page what changed (GET /api/events). It's read with fetch, since EventSource can't send
+ * the token header. A page asks for what it cares about with onLive(types, fn), which returns how to stop;
+ * the poll stays as the safety net. liveStream.state is "connecting", "live", "reconnecting" or "paused" (the
+ * window has been hidden: it reconnects, and catches up on what it missed, when it's shown again).
+ */
+const liveStream = { state: "connecting", last: 0, listeners: new Set(), seenAt: Date.now(), abort: undefined, pausing: false, wake: undefined, hideTimer: 0 };
+
+function setLiveState(next) {
+  if (liveStream.state === next) return;
+  liveStream.state = next;
+  const el = document.getElementById("live-state");
+  if (!el) return;
+  el.dataset.state = next;
+  el.replaceChildren(h("span", { class: "live-dot", "aria-hidden": "true" }), { live: "Live", reconnecting: "Reconnecting…", paused: "Paused", connecting: "Connecting…" }[next]);
+}
+
+function onLive(types, fn) {
+  const entry = { types: Array.isArray(types) ? types : [types], fn };
+  liveStream.listeners.add(entry);
+  return () => liveStream.listeners.delete(entry);
+}
+
+function handleLiveFrame(frame) {
+  let type = "message";
+  let id = 0;
+  let data = "";
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("id:")) id = Number(line.slice(3));
+    else if (line.startsWith("event:")) type = line.slice(6).trim();
+    else if (line.startsWith("data:")) data += line.slice(5).trim();
+  }
+  if (!data && !id) return;
+  if (id) liveStream.last = Math.max(liveStream.last, id);
+  let payload = {};
+  try {
+    payload = data ? JSON.parse(data) : {};
+  } catch {
+    // a frame that isn't JSON says nothing
+  }
+  if (type === "hello") return setLiveState("live");
+  for (const { types, fn } of liveStream.listeners) {
+    if (!types.includes(type)) continue;
+    try {
+      fn(payload, type);
+    } catch {
+      // one page's handler must not stop the others
+    }
+  }
+}
+
+async function readLive(signal) {
+  const res = await fetch(`/api/events${liveStream.last ? `?after=${liveStream.last}` : ""}`, { headers: { "X-DX-Token": TOKEN }, cache: "no-store", signal });
+  if (res.status === 401) {
+    setConnection("stale");
+    throw new Error("stale");
+  }
+  if (!res.ok || !res.body) throw new Error("no stream");
+  setConnection("ok");
+  lastHeard = Date.now();
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    liveStream.seenAt = Date.now();
+    lastHeard = liveStream.seenAt;
+    buffer += decoder.decode(value, { stream: true });
+    let cut = buffer.indexOf("\n\n");
+    while (cut >= 0) {
+      handleLiveFrame(buffer.slice(0, cut));
+      buffer = buffer.slice(cut + 2);
+      cut = buffer.indexOf("\n\n");
+    }
+  }
+}
+
+async function runLive() {
+  let delay = 1000;
+  for (;;) {
+    if (dxRemoved) return;
+    if (liveStream.pausing) {
+      setLiveState("paused");
+      await new Promise((resolve) => (liveStream.wake = resolve));
+      liveStream.pausing = false;
+      setLiveState("connecting");
+    }
+    const abort = new AbortController();
+    liveStream.abort = abort;
+    liveStream.seenAt = Date.now();
+    // dx sends something every 15 s: nothing for 45 s means the connection is dead without having said so.
+    const watchdog = setInterval(() => Date.now() - liveStream.seenAt > 45_000 && abort.abort(), 15_000);
+    let stale = false;
+    try {
+      await readLive(abort.signal);
+      delay = 1000;
+    } catch (err) {
+      stale = err.message === "stale";
+      if (!liveStream.pausing && !abort.signal.aborted && err instanceof TypeError) setConnection("gone");
+    } finally {
+      clearInterval(watchdog);
+    }
+    if (stale) return setLiveState("reconnecting");
+    if (liveStream.pausing) continue;
+    setLiveState("reconnecting");
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(delay * 2, 10_000);
+  }
+}
+
+// A hidden window holds no stream for long, like it polls nothing; coming back reconnects and catches up.
+document.addEventListener("visibilitychange", () => {
+  clearTimeout(liveStream.hideTimer);
+  if (document.hidden) {
+    liveStream.hideTimer = setTimeout(() => {
+      liveStream.pausing = true;
+      liveStream.abort?.abort();
+    }, 30_000);
+  } else if (liveStream.pausing) {
+    liveStream.wake?.();
+  }
+});
 
 function btn(label, onclick, { kind = "", iconName, small = false, disabled = false, title, type = "button", name } = {}) {
   return h(
@@ -189,16 +344,120 @@ async function busy(button, busyLabel, fn) {
   const original = [...button.childNodes];
   button.disabled = true;
   button.replaceChildren(h("span", { class: "spinner", "aria-hidden": "true" }), busyLabel);
+  const restore = () => {
+    if (!button.isConnected) return;
+    button.disabled = false;
+    button.classList.remove("btn-done");
+    button.replaceChildren(...original);
+  };
   try {
-    return await fn();
+    const result = await fn();
+    // What it did shows on the button itself (a check, then back), not in a toast. A page that redraws takes the button with it.
+    if (result !== undefined && button.isConnected) {
+      button.classList.add("btn-done");
+      button.replaceChildren(icon("check"), ...original);
+      setTimeout(restore, 1100);
+    } else restore();
+    return result;
   } catch (err) {
-    toast(err.message, "error");
-    return undefined;
-  } finally {
+    restore();
+    // A failure: the button shakes and says why beside it, with the ways out. With no button left on the page, it's the one place left to say it.
     if (button.isConnected) {
-      button.disabled = false;
-      button.replaceChildren(...original);
+      shake(button);
+      inlineProblem(button, err.message, err.problem);
+      announce(err.message);
+    } else toast(err.message, "error");
+    return undefined;
+  }
+}
+
+/** Tells a screen reader what happened without showing it: the visible change carries it for everyone else. */
+function announce(text) {
+  let live = document.getElementById("announce");
+  if (!live) {
+    live = h("div", { id: "announce", class: "visually-hidden", role: "status", "aria-live": "polite" });
+    document.body.append(live);
+  }
+  live.textContent = "";
+  setTimeout(() => (live.textContent = text), 50);
+}
+
+/** The physical "no": a quick sideways shake of the thing that couldn't do it; with reduced motion, a red pulse instead. */
+function shake(el) {
+  if (reducedMotion.matches || !el.animate) {
+    el.classList.add("pulse-danger");
+    setTimeout(() => el.classList.remove("pulse-danger"), 900);
+    return;
+  }
+  const at = (x) => ({ transform: `translateX(${x}px)` });
+  el.animate([at(0), at(-7), at(6), at(-4), at(3), at(0)], { duration: 380, easing: "ease-out" });
+}
+
+/** A problem said beside the thing that had it, for a few seconds. */
+function inlineProblem(near, message, problem) {
+  const fixes = problem?.fixes?.map((f) => fixButton(f)).filter(Boolean) ?? [];
+  const note = h("span", { class: "inline-problem", role: "alert" }, message, ...fixes);
+  near.after(note);
+  setTimeout(() => note.remove(), fixes.length ? 20_000 : 9000);
+}
+
+/** One way out of a Problem as a button or a link: go to a page, ask dx to do something, or copy a command. */
+function fixButton(fix, after) {
+  if (fix.go) return h("a", { class: "btn btn-sm", href: fix.go }, fix.label);
+  if (fix.post) {
+    return btn(
+      fix.label,
+      (ev) => morph(ev.currentTarget, () => api(fix.post.path, { method: "POST", body: fix.post.body }), { busy: "Working…", done: "✓ Done" }).then((r) => r !== undefined && after && setTimeout(after, 1500)),
+      { small: true, kind: "primary" },
+    );
+  }
+  if (fix.command) return copyButton(fix.command, fix.label);
+  return null;
+}
+
+/** What failed and the ways out, shown on the thing that failed (a card's edge turns red beside it). */
+function problemBlock(problem, after) {
+  return h("div", { class: "problem", role: "alert" }, h("p", null, problem.message), problem.fixes?.length ? h("div", { class: "chunk-actions" }, problem.fixes.map((f) => fixButton(f, after))) : null);
+}
+
+/**
+ * Diegetic feedback for a button that runs something: the button shows the work (a spinner), then the
+ * result on itself ("✓ Pushed"), then goes back. A failure shakes it and says why beside it. No toast.
+ * `done` is the text after success, or a function of the result that returns text, or { text, tone: "bad" }
+ * when the call worked but the answer is a "no" (tests that failed).
+ */
+async function morph(button, run, { busy: working = "Working…", done = "Done", holdMs = 2200 } = {}) {
+  const original = [...button.childNodes];
+  const label = button.getAttribute("aria-label");
+  button.disabled = true;
+  button.replaceChildren(h("span", { class: "spinner", "aria-hidden": "true" }), working);
+  const restore = () => {
+    if (!button.isConnected) return;
+    button.disabled = false;
+    button.classList.remove("btn-done", "btn-failed");
+    button.replaceChildren(...original);
+    if (label) button.setAttribute("aria-label", label);
+    else button.removeAttribute("aria-label");
+  };
+  try {
+    const result = await run();
+    const said = typeof done === "function" ? done(result) : done;
+    const text = typeof said === "string" ? said : said.text;
+    const bad = typeof said !== "string" && said.tone === "bad";
+    if (button.isConnected) {
+      button.classList.add(bad ? "btn-failed" : "btn-done");
+      button.replaceChildren(icon(bad ? "x" : "check"), text);
+      if (bad) shake(button);
     }
+    announce(text);
+    setTimeout(restore, holdMs);
+    return result;
+  } catch (err) {
+    restore();
+    shake(button);
+    announce(err.message);
+    inlineProblem(button, err.message, err.problem);
+    return undefined;
   }
 }
 
@@ -253,16 +512,42 @@ function confirmDialog(options) {
   return answer;
 }
 
-function askConfirm({ title, text, confirm = "Confirm", danger = true }) {
+/**
+ * For what is public or permanent (a release, a force push, removing dx): the button stays off until
+ * the name is typed, so it can't be pressed by habit. `name` is what must be typed.
+ */
+function confirmByName(options) {
+  return confirmDialog({ ...options, typeName: options.name });
+}
+
+function askConfirm({ title, text, confirm = "Confirm", danger = true, typeName }) {
   const dialog = document.getElementById("confirm");
   document.getElementById("confirm-title").textContent = title;
-  document.getElementById("confirm-text").replaceChildren(...(Array.isArray(text) ? text : [text]).map((t) => (t instanceof Node ? t : h("p", null, t))));
   const ok = document.getElementById("confirm-ok");
+  const body = (Array.isArray(text) ? text : [text]).map((t) => (t instanceof Node ? t : h("p", null, t)));
+  if (typeName) {
+    const input = h("input", { class: "input input-wide", id: "confirm-name", autocomplete: "off", spellcheck: "false", "aria-describedby": "confirm-name-hint" });
+    input.addEventListener("input", () => {
+      ok.disabled = input.value.trim() !== typeName;
+    });
+    body.push(h("label", { class: "field-hint", id: "confirm-name-hint", for: "confirm-name" }, "Type ", h("strong", null, typeName), " to go on."), input);
+  }
+  document.getElementById("confirm-text").replaceChildren(...body);
   ok.textContent = confirm;
   ok.className = `btn ${danger ? "btn-danger" : "btn-primary"}`;
+  ok.disabled = !!typeName;
   dialog.returnValue = "";
   dialog.showModal();
-  return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true }));
+  return new Promise((resolve) =>
+    dialog.addEventListener(
+      "close",
+      () => {
+        ok.disabled = false;
+        resolve(dialog.returnValue === "ok");
+      },
+      { once: true },
+    ),
+  );
 }
 
 function stateView(title, text, ...actions) {
@@ -598,7 +883,7 @@ function openAt(dir, location, line, column) {
   const file = projectFile(location);
   const label = `${file ? inProject(file, dir) : location}:${line}${column ? `:${column}` : ""}`;
   if (!file || !dir) return h("span", { class: "dim mono" }, label);
-  return btn(label, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file, line, column } })).message)), {
+  return btn(label, (ev) => busy(ev.currentTarget, "Opening…", async () => ((await api("/api/open-file", { method: "POST", body: { dir, file, line, column } })).message)), {
     small: true,
     kind: "ghost",
     iconName: "code",
@@ -944,8 +1229,34 @@ function fixControls(dir, source, id, label, place = id) {
   return { button, panel: state.el };
 }
 
+/**
+ * Before anything goes to an AI: what it is made of, a label and a size for each part, where it goes, and
+ * what is never sent. One question, answered Send or Cancel; "don't show this again" is a preference of
+ * this computer (what was sent is still listed under Recent changes).
+ */
+async function confirmSend(title, preview) {
+  if (pref("sendPreview", "1") === "0") return true;
+  const skip = h("input", { type: "checkbox", id: "send-skip" });
+  const yes = await confirmDialog({
+    title,
+    text: [
+      h("p", { class: "dim" }, `Goes to ${preview.goesTo}, ${preview.only}.`),
+      h("ul", { class: "send-list" }, preview.sent.map((s) => h("li", null, h("span", null, s.label), h("span", { class: "dim mono" }, formatBytes(s.bytes))))),
+      h("p", { class: "field-hint" }, `Never sent: ${preview.never.join(", ")}.`),
+      h("label", { class: "check", for: "send-skip" }, skip, "Don't show this again (Recent changes still lists what was sent)"),
+    ],
+    confirm: `Send ${formatBytes(preview.bytes)}`,
+    danger: false,
+  });
+  if (yes && skip.checked) setPref("sendPreview", "0");
+  return yes;
+}
+
 async function askClaude(state, dir, source, id) {
   if (state.busy) return;
+  // A preview that can't be made (no git, nothing there) isn't in the way: the real call says why.
+  const preview = await api("/api/fix/preview", { method: "POST", body: { dir, source, id } }).catch(() => null);
+  if (preview && !(await confirmSend("Send this to Claude?", preview))) return;
   state.busy = true;
   if (state.button) state.button.disabled = true;
   const panel = state.el;
@@ -1063,9 +1374,13 @@ function terminalSelect({ withLabel = false } = {}) {
  * is a tab of another (its nav item lights up), and route ids are the old ones, so links keep working.
  */
 const pages = [
+  // Home: what needs you across every project, and the way into any of them.
+  { id: "home", label: "Home", icon: "map", render: homePage, main: true, tab: "Home", aka: "attention inbox needs you" },
   // Projects: this project's overview and the list of all of them are two tabs of one nav item.
   { id: "overview", label: "Overview", icon: "map", render: overviewPage, project: true, under: "projects", tab: "This project" },
+  { id: "stack", label: "Stack map", icon: "map", render: stackPage, project: true, under: "projects", tab: "Stack", when: "stack", aka: "services map architecture calls" },
   { id: "projects", label: "Projects", icon: "projects", render: projectsPage, main: true, tab: "All projects", aka: "all projects new clone" },
+  { id: "search", label: "Search", title: "Search", icon: "search", render: (root) => window.dxSearch({ h, fill, api, btn, icon, plural, pref, setPref, hashParams, setHashParams, currentProject, toast, announce, morph, problemBlock, loadingView, errorView })(root), project: true, main: true, wide: true, aka: "find grep file name word text code content" },
   { id: "git", label: "Git", title: "Git", icon: "git", render: gitPage, project: true, main: true, wide: true, aka: "code commit branch release" },
   { id: "requests", label: "Requests", title: "Requests", icon: "requests", render: requestsPage, project: true, main: true, tab: "API", aka: "api spec mocks rules repeater intercept" },
   { id: "activity", label: "Activity", icon: "activity", render: activityPage, project: true, wide: true, under: "requests" },
@@ -1081,6 +1396,7 @@ const pages = [
   { id: "cleanup", label: "Cleanup", icon: "cleanup", render: cleanupPage, under: "machine" },
   { id: "deps", label: "Dependencies", icon: "deps", render: depsPage, under: "machine" },
   { id: "journal", label: "Journal", icon: "journal", render: journalPage, under: "summary" },
+  { id: "changes", label: "Recent changes", icon: "journal", render: changesPage, under: "summary", tab: "Changes", aka: "undo history what changed dx did" },
   { id: "new", label: "New project", icon: "new", render: newProjectPage, under: "projects", noTabs: true },
   { id: "health", label: "Settings", icon: "health", render: healthPage, group: "settings" },
 ];
@@ -1190,7 +1506,7 @@ function renderNav(active) {
 /** The tabs of a page that has others under it (This computer, Look back), as links. */
 function pageTabs(page) {
   const parent = pages.find((p) => p.id === (page.under ?? page.id));
-  const members = pages.filter((p) => (p.id === parent.id || p.under === parent.id) && !p.noTabs);
+  const members = pages.filter((p) => (p.id === parent.id || p.under === parent.id) && !p.noTabs && pageShown(p, page.id));
   if (members.length < 2 || page.noTabs) return null;
   return h(
     "nav",
@@ -1204,9 +1520,9 @@ function route() {
   if (MOVED[raw]) return void location.replace(`#/${MOVED[raw]}${location.hash.includes("?") ? `?${location.hash.split("?")[1]}` : ""}`);
   // A link that names a project (#/git?dir=…) makes it the project you're working on.
   const linked = new URLSearchParams(location.hash.split("?")[1] ?? "").get("dir");
-  let page = pages.find((p) => p.id === (raw || (currentProject() ? "overview" : "projects"))) ?? pages.find((p) => p.id === "projects");
+  let page = pages.find((p) => p.id === (raw || "home")) ?? pages.find((p) => p.id === "home");
   if (linked && page.project && projectList.some((p) => sameDir(p.dir, linked))) setPref("project", projectList.find((p) => sameDir(p.dir, linked)).dir);
-  if (page.project && !currentProject()) page = pages.find((p) => p.id === "projects");
+  if (page.project && !currentProject()) page = pages.find((p) => p.id === "home");
   leaveCurrent();
   leaveCurrent = () => {};
   renderNav(page.id);
@@ -1241,6 +1557,13 @@ function route() {
  */
 let projectList = [];
 let projectServers = [];
+/**
+ * The address a person opens an app at: its own (localhost:3000), the one its builds, docs and
+ * allowed-origin lists expect. The .localhost name is only for what needs dx to answer for the app.
+ */
+const appUrl = (s) => s?.url ?? s?.localUrl;
+/** The address dx answers at, for what needs it (mocks, rules, chaos): the app's own when dx answers there, else its .localhost name. */
+const recordedUrl = (s) => (s?.recorded ? s.url : (s?.localUrl ?? s?.url));
 const sameDir = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 function currentProject() {
   const dir = pref("project", "") || ["gitDir", "labDir", "chaosDir", "dataDir", "tourDir"].map((k) => pref(k, "")).find(Boolean) || "";
@@ -1337,9 +1660,258 @@ async function updateRunningCount() {
 function overviewPage(root) {
   const dir = currentProject();
   const leave = projectsPage(root, { only: dir });
+  const chunks = projectChunks(dir);
+  // The chunks come right under the project's name.
+  const head = root.querySelector(".page-head");
+  if (head) head.after(chunks.el);
+  else root.prepend(chunks.el);
   const spec = specCard(dir);
-  root.append(pinnedTools(dir), spec.el, tourSection(dir));
-  return () => (leave(), spec.stop());
+  const sites = sitesCard(dir);
+  root.append(pinnedTools(dir), spec.el, sites.el, tourSection(dir));
+  return () => (leave(), spec.stop(), sites.stop(), chunks.stop());
+}
+
+// ------------------------------------------------------------------ Home
+
+/** Presses an item's or a chip's action: a page to go to, or a call the button itself shows the progress and result of. */
+async function runAttentionAction(button, action, then) {
+  if (action.go) {
+    location.hash = action.go;
+    return;
+  }
+  const busyWords = { push: "Pushing…", fix: "Fixing…", tests: "Running…" };
+  const doneWords = {
+    push: () => "✓ Pushed",
+    fix: () => "✓ Fixed",
+    tests: (r) => (r?.ok ? `✓ ${r.passed} pass` : { text: `${r?.failed ?? "Some"} failed`, tone: "bad" }),
+  };
+  const result = await morph(button, () => api(action.post.path, { method: "POST", body: action.post.body }), {
+    busy: busyWords[action.after] ?? "Working…",
+    done: doneWords[action.after] ?? (() => "✓ Done"),
+  });
+  if (result !== undefined) setTimeout(then, 2400);
+}
+
+function homeItem(item, reload) {
+  const buttons = item.actions.map((a) => btn(a.label, (ev) => runAttentionAction(ev.currentTarget, a, reload), { kind: a.primary ? "primary" : "", small: true }));
+  return h(
+    "div",
+    { class: `home-item sev-${item.severity}` },
+    h("span", { class: "home-dot", "aria-hidden": "true" }),
+    h(
+      "div",
+      { class: "home-main" },
+      h("div", { class: "home-title" }, h("a", { href: `#/overview?dir=${encodeURIComponent(item.dir)}` }, item.project), h("span", { class: "dim" }, ` · ${item.title}`), item.dxCanFix ? h("span", { class: "badge badge-accent", title: "dx does it itself and lists it under Recent changes" }, "dx can fix this") : null),
+      h("div", { class: "home-detail dim" }, item.detail),
+    ),
+    h("div", { class: "home-actions" }, ...buttons),
+  );
+}
+
+function homePage(root) {
+  const sub = h("p", { class: "page-sub" });
+  const needs = h("div", { class: "home-needs" }, loadingView("Looking across your projects…"));
+  const side = h("div", { class: "home-side" });
+  append(
+    root,
+    h("div", { class: "page-head" }, h("div", null, h("h1", { class: "page-title" }, "Home"), sub), h("span", { class: "live", title: "This page keeps itself current" }, h("span", { class: "dot dot-ok", "aria-hidden": "true" }), "Live")),
+    h("div", { class: "home-grid" }, needs, side),
+  );
+  let sig = "";
+  async function load(fresh = false) {
+    let d;
+    try {
+      d = await api(`/api/home${fresh ? "?fresh=1" : ""}`);
+    } catch (err) {
+      if (sig) return;
+      return fill(needs, errorView(err, () => load(true)));
+    }
+    const now = JSON.stringify([d.items, d.running, d.started, d.did, d.quiet, d.proposals]);
+    if (now === sig) return;
+    sig = now;
+    sub.textContent = d.items.length ? `${plural(d.items.length, "thing")} need${d.items.length === 1 ? "s" : ""} you, in ${plural(new Set(d.items.map((i) => i.dir)).size, "project")}. ${d.quiet} ${d.quiet === 1 ? "is" : "are"} quiet.` : `${d.projects} ${d.projects === 1 ? "project" : "projects"}, all quiet.`;
+    const reload = () => void load(true);
+    fill(
+      needs,
+      h("div", { class: "label-pixel" }, "Needs you · most urgent first"),
+      d.items.length ? d.items.map((i) => homeItem(i, reload)) : h("div", { class: "card" }, stateView("Nothing needs you", `${d.projects} projects and none has errors, unpushed work or exposed secrets.`, h("a", { class: "btn", href: "#/projects" }, "See all projects"))),
+      d.items.length && d.quiet ? h("a", { class: "home-quiet", href: "#/projects" }, h("span", null, `Quiet · ${plural(d.quiet, "project")}, nothing needs you`), h("span", { class: "mono dim" }, "See all")) : null,
+    );
+    fill(
+      side,
+      d.running.length
+        ? h("div", { class: "card card-pad home-card" }, h("div", { class: "label-pixel" }, "Running now"), ...d.running.map((r) => h("div", { class: "home-run" }, h("div", null, h("a", { href: `#/overview?dir=${encodeURIComponent(r.dir)}` }, r.project), h("div", { class: "mono dim" }, (r.url ?? "").replace(/^https?:\/\//, ""))), r.recorded ? h("span", { class: "badge badge-accent", title: "dx answers at this address" }, "Recorded") : r.notRecorded ? h("span", { class: "badge badge-warn", title: `Not recorded: ${r.notRecorded}` }, "Not recorded") : null)))
+        : null,
+      d.started.done
+        ? null
+        : h(
+            "div",
+            { class: "card card-pad home-card" },
+            h("div", { class: "label-pixel" }, `Get started · ${d.started.steps.filter((x) => x.done).length} of ${d.started.steps.length}`),
+            ...d.started.steps.map((x) => h("div", { class: `home-step${x.done ? " done" : ""}` }, h("span", { class: "home-check", "aria-hidden": "true" }, x.done ? "✓" : ""), x.done ? h("span", null, x.label) : h("a", { href: x.go }, x.label))),
+            h("div", { class: "dim home-fade" }, "This card goes away when you're done."),
+          ),
+      proposalsCard(d.proposals ?? [], reload),
+      d.did.length
+        ? h(
+            "div",
+            { class: "card card-pad home-card" },
+            h("div", { class: "label-pixel" }, "dx did this"),
+            ...d.did.map((x) =>
+              h(
+                "div",
+                { class: "home-did" },
+                h("span", null, x.what, h("span", { class: "dim" }, ` · ${relativeTime(Date.parse(x.at))}`)),
+                x.undoable ? undoButton(x, reload) : null,
+              ),
+            ),
+            h("a", { class: "dim", href: "#/changes" }, "All recent changes"),
+          )
+        : null,
+    );
+  }
+  void load();
+  // A dev server or a change moved: Home says so now.
+  const again = soon(() => void load(true));
+  const off = onLive(["dev", "change"], () => again());
+  const stopPoll = livePoll(() => load(), 5000, { events: true });
+  return () => (stopPoll(), off());
+}
+
+// ------------------------------------------------------------------ a project in four chunks
+
+/**
+ * The top of a project's page: what to do next, and Run, Code, Health and Activity each saying one
+ * thing with its one action. Read from one call (`/api/project/summary`) and kept current.
+ */
+function projectChunks(dir) {
+  const el = h("section", { class: "section chunks", "aria-label": "This project at a glance" }, loadingView("Reading the project…"));
+  let sig = "";
+  async function load(fresh) {
+    let s;
+    try {
+      s = await api(`/api/project/summary?dir=${encodeURIComponent(dir)}`);
+    } catch (err) {
+      if (sig) return;
+      return fill(el, errorView(err, () => load(true)));
+    }
+    const now = JSON.stringify(s);
+    if (now === sig && !fresh) return;
+    sig = now;
+    const again = () => void load(true);
+    const call = (path, body) => api(path, { method: "POST", body: { dir, ...body } });
+    const act = (label, run, words, opts = {}) => btn(label, (ev) => morph(ev.currentTarget, run, words).then((r) => r !== undefined && setTimeout(again, 2400)), opts);
+    const run = s.server;
+    const live = run && run.status !== "stopped";
+    const failed = run?.status === "failed";
+    const where = run?.url ? run.url.replace(/^https?:\/\//, "") : "";
+    const gitCall = (action) => call("/api/git/action", { action });
+    // Run and Stop answer at once on the card itself: it flips, and goes back with a shake if it didn't work.
+    const dotNow = failed ? "dot-bad" : live ? (run.status === "ready" ? "dot-ok" : "dot-pulse") : "";
+    const textNow = !live ? "Not running" : failed ? "Didn't start" : run.status === "ready" ? "Running" : "Starting…";
+    const dotEl = h("span", { class: `dot ${dotNow}`.trim(), "aria-hidden": "true" });
+    const textEl = h("span", null, textNow);
+    const runCard = h("div", { class: `card card-pad chunk${failed ? " chunk-failed" : ""}` });
+    const flip = (text, dot) => {
+      textEl.textContent = text;
+      dotEl.className = `dot ${dot}`.trim();
+      runCard.classList.remove("chunk-failed");
+    };
+    const optimistic = (label, run, to, words, opts = {}) =>
+      btn(
+        label,
+        (ev) => {
+          const was = [textEl.textContent, dotEl.className.replace(/^dot ?/, ""), runCard.classList.contains("chunk-failed")];
+          flip(...to);
+          return morph(ev.currentTarget, run, words).then((r) => {
+            if (r === undefined) {
+              flip(was[0], was[1]);
+              runCard.classList.toggle("chunk-failed", was[2]);
+              shake(runCard);
+            } else setTimeout(again, 2400);
+            return r;
+          });
+        },
+        opts,
+      );
+    fill(
+      el,
+      s.next.length
+        ? h("div", { class: "chunk-next" }, h("span", { class: "label-pixel" }, "Next"), ...s.next.map((step) => btn(step.label, (ev) => runAttentionAction(ev.currentTarget, step, again), { small: true, kind: "chip" })))
+        : null,
+      h(
+        "div",
+        { class: "chunk-grid" },
+        (append(
+          runCard,
+          h("div", { class: "label-pixel" }, "Run"),
+          h("div", { class: "chunk-big" }, dotEl, textEl),
+          where ? h("a", { class: "mono", href: run.url, target: "_blank", rel: "noreferrer" }, where) : null,
+          // While it starts, what it's doing; when it failed, why and the ways out, on the card itself.
+          live && run.status === "starting" && run.step ? h("div", { class: "dim chunk-line", "aria-live": "polite" }, `${run.step}…`) : null,
+          failed && run.problem ? problemBlock(run.problem, again) : null,
+          live && !failed ? h("div", { class: "dim chunk-line" }, run.recorded ?"Recorded: what you do here is in the history, and mocks, rules and chaos apply." : run.notRecorded ? `Not recorded at its own address: ${run.notRecorded}.` : "") : null,
+          h(
+            "div",
+            { class: "chunk-actions" },
+            !live ? optimistic("Run", () => call("/api/dev/start", {}), ["Starting…", "dot-pulse"], { busy: "Starting…", done: "✓ Started" }, { kind: "primary", small: true }) : null,
+            live && run.url ? act("Open", () => call("/api/projects/open", { action: "browser", url: run.url }), { busy: "Opening…", done: "✓ Opened" }, { kind: "primary", small: true }) : null,
+            live ? act("Restart", () => call("/api/dev/restart", {}), { busy: "Restarting…", done: "✓ Restarted" }, { small: true }) : null,
+            live ? optimistic("Stop", () => call("/api/dev/stop", {}), ["Not running", ""], { busy: "Stopping…", done: "✓ Stopped" }, { small: true }) : null,
+          ),
+          live || s.mocks?.endpoints ? mockControl(dir, s.mocks ?? { on: false, endpoints: 0 }, { onChange: again, openUrl: run?.recorded ? run?.url : run?.localUrl, mockedAt: run && !run.recorded ? run.localUrl : undefined }) : null,
+        ),
+        runCard),
+        h(
+          "div",
+          { class: "card card-pad chunk" },
+          h("div", { class: "label-pixel" }, "Code"),
+          s.code ? h("div", { class: "chunk-big" }, `${s.code.branch ?? "no branch"} · ${s.code.changed ? plural(s.code.changed, "change") : "clean"}${s.code.ahead ? ` · ${s.code.ahead} not pushed` : ""}`) : h("div", { class: "chunk-big" }, "Not a git project"),
+          s.code ? h("div", { class: "dim chunk-line" }, s.code.behind ? `${plural(s.code.behind, "commit")} behind the remote. Nothing is merged for you.` : s.code.hasRemote ? "Up to date with the remote." : "No remote: nothing here is backed up.") : null,
+          s.code
+            ? h(
+                "div",
+                { class: "chunk-actions" },
+                h("a", { class: "btn btn-primary btn-sm", href: `#/git?dir=${encodeURIComponent(dir)}` }, "Commit"),
+                act("Push", () => gitCall("push"), { busy: "Pushing…", done: "✓ Pushed" }, { small: true, disabled: !s.code.ahead }),
+                act("Pull", () => gitCall("pull"), { busy: "Pulling…", done: "✓ Pulled" }, { small: true, disabled: !s.code.behind }),
+              )
+            : null,
+        ),
+        h(
+          "div",
+          { class: "card card-pad chunk" },
+          h("div", { class: "label-pixel" }, "Health"),
+          h(
+            "div",
+            { class: "chunk-row" },
+            h("span", null, "Tests"),
+            h(
+              "span",
+              { class: "chunk-row-end" },
+              s.health.tests ? h("span", { class: s.health.tests.ok ? "ok-text" : "bad-text" }, s.health.tests.ok ? `${s.health.tests.passed} pass` : `${s.health.tests.failed} failing of ${s.health.tests.passed + s.health.tests.failed}`) : h("span", { class: "dim" }, "not run through dx"),
+              act("Run", () => call("/api/tests", {}), { busy: "Running…", done: (r) => (r?.ok ? `✓ ${r.passed} pass` : { text: `${r?.failed ?? "Some"} failed`, tone: "bad" }) }, { small: true, kind: "ghost" }),
+            ),
+          ),
+          h("div", { class: "chunk-row" }, h("span", null, "Secrets"), s.health.secrets === "ok" ? h("span", { class: "ok-text" }, ".env kept out of git") : h("a", { href: `#/env?dir=${encodeURIComponent(dir)}`, class: "bad-text" }, s.health.secrets === "committed" ? ".env is committed" : ".env isn't ignored")),
+        ),
+        h(
+          "div",
+          { class: "card card-pad chunk" },
+          h("div", { class: "label-pixel" }, "Activity"),
+          h("div", { class: "chunk-big" }, s.activity.requests || s.activity.errors ? `${plural(s.activity.requests, "request")} · ${plural(s.activity.errors, "error")}, last hour` : "Nothing recorded in the last hour"),
+          s.activity.lastPage ? h("div", { class: "dim chunk-line" }, "Last visit: ", h("span", { class: "mono" }, s.activity.lastPage), s.activity.lastAt ? ` · ${relativeTime(Date.parse(s.activity.lastAt))}` : "") : null,
+          h("div", { class: "chunk-actions" }, h("a", { class: "btn btn-sm", href: `#/activity?dir=${encodeURIComponent(dir)}` }, "Open activity")),
+        ),
+      ),
+    );
+  }
+  void load();
+  // A dev server of this project changed: read the summary again now, not at the next poll.
+  const again = soon(() => void load(true));
+  const off = onLive("dev", (d) => sameDir(d.dir ?? "", dir) && again());
+  const stopPoll = livePoll(() => load(false), 5000, { events: true });
+  return { el, stop: () => (stopPoll(), off()) };
 }
 
 /** The project's views pinned to its Overview (a Tools page choice), each run as the page opens. */
@@ -1413,6 +1985,190 @@ function specCard(dir) {
   return { el, stop: () => ((stopped = true), clearTimeout(timer)) };
 }
 
+/** What the last checks of a site found, and how each compares with the one before: faster or slower, better or worse. */
+function siteLast(last) {
+  if (!last || !Object.keys(last).length) return null;
+  const when = (r) => relativeTime(Date.parse(r.at));
+  const by = (now, was, unit, worseWhenHigher = true, floor = 0) => {
+    if (now === undefined || was === undefined || Math.abs(now - was) <= floor) return "";
+    const worse = worseWhenHigher ? now > was : now < was;
+    return ` (${now > was ? "+" : "−"}${Math.abs(Math.round(now - was))} ${unit}, ${worse ? "worse" : "better"})`;
+  };
+  const sec = (ms) => `${(ms / 1000).toFixed(1)} s`;
+  const items = [];
+  const s = last.status;
+  if (s) items.push(`Checked ${when(s.latest)}: ${s.latest.status ?? "no answer"}${s.latest.ms !== undefined ? ` in ${s.latest.ms} ms` : ""}${by(s.latest.ms, s.previous?.ms, "ms", true, 40)}${s.latest.bad ? `, ${plural(s.latest.bad, "problem")}` : ""}${s.latest.commit ? `, commit ${s.latest.commit}${s.previous?.commit && s.previous.commit !== s.latest.commit ? " (new since the check before)" : ""}` : ""}`);
+  const p = last.page;
+  if (p) items.push(`Page ${when(p.latest)}: ${p.latest.problems ? plural(p.latest.problems, "problem") : p.latest.ok ? "clean" : "didn't load"}${p.previous && p.previous.problems !== undefined && p.latest.problems !== undefined && p.previous.problems !== p.latest.problems ? ` (was ${p.previous.problems})` : ""}`);
+  const a = last.audit;
+  if (a) items.push(`Speed ${when(a.latest)}: ${a.latest.loadMs !== undefined ? `loaded in ${sec(a.latest.loadMs)}` : "measured"}${a.latest.lcpMs ? `, largest paint ${sec(a.latest.lcpMs)}${by(a.latest.lcpMs, a.previous?.lcpMs, "ms", true, 200)}` : ""}${a.latest.a11y !== undefined ? `, ${plural(a.latest.a11y, "accessibility issue")}${a.previous?.a11y !== undefined && a.previous.a11y !== a.latest.a11y ? ` (was ${a.previous.a11y})` : ""}` : ""}`);
+  return h("ul", { class: "site-last dim" }, items.map((t) => h("li", null, t)));
+}
+
+const SITE_LEVELS = { ok: ["OK", "badge-ok"], warn: ["Check", "badge-warn"], bad: ["Problem", "badge-danger"], info: ["Note", ""] };
+
+/** What a check of a site found, drawn into `out`: its words first, a list of findings folded after five. */
+function siteResult(out, what, r) {
+  const rows = [];
+  const finding = (level, text, fix) => h("li", null, h("span", { class: `badge ${SITE_LEVELS[level][1]}`.trim() }, SITE_LEVELS[level][0]), " ", text, fix ? h("span", { class: "dim" }, ` · ${fix}`) : null);
+  const facts = [];
+  if (what === "status") {
+    if (r.error) rows.push(finding("bad", r.error));
+    if (r.status) facts.push(`${r.status} in ${r.ms} ms`, r.https ? "https" : "http", r.server, r.contentType, r.deployment?.commit ? `commit ${r.deployment.commit}` : r.deployment?.version ? `version ${r.deployment.version}` : null);
+    if (r.title) facts.push(`“${r.title}”`);
+    for (const x of r.redirects ?? []) facts.push(`${x.status} → ${x.to.replace(/^https?:\/\//, "")}`);
+    for (const f of r.findings ?? []) rows.push(finding(f.level, f.title, f.fix));
+  } else if (what === "page") {
+    if (r.error) rows.push(finding("bad", r.error));
+    if (!r.error) facts.push(`${r.status ?? "?"} in ${r.ms} ms`, r.title ? `“${r.title}”` : null, `${r.requests?.length ?? 0} requests`);
+    for (const e of r.exceptions ?? []) rows.push(finding("bad", e.text, e.source));
+    for (const e of r.consoleErrors ?? []) rows.push(finding("bad", e.text, e.source));
+    for (const q of r.failedRequests ?? []) rows.push(finding("warn", `${q.method ?? "GET"} ${q.url.replace(/^https?:\/\/[^/]+/, "")} ${q.status ?? q.error ?? "failed"}`));
+    for (const e of r.consoleWarnings ?? []) rows.push(finding("info", e.text, e.source));
+    if (!rows.length && !r.error) rows.push(finding("ok", "Loaded with no errors, failed requests or warnings"));
+  } else {
+    if (r.error) rows.push(finding("bad", r.error));
+    const p = r.perf ?? {};
+    const sec = (ms) => (ms === undefined ? null : `${(ms / 1000).toFixed(1)} s`);
+    facts.push(p.loadMs !== undefined ? `loaded in ${sec(p.loadMs)}` : null, p.lcpMs ? `largest paint ${sec(p.lcpMs)}` : null, p.tbtMs !== undefined ? `blocking ${Math.round(p.tbtMs)} ms` : null, p.cls !== undefined ? `layout shift ${p.cls.toFixed(2)}` : null, p.jsBytes ? `${Math.round(p.jsBytes / 1024)} KB of scripts` : null);
+    for (const i of r.a11y ?? []) rows.push(finding("warn", i.text));
+    if (!r.error && !(r.a11y ?? []).length) rows.push(finding("ok", "No accessibility problems found by dx's checks"));
+  }
+  const list = h("ul", { class: "bullets site-findings" }, rows);
+  fill(
+    out,
+    facts.filter(Boolean).length ? h("p", { class: "dim" }, facts.filter(Boolean).join(" · ")) : null,
+    r.blocked?.length || r.stoppedAt ? h("p", { class: "dim" }, `Went to ${r.blocked?.[0] ?? r.stoppedAt}, which isn't one of this project's sites: dx stopped there.`) : null,
+    rows.length ? list : null,
+  );
+  if (rows.length > 5) foldRows(list, 5);
+}
+
+/**
+ * A project's deployed sites: add one by its address, open it in the dx browser, check it, and have the
+ * mocks, rules and Chaos mode of the project answer its API calls while you use it there.
+ */
+function sitesCard(dir) {
+  const el = h("section", { class: "section", "aria-label": "Sites" }, h("div", { class: "card card-pad" }, loadingView("Reading sites…")));
+  let stopped = false;
+
+  async function load() {
+    let sites;
+    try {
+      sites = (await api(`/api/project/sites?dir=${encodeURIComponent(dir)}`)).sites;
+    } catch (err) {
+      return fill(el, h("div", { class: "card card-pad" }, errorView(err, load)));
+    }
+    if (stopped) return;
+    const mocks = sites.length ? await api(`/api/mocks?dir=${encodeURIComponent(dir)}`).catch(() => undefined) : undefined;
+    if (stopped) return;
+    draw(sites, mocks);
+  }
+
+  function addForm() {
+    const url = h("input", { class: "input input-wide", id: "site-url", placeholder: "https://staging.shop-website.dev", autocomplete: "off", spellcheck: "false", "aria-label": "Address of the site" });
+    const env = h(
+      "select",
+      { class: "input", "aria-label": "Which environment" },
+      [["", "Environment: from the address"], ["production", "Production"], ["staging", "Staging"], ["preview", "Preview"], ["qa", "QA"], ["dev", "Development"]].map(([v, t]) => h("option", { value: v }, t)),
+    );
+    const add = btn("Add site", (ev) => submit(ev.currentTarget), { kind: "primary", small: true });
+    url.addEventListener("keydown", (ev) => ev.key === "Enter" && add.click());
+    async function submit(button) {
+      if (!url.value.trim()) {
+        shake(url);
+        inlineProblem(add, "Give the site's address, like https://staging.shop-website.dev.");
+        return;
+      }
+      const r = await morph(button, () => api("/api/project/sites/add", { method: "POST", body: { dir, url: url.value, env: env.value || undefined } }), { busy: "Adding…", done: (x) => `✓ ${x.host}`, holdMs: 900 });
+      if (r) setTimeout(load, 900);
+    }
+    return h("div", { class: "toolbar site-add" }, url, env, add);
+  }
+
+  function row(s) {
+    const out = h("div", { class: "site-result", "aria-live": "polite" });
+    const check = (what, busyWords, done, extra = {}) => (ev) =>
+      morph(
+        ev.currentTarget,
+        async () => {
+          const r = await api("/api/project/sites/check", { method: "POST", body: { dir, host: s.host, what, ...extra } });
+          siteResult(out, what, r);
+          return r;
+        },
+        { busy: busyWords, done, holdMs: 1500 },
+      );
+    const statusDone = (r) => (r.ok && !r.findings.some((f) => f.level === "bad") ? `✓ ${r.status} in ${r.ms} ms` : { text: r.error ? "Couldn't reach it" : `${r.status ?? "No answer"}`, tone: "bad" });
+    const pageDone = (r) => {
+      const n = (r.exceptions?.length ?? 0) + (r.consoleErrors?.length ?? 0) + (r.failedRequests?.length ?? 0);
+      return r.ok ? "✓ Clean" : { text: r.error ? "Didn't load" : plural(n, "problem"), tone: "bad" };
+    };
+    const auditDone = (r) => (r.error ? { text: "Didn't run", tone: "bad" } : `✓ ${plural((r.a11y ?? []).length, "issue")}`);
+    return h(
+      "div",
+      { class: "site-row" },
+      h(
+        "div",
+        { class: "site-head" },
+        envBadge(s.env, true),
+        h("strong", null, s.label || s.host),
+        h("a", { class: "mono dim", href: s.url, target: "_blank", rel: "noreferrer", title: "Open in your own browser" }, s.url.replace(/^https?:\/\//, "")),
+      ),
+      h(
+        "div",
+        { class: "toolbar" },
+        btn("Open in dx browser", (ev) => morph(ev.currentTarget, () => api("/api/browser/open", { method: "POST", body: { url: s.url } }), { busy: "Opening…", done: "✓ Opened", holdMs: 1200 }), { small: true, kind: "second", title: "dx records its calls here, and answers them from this project's mocks, rules and Chaos mode" }),
+        btn("Check", check("status", "Checking…", statusDone), { small: true, title: "One look at the address: status, headers, redirects, https" }),
+        btn("Page check", check("page", "Loading…", pageDone), { small: true, title: "Loads the page in a headless browser and reports errors and failed requests" }),
+        btn("Page on a weak phone", check("page", "Loading…", pageDone, { phone: true }), { small: true, title: "Loads the page as a cheap phone on a slow connection and reports what breaks" }),
+        btn("Speed and accessibility", check("audit", "Measuring…", auditDone), { small: true }),
+        btn(
+          s.apply ? "Mocks, rules, chaos: on" : "Mocks, rules, chaos: off",
+          async (ev) => {
+            const r = await morph(ev.currentTarget, () => api("/api/project/sites/update", { method: "POST", body: { dir, host: s.host, apply: !s.apply } }), { busy: "…", done: (x) => (x.apply ? "✓ On" : "✓ Off"), holdMs: 700 });
+            if (r) setTimeout(load, 700);
+          },
+          { small: true, kind: s.apply ? "second" : "", title: s.env === "production" && !s.apply ? "Off for production until you turn it on: the project's mocks, rules and Chaos mode answer this site's API calls in the dx browser" : "Whether the project's mocks, rules and Chaos mode answer this site's API calls in the dx browser" },
+        ),
+        btn("Remove", async (ev) => {
+          const button = ev.currentTarget;
+          const yes = await confirmDialog({ title: `Remove ${s.host}?`, text: "dx stops recording and answering its calls. What was recorded stays in the history.", confirm: "Remove", danger: false });
+          if (!yes) return;
+          const r = await morph(button, () => api("/api/project/sites/remove", { method: "POST", body: { dir, host: s.host } }), { busy: "Removing…", done: "✓ Removed", holdMs: 700 });
+          if (r) setTimeout(load, 700);
+        }, { small: true, kind: "ghost" }),
+      ),
+      siteLast(s.last),
+      out,
+    );
+  }
+
+  function draw(sites, mocks) {
+    fill(
+      el,
+      h(
+        "div",
+        { class: "card card-pad site-card" },
+        h("div", { class: "section-head" }, h("h2", { class: "section-title" }, "Sites"), sites.length ? h("span", { class: "badge" }, plural(sites.length, "site")) : null),
+        sites.length
+          ? h("div", { class: "site-list" }, sites.map(row))
+          : h("p", { class: "dim" }, "Add the address of a deployed site and dx can check it, record what it calls, and answer its API from this project's mocks."),
+        sites.length
+          ? h(
+              "div",
+              { class: "site-mocks" },
+              mockControl(dir, { on: !!mocks?.on, strict: !!mocks?.strict, endpoints: mocks?.endpoints?.length ?? 0 }, { onChange: load }),
+              h("p", { class: "dim" }, "While you use a site in the dx browser, mocks, rules and Chaos mode answer its API calls. Changing an answer, holding a call and Chaos's bad data aren't available there."),
+            )
+          : null,
+        addForm(),
+      ),
+    );
+  }
+  void load();
+  return { el, stop: () => (stopped = true) };
+}
+
 function projectsPage(root, { only } = {}) {
   let projects = [];
   let query = "";
@@ -1438,9 +2194,17 @@ function projectsPage(root, { only } = {}) {
     "aria-label": "Search projects",
     oninput: (e) => {
       query = e.target.value.trim().toLowerCase();
+      facets?.setQuery(query);
       renderList();
     },
   });
+  // On All projects the list can be sliced (status, kind, tags, saved views); on Overview it is one project.
+  const facets = only ? null : facetBar({ onChange: () => renderList() });
+  if (facets) {
+    search.value = facets.filter.q;
+    query = facets.filter.q.toLowerCase();
+    facets.onSearchCleared(() => ((search.value = ""), (query = ""), renderList()));
+  }
   const devSection = h("section", { class: "section", "aria-labelledby": "dev-title", hidden: true });
   const unsavedSection = h("section", { class: "section", "aria-label": "Work that isn't backed up", hidden: true });
   const listSection = h("section", { class: "section", "aria-label": "All projects" });
@@ -1457,8 +2221,8 @@ function projectsPage(root, { only } = {}) {
           search,
           h("a", { class: "btn", href: "#/new" }, icon("new"), "New project"),
         ),
-    // On Overview the project comes first and its server under it; on All projects the running ones lead.
-    ...(only ? [listSection, devSection, unsavedSection] : [devSection, unsavedSection, listSection]),
+    // On Overview the project comes first and its server under it; on All projects the slice, then the running ones.
+    ...(only ? [listSection, devSection, unsavedSection] : [facets.el, devSection, unsavedSection, listSection]),
   );
   if (only) listSection.setAttribute("aria-label", "This project");
 
@@ -1542,7 +2306,10 @@ function projectsPage(root, { only } = {}) {
 
   function renderList() {
     const own = projects.filter((p) => !p.snapshot);
-    const list = query ? own.filter((p) => p.name.toLowerCase().includes(query) || p.dir.toLowerCase().includes(query)) : own;
+    const sliced = facets ? own.filter((p) => facets.visible(p.dir)) : own;
+    const list = (query ? sliced.filter((p) => p.name.toLowerCase().includes(query) || p.dir.toLowerCase().includes(query)) : sliced).slice();
+    // Pinned projects lead, in the order they were otherwise in.
+    if (facets) list.sort((a, b) => Number(facets.meta(b.dir).pinned) - Number(facets.meta(a.dir).pinned));
     if (own.length === 0) {
       listHolder.replaceChildren(
         stateView("No projects found", "dx looks for folders with a package.json, go.mod, .git and similar in your projects folders.", h("a", { class: "btn btn-primary", href: "#/health" }, "Add a projects folder")),
@@ -1550,10 +2317,85 @@ function projectsPage(root, { only } = {}) {
       return;
     }
     if (list.length === 0) {
-      listHolder.replaceChildren(stateView(`No project matches "${query}"`, null, btn("Clear search", () => ((search.value = ""), (query = ""), renderList()))));
+      const sliceOn = facets?.active();
+      listHolder.replaceChildren(
+        stateView(
+          sliceOn ? "No project matches these filters" : `No project matches "${query}"`,
+          sliceOn ? `${own.length} projects are hidden by them.` : null,
+          btn(sliceOn ? "Clear filters" : "Clear search", () => {
+            search.value = "";
+            query = "";
+            if (sliceOn) facets.clear();
+            else renderList();
+          }),
+        ),
+      );
       return;
     }
-    listHolder.replaceChildren(h("div", { class: "project-list" }, list.map(projectRow)));
+    const hidden = own.length - list.length;
+    fill(
+      listHolder,
+      h("div", { class: "project-list" }, list.map(projectRow)),
+      facets?.active() && hidden > 0
+        ? h(
+            "div",
+            { class: "facet-hidden dim" },
+            `${hidden} hidden by the filters `,
+            btn("Clear filters", () => ((search.value = ""), (query = ""), facets.clear()), { small: true, kind: "ghost" }),
+          )
+        : null,
+    );
+  }
+
+  /** The star: pinned projects lead the list and the Pinned view. */
+  function pinButton(p) {
+    const pinned = facets.meta(p.dir).pinned;
+    return h(
+      "button",
+      {
+        type: "button",
+        class: `pin-btn${pinned ? " on" : ""}`,
+        "aria-pressed": pinned ? "true" : "false",
+        "aria-label": `${pinned ? "Unpin" : "Pin"} ${p.name}`,
+        title: pinned ? "Unpin" : "Pin to the top",
+        onclick: (ev) => {
+          void api("/api/facets/pin", { method: "POST", body: { dir: p.dir, pinned: !pinned } }).then(
+            () => facets.refresh(),
+            (err) => (shake(ev.currentTarget), toast(err.message, "error")),
+          );
+        },
+      },
+      h("span", { "aria-hidden": "true" }, pinned ? "\u2605" : "\u2606"),
+    );
+  }
+
+  /** Tags are typed as words with commas; the field is the project's whole list, so it also removes. */
+  function tagEditor(p) {
+    const tags = facets.meta(p.dir).tags;
+    const wrap = h("span", { class: "tag-edit" });
+    const open = btn(tags.length ? "Tags" : "Tag", () => show(), { small: true, kind: "ghost", title: "Name this project's tags, separated by commas" });
+    wrap.append(open);
+    function show() {
+      const input = h("input", { class: "input tag-input", value: tags.join(", "), placeholder: "client, side project", "aria-label": `Tags for ${p.name}`, maxlength: "120" });
+      const save = async () => {
+        try {
+          await api("/api/facets/tags", { method: "POST", body: { dir: p.dir, tags: input.value } });
+          await facets.refresh();
+        } catch (err) {
+          shake(input);
+          inlineProblem(input, err.message, err.problem);
+        }
+      };
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          void save();
+        } else if (ev.key === "Escape") wrap.replaceChildren(open);
+      });
+      wrap.replaceChildren(input, btn("Save", () => save(), { small: true, kind: "primary" }));
+      input.focus();
+    }
+    return wrap;
   }
 
   function projectRow(p) {
@@ -1570,8 +2412,12 @@ function projectsPage(root, { only } = {}) {
           { class: "project-name" },
           // On All projects a name opens that project's overview, making it the project you work on.
           // On Overview the page title already names it.
+          facets && !p.snapshot ? pinButton(p) : null,
           only ? null : p.snapshot ? p.name : h("a", { href: "#/overview", class: "project-link", onclick: () => setPref("project", p.dir), title: `Open ${p.name}'s overview` }, p.name),
           h("span", { class: "badge" }, kind),
+          facets && !p.snapshot ? kindChip(facets.meta(p.dir).kind) : null,
+          facets && !p.snapshot ? facets.meta(p.dir).tags.map((t) => h("button", { type: "button", class: "badge badge-tag", title: `Show only ${t}`, onclick: () => facets.toggle("tag", t) }, t)) : null,
+          facets && !p.snapshot ? tagEditor(p) : null,
           p.stack ? h("span", { class: "badge badge-accent", title: `Found from ${STACK_SOURCES[p.stack.source] ?? "the project"}` }, `Stack: ${p.stack.services.map((s) => s.name).join(", ")}`) : null,
           running ? statusBadge(p.dev.status) : null,
           mockBadge(p.mocks, p.dir),
@@ -1678,7 +2524,7 @@ function projectsPage(root, { only } = {}) {
         "li",
         { class: "dev-error" },
         h("div", { class: "dev-error-head" }, h("span", { class: "badge badge-danger" }, "Failed"), h("strong", { class: "dev-error-message" }, f.name)),
-        where ? btn(where, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: f.file, line: f.line } })).message)), { small: true, kind: "ghost", iconName: "code" }) : null,
+        where ? btn(where, (ev) => busy(ev.currentTarget, "Opening…", async () => ((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: f.file, line: f.line } })).message)), { small: true, kind: "ghost", iconName: "code" }) : null,
         h("pre", { class: "log-snippet" }, [f.message, f.expected !== undefined || f.actual !== undefined ? `expected: ${f.expected ?? "?"}\nactual:   ${f.actual ?? "?"}` : null].filter(Boolean).join("\n\n")),
       );
     });
@@ -1769,7 +2615,7 @@ function projectsPage(root, { only } = {}) {
       h(
         "div",
         { class: "menu-list", role: "menu" },
-        item("Open in browser", "external", () => open(null, p, "browser", p.dev?.localUrl ?? p.dev?.url ?? p.url), !(p.dev?.localUrl ?? p.dev?.url ?? p.url)),
+        item("Open in browser", "external", () => open(null, p, "browser", appUrl(p.dev) ?? p.url), !(appUrl(p.dev) ?? p.url)),
         item("Run in a terminal window", "terminal", () => open(null, p, "terminal"), !p.devCommand),
         item("Show in folder", "folder", () => open(null, p, "folder")),
         item(p.session?.note ? "Change the note…" : "Leave a note…", "journal", () => leaveNote(p)),
@@ -1795,7 +2641,7 @@ function projectsPage(root, { only } = {}) {
   }
 
   async function open(button, p, action, url) {
-    const run = async () => toast((await api("/api/projects/open", { method: "POST", body: { dir: p.dir, action, url } })).message);
+    const run = async () => ((await api("/api/projects/open", { method: "POST", body: { dir: p.dir, action, url } })).message);
     if (button) await busy(button, "Opening…", run);
     else await run().catch((err) => toast(err.message, "error"));
   }
@@ -1920,17 +2766,22 @@ function projectsPage(root, { only } = {}) {
           s.snapshot ? h("span", { class: "badge badge-accent", title: "The project as it was at a commit, run from its own folder in ~/.dx/snapshots" }, "snapshot") : null,
           s.run ? h("span", { class: "badge badge-accent", title: s.run.envFile ? `Values from ${s.run.envFile} over .env; Restart runs it the same way` : "Restart runs it the same way" }, [s.run.mode === "dev" ? null : s.run.label, s.run.envFile].filter(Boolean).join(" · ")) : null,
           statusBadge(s.status),
-          s.startedBy === "ai" ? h("span", { class: "badge badge-accent", title: "Started by an AI agent through dx's MCP tools" }, "Started by AI") : null,
+          s.startedBy === "ai" ? h("span", { class: "badge badge-second", title: "Started by an AI agent through dx's MCP tools" }, "Started by AI") : null,
+          s.recorded ? h("span", { class: "badge", title: "dx answers at this address, so what you do here is in the history and mocks, rules and chaos apply" }, "Recorded") : s.notRecorded && s.status === "ready" ? h("span", { class: "badge badge-warn", title: `Not recorded at its own address: ${s.notRecorded}. Open it at ${s.localUrl ?? "its .localhost address"} to record it.` }, "Not recorded") : null,
           s.errorCount ? h("span", { class: "badge badge-danger" }, plural(s.errorCount, "error")) : null,
           addressLink(s) ?? h("span", { class: "dim mono" }, s.command),
         ),
         h(
           "div",
           { class: "toolbar" },
-          (s.localUrl ?? s.url) && s.status === "ready"
-            ? btn("Open in browser", (e) => open(e.currentTarget, { dir: s.dir }, "browser", s.localUrl ?? s.url), { iconName: "external", small: true, kind: "primary" })
+          appUrl(s) && s.status === "ready"
+            ? btn("Open in browser", (e) => open(e.currentTarget, { dir: s.dir }, "browser", appUrl(s)), { iconName: "external", small: true, kind: "primary" })
             : null,
-          (s.localUrl ?? s.url) && s.status === "ready"
+          // Where dx can't answer at the app's own address, its .localhost name is the one that records, mocks and breaks calls.
+          s.localUrl && !s.recorded && s.status === "ready" && !s.snapshot
+            ? btn("Open recorded", (e) => open(e.currentTarget, { dir: s.dir }, "browser", s.localUrl), { iconName: "external", small: true, kind: "ghost", title: `Opens ${s.localUrl}, where dx records the app, mocks its calls and can break them. The app sees that address, not its own (${s.url ?? "localhost"}).` })
+            : null,
+          appUrl(s) && s.status === "ready"
             ? btn("Check page", (e) => checkInBrowser(e.currentTarget, s), {
                 iconName: "check",
                 small: true,
@@ -2173,9 +3024,9 @@ function projectsPage(root, { only } = {}) {
 
   /** The address to show: the local domain when there is one, the dev server's own otherwise. */
   function addressLink(s) {
-    const href = s.localUrl ?? s.url;
+    const href = appUrl(s);
     if (!href) return null;
-    return h("a", { href, target: "_blank", rel: "noreferrer", class: "mono", title: s.localUrl && s.url ? `Also at ${s.url}` : undefined }, href.replace(/^http:\/\//, ""));
+    return h("a", { href, target: "_blank", rel: "noreferrer", class: "mono", title: s.localUrl && s.url && s.localUrl !== href ? `Also at ${s.localUrl}` : undefined }, href.replace(/^http:\/\//, ""));
   }
 
   function serviceRow(svc) {
@@ -2247,7 +3098,7 @@ function projectsPage(root, { only } = {}) {
             { class: "toolbar dev-error-actions" },
             where
               ? btn(where, (ev) =>
-                  busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file: e.file, line: e.line, column: e.column } })).message)),
+                  busy(ev.currentTarget, "Opening…", async () => ((await api("/api/open-file", { method: "POST", body: { dir, file: e.file, line: e.line, column: e.column } })).message)),
                   { small: true, kind: "ghost", iconName: "code", title: "Open in your editor at this line", name: `Open ${where} in editor` },
                 )
               : null,
@@ -2332,7 +3183,10 @@ function projectsPage(root, { only } = {}) {
   }, 3000);
   load();
   loadUnsaved();
-  const stopLive = livePoll(loadUnsaved, 30_000);
+  const stopPoll = livePoll(loadUnsaved, 30_000, { events: true });
+  // A commit, a push or a cleanup is a change dx lists; a dev server starting changes what's running.
+  const stopEvents = onLive(["dev", "change"], soon(loadUnsaved));
+  const stopLive = () => (stopPoll(), stopEvents());
   return () => {
     stopped = true;
     stopLive();
@@ -2591,7 +3445,10 @@ function portsPage(root) {
     });
   }
   load();
-  return livePoll(load, 5000);
+  // A dev server starting or stopping changes what listens; the poll is the net.
+  const stopEvents = onLive("dev", soon(load));
+  const stopPoll = livePoll(load, 5000, { events: true });
+  return () => (stopEvents(), stopPoll());
 }
 
 // ------------------------------------------------------------------ Requests
@@ -2692,7 +3549,7 @@ function tourSection(dir) {
 
   // A file of the project, with its line when there is one, as a button that opens it in the editor.
   const openFile = (file, line) =>
-    btn(line ? `${file}:${line}` : file, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file, line: line ?? 1 } })).message)), {
+    btn(line ? `${file}:${line}` : file, (ev) => busy(ev.currentTarget, "Opening…", async () => ((await api("/api/open-file", { method: "POST", body: { dir, file, line: line ?? 1 } })).message)), {
       small: true,
       kind: "ghost",
       iconName: "code",
@@ -3196,7 +4053,7 @@ function chaosPage(root) {
 
   const field = (label, control, hint) => h("label", { class: "field" }, h("span", { class: "field-label" }, label), control, hint ? h("span", { class: "field-hint" }, hint) : null);
   // The app's address through dx, when its dev server runs.
-  const where = () => project()?.dev?.localUrl ?? project()?.dev?.url ?? "";
+  const where = () => recordedUrl(project()?.dev) ?? "";
   const toActivity = (id) => {
     setPref("activitySel", `p:${dir}`);
     location.hash = "#/activity";
@@ -4413,10 +5270,16 @@ function requestsPage(root) {
       const s = m.server;
       append(
         serverCard,
+        h("div", { class: "section-head" }, h("div", null, h("h2", { class: "section-title" }, "Mocks"), h("p", { class: "dim" }, "Answer the app's API calls with saved answers, with no back end."))),
+        mockControl(dir, { on: !!m.on, strict: !!m.strict, endpoints: m.endpoints.length }, { onChange: loadMocks }),
         h(
-          "div",
-          { class: "section-head" },
-          h("div", null, h("h2", { class: "section-title" }, "Mock server"), h("p", { class: "dim" }, "")),
+          "details",
+          { class: "mock-more" },
+          h("summary", { class: "dim" }, "More: the mock server, keeping real answers, strict mode, removing mocks"),
+          h(
+            "div",
+            { class: "section-head" },
+            h("div", null, h("h3", { class: "section-title" }, "Mock server"), h("p", { class: "dim" }, "Its own address, for a front end with no back end running.")),
           btn(s ? "Stop" : "Start the mock server", async (ev) => {
             const b = ev.currentTarget;
             const r = await busy(b, "…", () => api("/api/mocks/server", { method: "POST", body: { dir, on: !s } }));
@@ -4435,7 +5298,7 @@ function requestsPage(root) {
           "div",
           { class: "toolbar" },
           h("label", { class: "check" }, h("input", { type: "checkbox", checked: !!m.cache, onchange: (e) => mode(e.currentTarget, { cache: e.currentTarget.checked }, (r) => (r.cache ? "Real answers are kept as mocks from now on" : "The cache stopped; what it kept stays")) }), "Keep real answers (cache)"),
-          h("label", { class: "check" }, h("input", { type: "checkbox", checked: !!m.on, disabled: !m.endpoints.length, onchange: (e) => mode(e.currentTarget, { on: e.currentTarget.checked }, (r) => (r.on ? "The app's API calls through dx are answered by the mocks" : "API calls go to the dev server again")) }), "Mock mode (answer the app's calls at its .localhost address)"),
+          h("label", { class: "check" }, h("input", { type: "checkbox", checked: !!m.strict, onchange: (e) => mode(e.currentTarget, { strict: e.currentTarget.checked }, (r) => (r.strict ? "Strict: API calls with no mock get a 404" : "Calls with no mock go to the dev server")) }), "Strict: an API call with no mock gets a 404"),
         ),
         m.endpoints.length
           ? h(
@@ -4451,7 +5314,8 @@ function requestsPage(root) {
                 }, { small: true, kind: "danger-ghost", iconName: "cleanup" }),
               ),
             )
-          : h("p", { class: "dim" }, "No mocks yet."),
+          : null,
+        ),
       );
       drawEndpoints(m);
     };
@@ -5205,11 +6069,758 @@ function machinePage(root) {
   }
   loadAll(false);
   // Live: what changes quickly is read often, the rest rarely.
-  const stops = [livePoll(loadProcesses, 8000), livePoll(loadDocker, 20_000), livePoll(() => loadTools(false), 120_000), livePoll(loadNeeds, 60_000), livePoll(loadServices, 60_000)];
+  const stops = [onLive("dev", soon(loadProcesses)), livePoll(loadProcesses, 8000, { events: true }), livePoll(loadDocker, 20_000), livePoll(() => loadTools(false), 120_000), livePoll(loadNeeds, 60_000), livePoll(loadServices, 60_000)];
   return () => stops.forEach((stop) => stop());
 }
 
 // ------------------------------------------------------------------ Journal
+
+// ------------------------------------------------------------------ the address as part of the page
+
+/** The query of the page's address (`#/projects?status=running`). */
+const hashParams = () => new URLSearchParams(location.hash.split("?")[1] ?? "");
+
+/**
+ * Puts values in the page's address without going to it again (so the page doesn't redraw): a slice or a
+ * selection can be bookmarked, shared and linked to. Empty values leave the address; `dir` stays.
+ */
+function setHashParams(values) {
+  const params = hashParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined || value === null || value === "" || value === false) params.delete(key);
+    else params.set(key, String(value));
+  }
+  const query = params.toString().replace(/%2C/gi, ",");
+  history.replaceState(null, "", `${location.hash.split("?")[0] || "#/"}${query ? `?${query}` : ""}`);
+}
+
+// ------------------------------------------------------------------ slicing the projects
+
+/**
+ * The slice of All projects: choices by facet with how many projects each gives, saved views, tags and
+ * pins. The server counts and filters (core/facets.ts); the filter lives in the page's address. Returns
+ * the element, and what the list needs: `visible(dir)`, `meta(dir)`, `setQuery`, `toggle`, `refresh`.
+ */
+function facetBar({ onChange }) {
+  const el = h("section", { class: "section facet-bar", "aria-label": "Filter projects" });
+  const params = hashParams();
+  const filter = {
+    status: (params.get("status") ?? "").split(",").filter(Boolean),
+    kind: (params.get("kind") ?? "").split(",").filter(Boolean),
+    tag: (params.get("tag") ?? "").split(",").filter(Boolean),
+    pinned: params.get("pinned") === "1",
+    q: params.get("q") ?? "",
+  };
+  let data = null;
+  let shown = null;
+  const items = new Map();
+  let timer = 0;
+
+  const active = () => filter.status.length + filter.kind.length + filter.tag.length + (filter.pinned ? 1 : 0) + (filter.q ? 1 : 0) > 0;
+  const queryString = () => {
+    const q = new URLSearchParams();
+    if (filter.status.length) q.set("status", filter.status.join(","));
+    if (filter.kind.length) q.set("kind", filter.kind.join(","));
+    if (filter.tag.length) q.set("tag", filter.tag.join(","));
+    if (filter.pinned) q.set("pinned", "1");
+    if (filter.q) q.set("q", filter.q);
+    return q.toString();
+  };
+
+  async function refresh() {
+    try {
+      data = await api(`/api/facets?${queryString()}`);
+    } catch (err) {
+      if (!data) fill(el, errorView(err, refresh));
+      return;
+    }
+    shown = new Set(data.items.map((i) => i.dir.toLowerCase()));
+    items.clear();
+    for (const i of data.items) items.set(i.dir.toLowerCase(), i);
+    setHashParams({ status: filter.status.join(","), kind: filter.kind.join(","), tag: filter.tag.join(","), pinned: filter.pinned, q: filter.q });
+    draw();
+    onChange();
+  }
+
+  function apply(next) {
+    filter.status = next.status ?? [];
+    filter.kind = next.kind ?? [];
+    filter.tag = next.tag ?? [];
+    filter.pinned = !!next.pinned;
+    filter.q = next.q ?? "";
+    void refresh();
+  }
+
+  function toggle(facet, value) {
+    const list = filter[facet];
+    filter[facet] = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+    void refresh();
+  }
+
+  const choice = (facet, c) => {
+    const on = filter[facet].includes(c.value);
+    return h(
+      "button",
+      { type: "button", class: `facet-choice${on ? " on" : ""}${c.count === 0 && !on ? " none" : ""}`, "aria-pressed": on ? "true" : "false", onclick: () => toggle(facet, c.value) },
+      facet === "kind" && kindHue(c.value) ? h("span", { class: `facet-dot dot-${kindHue(c.value)}`, "aria-hidden": "true" }) : null,
+      c.label,
+      h("span", { class: "facet-count" }, String(c.count)),
+    );
+  };
+
+  function draw() {
+    const counts = data.counts;
+    const chips = [
+      ...filter.status.map((v) => ["status", v, data.counts.status.find((c) => c.value === v)?.label ?? v]),
+      ...filter.kind.map((v) => ["kind", v, v]),
+      ...filter.tag.map((v) => ["tag", v, `Tag: ${v}`]),
+      ...(filter.pinned ? [["pinned", "1", "Pinned"]] : []),
+      ...(filter.q ? [["q", filter.q, `Matches "${filter.q}"`]] : []),
+    ];
+    const group = (title, ...children) => h("div", { class: "facet-group" }, h("span", { class: "label-pixel" }, title), h("div", { class: "facet-choices" }, ...children));
+    fill(
+      el,
+      h(
+        "div",
+        { class: "facet-top" },
+        h("span", { class: "facet-total", "aria-live": "polite" }, active() ? `${data.items.length} of ${data.total}` : `${data.total} projects`),
+        chips.length
+          ? h(
+              "div",
+              { class: "facet-chips" },
+              h("span", { class: "label-pixel" }, "Showing"),
+              chips.map(([facet, value, label]) =>
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "chip facet-chip",
+                    "aria-label": `Remove ${label}`,
+                    onclick: () => (facet === "pinned" ? ((filter.pinned = false), refresh()) : facet === "q" ? (setQuery(""), onSearchCleared()) : toggle(facet, value)),
+                  },
+                  label,
+                  icon("x"),
+                ),
+              ),
+              btn("Save as a view", () => saveCurrent(), { small: true, kind: "ghost" }),
+              btn("Clear filters", () => (setQuery(""), onSearchCleared(), apply({})), { small: true, kind: "ghost" }),
+              copyButton(() => location.href, "Copy link"),
+            )
+          : null,
+      ),
+      h(
+        "div",
+        { class: "facet-groups" },
+        group(
+          "Views",
+          data.views.map((v) =>
+            h(
+              "span",
+              { class: "facet-view" },
+              h("button", { type: "button", class: `facet-choice${queryString() === v.query ? " on" : ""}`, "aria-pressed": queryString() === v.query ? "true" : "false", title: v.builtin ? "" : "A view you saved", onclick: () => apply(v.filter) }, v.name, h("span", { class: "facet-count" }, String(v.count))),
+              v.builtin ? null : h("button", { type: "button", class: "btn btn-sm btn-ghost", "aria-label": `Remove the view ${v.name}`, title: "Remove this view", onclick: () => removeView(v) }, icon("x")),
+            ),
+          ),
+        ),
+        group("Status", counts.status.map((c) => choice("status", c))),
+        counts.kind.length > 1 ? group("Kind", counts.kind.map((c) => choice("kind", c))) : null,
+        counts.tag.length ? group("Tag", counts.tag.map((c) => choice("tag", c))) : null,
+      ),
+    );
+  }
+
+  let searchClearedHook = () => {};
+  const onSearchCleared = () => searchClearedHook();
+  function setQuery(q) {
+    filter.q = q;
+    clearTimeout(timer);
+    timer = setTimeout(() => void refresh(), 200);
+  }
+
+  async function saveCurrent() {
+    const name = await askName("Save this view", "Give it a name, like Client work, running.");
+    if (!name) return;
+    try {
+      await api("/api/facets/view", { method: "POST", body: { name, filter } });
+      toast(`Saved the view ${name}`);
+      void refresh();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  async function removeView(v) {
+    const yes = await confirmDialog({ title: `Remove the view ${v.name}?`, text: "The projects aren't touched, only the saved filter.", confirm: "Remove view", danger: false });
+    if (!yes) return;
+    try {
+      await api("/api/facets/view/remove", { method: "POST", body: { id: v.id } });
+      void refresh();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  // Counts move as projects start, fail and get committed to: the bar keeps itself current while it's on the page.
+  const later = soon(() => void refresh(), 400);
+  const off = onLive(["dev", "change"], () => later());
+  const poll = setInterval(() => {
+    if (!el.isConnected) return void (clearInterval(poll), off());
+    if (!document.hidden) void refresh();
+  }, 15_000);
+  void refresh();
+  return {
+    el,
+    filter,
+    active,
+    refresh,
+    toggle,
+    setQuery,
+    /** The list tells the bar when its own search box is emptied. */
+    onSearchCleared: (fn) => (searchClearedHook = fn),
+    /** Whether a project is in the slice (everything is, until the first answer). */
+    visible: (dir) => !shown || shown.has(dir.toLowerCase()),
+    meta: (dir) => items.get(dir.toLowerCase()) ?? { tags: [], pinned: false },
+    counts: () => (data ? { shown: data.items.length, total: data.total } : null),
+    clear: () => apply({}),
+  };
+}
+
+/** A small dialog that asks for one line of text; resolves to the text, or "" when cancelled. */
+function askName(title, hint) {
+  return new Promise((resolve) => {
+    const dialog = h("dialog", { class: "dialog", "aria-labelledby": "ask-name-title" });
+    const input = h("input", { class: "input input-wide", id: "ask-name", maxlength: "40", autocomplete: "off", "aria-describedby": "ask-name-hint" });
+    const done = (value) => {
+      dialog.close();
+      dialog.remove();
+      resolve(value);
+    };
+    dialog.append(
+      h(
+        "form",
+        { class: "dialog-body", onsubmit: (e) => (e.preventDefault(), done(input.value.trim())) },
+        h("h2", { class: "dialog-title", id: "ask-name-title" }, title),
+        h("label", { class: "field-hint", id: "ask-name-hint", for: "ask-name" }, hint),
+        input,
+        h("div", { class: "dialog-actions" }, btn("Cancel", () => done(""), { kind: "ghost" }), btn("Save", null, { kind: "primary", type: "submit" })),
+      ),
+    );
+    dialog.addEventListener("cancel", () => resolve(""), { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+    input.focus();
+  });
+}
+
+// ------------------------------------------------------------------ the stack map
+
+const MAP = { w: 176, h: 72, gapX: 96, gapY: 22, pad: 16 };
+const mapEl = (tag, attrs = {}, ...children) => {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+  for (const c of children) e.append(c instanceof Node ? c : document.createTextNode(c));
+  return e;
+};
+const clip = (text, n) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
+const nodeTone = (n) => (n.status === "failed" ? "fail" : n.errorCount > 0 ? "warn" : n.status === "ready" ? "ok" : n.status === "starting" ? "busy" : "idle");
+
+/** The stack's services and who calls whom, as an SVG built from DOM nodes. Clicking a service selects it. */
+function drawStackMap(graph, selected, onSelect) {
+  const cols = [0, 1, 2].map((t) => graph.nodes.filter((n) => n.tier === t)).filter((c) => c.length);
+  const pos = new Map();
+  cols.forEach((col, ci) => col.forEach((n, ri) => pos.set(n.id, { x: MAP.pad + ci * (MAP.w + MAP.gapX), y: MAP.pad + ri * (MAP.h + MAP.gapY), col: ci })));
+  const rows = Math.max(...cols.map((c) => c.length));
+  const width = MAP.pad * 2 + cols.length * MAP.w + (cols.length - 1) * MAP.gapX;
+  const height = MAP.pad * 2 + rows * MAP.h + (rows - 1) * MAP.gapY;
+  const svg = mapEl("svg", { viewBox: `0 0 ${width} ${height}`, class: "stack-svg", role: "group", "aria-label": `${graph.project}'s services and what calls what` });
+  svg.append(mapEl("defs", {}, mapEl("marker", { id: "sm-arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" }, mapEl("path", { d: "M0 0L10 5L0 10z", class: "sm-arrow" }))));
+
+  for (const e of graph.edges) {
+    const a = pos.get(e.from);
+    const b = pos.get(e.to);
+    if (!a || !b) continue;
+    let d;
+    let mx;
+    let my;
+    if (b.col > a.col) {
+      const x1 = a.x + MAP.w;
+      const y1 = a.y + MAP.h / 2;
+      const x2 = b.x;
+      const y2 = b.y + MAP.h / 2;
+      d = `M${x1} ${y1}C${x1 + 48} ${y1} ${x2 - 48} ${y2} ${x2} ${y2}`;
+      mx = (x1 + x2) / 2;
+      my = (y1 + y2) / 2;
+    } else if (b.col < a.col) {
+      const x1 = a.x;
+      const y1 = a.y + MAP.h / 2;
+      const x2 = b.x + MAP.w;
+      const y2 = b.y + MAP.h / 2;
+      d = `M${x1} ${y1}C${x1 - 48} ${y1} ${x2 + 48} ${y2} ${x2} ${y2}`;
+      mx = (x1 + x2) / 2;
+      my = (y1 + y2) / 2;
+    } else {
+      const x1 = a.x + MAP.w;
+      const y1 = a.y + MAP.h / 2;
+      const y2 = b.y + MAP.h / 2;
+      d = `M${x1} ${y1}C${x1 + 52} ${y1} ${x1 + 52} ${y2} ${x1} ${y2}`;
+      mx = x1 + 40;
+      my = (y1 + y2) / 2;
+    }
+    svg.append(mapEl("path", { d, class: `sm-edge${e.perMinute > 0 ? " busy" : ""}${e.declared ? "" : " inferred"}`, "marker-end": "url(#sm-arrow)" }));
+    if (e.perMinute > 0) svg.append(mapEl("text", { x: mx, y: my - 6, class: "sm-edge-label", "text-anchor": "middle" }, `${e.perMinute}/min`));
+  }
+
+  for (const n of graph.nodes) {
+    const p = pos.get(n.id);
+    const tone = nodeTone(n);
+    const detail = n.step ? `${n.step}…` : n.problem ? "Didn't start" : n.errorCount ? `${n.errorCount} error${n.errorCount === 1 ? "" : "s"}` : n.status === "ready" ? (n.recorded ? "Recorded" : "Running") : n.status === "starting" ? "Starting…" : "Not running";
+    const second = `${n.kind === "docker" ? "Docker" : clip(n.command.replace(/^(npm|pnpm|yarn|bun) (run )?/, ""), 14)}${n.port ? ` · :${n.port}` : ""}`;
+    const g = mapEl(
+      "g",
+      {
+        class: `sm-node sm-${tone}${selected === n.id ? " sel" : ""}`,
+        transform: `translate(${p.x} ${p.y})`,
+        tabindex: "0",
+        role: "button",
+        "aria-pressed": selected === n.id ? "true" : "false",
+        "aria-label": `${n.name}, ${n.role}, ${detail}${n.port ? `, port ${n.port}` : ""}`,
+        "data-id": n.id,
+      },
+      mapEl("rect", { width: MAP.w, height: MAP.h, rx: 10 }),
+      mapEl("rect", { x: 0, y: 14, width: 5, height: MAP.h - 28, rx: 2, class: `sm-role sm-role-${n.role}` }),
+      mapEl("circle", { cx: 16, cy: 20, r: 5, class: "sm-dot" }),
+      mapEl("text", { x: 30, y: 24, class: "sm-name" }, clip(n.name, 18)),
+      mapEl("text", { x: 14, y: 44, class: "sm-sub" }, second),
+      mapEl("text", { x: 14, y: 61, class: "sm-state" }, clip(detail, 26)),
+    );
+    g.addEventListener("click", () => onSelect(n.id));
+    g.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        onSelect(n.id);
+      }
+    });
+    svg.append(g);
+  }
+  return svg;
+}
+
+function stackPage(root) {
+  const dir = currentProject();
+  const subtitle = h("p", { class: "page-sub" }, "Reading the stack…");
+  const head = pageHead("Stack map", "");
+  head.querySelector(".page-title")?.after(subtitle);
+  const holder = h("div", { class: "card card-pad stack-map-card" }, loadingView("Reading the stack…"));
+  const detail = h("div", { class: "card card-pad stack-detail", hidden: true, "aria-live": "polite" });
+  append(root, head, holder, detail);
+  let graph = null;
+  let selected = hashParams().get("service") ?? "";
+  let sig = "";
+  let logsAfter = 0;
+
+  const select = (id) => {
+    selected = selected === id ? "" : id;
+    setHashParams({ service: selected });
+    logsAfter = 0;
+    paint();
+  };
+
+  function paint() {
+    if (!graph) return;
+    if (!graph.stack) {
+      subtitle.textContent = "";
+      holder.replaceChildren(stateView("This project runs as one app", "There's no stack to map: it has one thing to run. When it has a front end, an API or a database, they show here.", h("a", { class: "btn", href: "#/overview" }, "Back to the project")));
+      detail.hidden = true;
+      return;
+    }
+    const t = graph.totals;
+    subtitle.textContent = `${t.services} services · ${t.running} running${t.docker ? ` · ${t.docker} in Docker` : ""}${t.failing ? ` · ${t.failing} failing` : ""}`;
+    holder.replaceChildren(
+      drawStackMap(graph, selected, select),
+      h(
+        "div",
+        { class: "stack-legend" },
+        h("span", { class: "legend-item ok" }, "running"),
+        h("span", { class: "legend-item busy" }, "starting"),
+        h("span", { class: "legend-item warn" }, "errors"),
+        h("span", { class: "legend-item fail" }, "failed"),
+        h("span", { class: "legend-item idle" }, "not running"),
+        h("span", { class: "legend-item role-frontend" }, "front end"),
+        h("span", { class: "legend-item role-backend" }, "back end"),
+        h("span", { class: "legend-item role-data" }, "data"),
+        h("span", { class: "dim" }, "Lines show who calls whom (dashed: worked out from the roles); the number is what the service answered per minute, over the last five."),
+        copyButton(() => location.href, "Copy link"),
+      ),
+    );
+    const n = graph.nodes.find((x) => x.id === selected);
+    if (!n) {
+      detail.hidden = true;
+      return;
+    }
+    detail.hidden = false;
+    const callers = graph.edges.filter((e) => e.to === n.id).map((e) => e.from);
+    const calls = graph.edges.filter((e) => e.from === n.id).map((e) => e.to);
+    const logBox = h("pre", { class: "stack-lines mono" }, "…");
+    fill(
+      detail,
+      h("div", { class: "label-pixel" }, `${n.name} · selected`),
+      h("div", { class: "chunk-big" }, h("span", { class: `dot ${n.status === "failed" ? "dot-bad" : n.status === "ready" ? "dot-ok" : n.status === "starting" ? "dot-pulse" : ""}`, "aria-hidden": "true" }), n.status === "failed" ? "Didn't start" : n.status === "ready" ? (n.errorCount ? `Ready, ${plural(n.errorCount, "error")}` : "Ready") : n.status === "starting" ? "Starting…" : "Not running"),
+      n.step ? h("div", { class: "dim" }, `${n.step}…`) : null,
+      n.problem ? problemBlock(n.problem, load) : null,
+      h("div", { class: "dim" }, `${n.role} · ${n.kind === "docker" ? "Docker" : "a process"} · `, h("span", { class: "mono" }, n.command)),
+      n.url ? h("a", { class: "mono", href: n.url, target: "_blank", rel: "noreferrer" }, n.url.replace(/^https?:\/\//, "")) : null,
+      h("div", { class: "stack-calls" }, h("span", { class: "label-pixel" }, "Calls"), callers.length ? h("div", null, `Called by ${callers.join(", ")}`) : null, calls.length ? h("div", null, `Calls ${calls.join(", ")}`) : null, h("div", null, n.perMinute > 0 ? `Answered ${n.perMinute} per minute` : "Nothing answered in the last five minutes")),
+      n.queries ? h("div", { class: "stack-calls" }, h("span", { class: "label-pixel" }, "Queries"), h("div", null, `${plural(n.queries.count, "statement")} logged since you switched it on`), n.queries.slowest ? h("div", { class: "dim" }, `Slowest: `, h("span", { class: "mono" }, n.queries.slowest.shape), ` · ${n.queries.slowest.ms} ms over ${plural(n.queries.slowest.count, "time")}`) : null, h("a", { class: "dim", href: `#/overview?dir=${encodeURIComponent(dir)}` }, "The overview has them per request")) : null,
+      h("div", { class: "label-pixel" }, "Last lines"),
+      logBox,
+      h(
+        "div",
+        { class: "chunk-actions" },
+        n.status === "stopped" ? btn("Run the stack", (ev) => morph(ev.currentTarget, () => api("/api/dev/start", { method: "POST", body: { dir } }), { busy: "Starting…", done: "✓ Started" }).then((r) => r !== undefined && setTimeout(load, 1500)), { small: true, kind: "primary" }) : btn("Restart the stack", (ev) => morph(ev.currentTarget, () => api("/api/dev/restart", { method: "POST", body: { dir } }), { busy: "Restarting…", done: "✓ Restarted" }).then((r) => r !== undefined && setTimeout(load, 1500)), { small: true }),
+        // One service, the others keep running (not when the whole stack is one command).
+        n.status !== "stopped" && graph.status && graph.status !== "stopped" && !graph.runner
+          ? btn(`Restart ${n.name}`, (ev) => morph(ev.currentTarget, () => api("/api/dev/restart-service", { method: "POST", body: { dir, service: n.id } }), { busy: "Restarting…", done: "✓ Restarted", holdMs: 1500 }).then((r) => r !== undefined && setTimeout(load, 1200)), { small: true, title: n.kind === "docker" ? "docker compose restart: the container only" : "Stops this service and starts it again; the others keep running" })
+          : null,
+        n.errorCount ? h("a", { class: "btn btn-sm", href: `#/overview?dir=${encodeURIComponent(dir)}` }, "Show errors") : null,
+      ),
+    );
+    void api(`/api/dev/logs?dir=${encodeURIComponent(dir)}&service=${encodeURIComponent(n.id)}&after=${logsAfter}`)
+      .then((r) => {
+        const lines = r.lines.slice(-8).map((l) => l.text);
+        logBox.textContent = lines.length ? lines.join("\n") : "Nothing printed yet.";
+      })
+      .catch(() => (logBox.textContent = "The output isn't available."));
+  }
+
+  async function load() {
+    try {
+      const next = await api(`/api/graph?dir=${encodeURIComponent(dir)}`);
+      const now = JSON.stringify(next);
+      if (now === sig) return;
+      sig = now;
+      graph = next;
+      paint();
+    } catch (err) {
+      if (!graph) holder.replaceChildren(errorView(err, load));
+    }
+  }
+  void load();
+  const again = soon(() => void load());
+  const off = onLive("dev", (d) => sameDir(d.dir ?? "", dir) && again());
+  const stopPoll = livePoll(() => load(), 5000, { events: true });
+  return () => (stopPoll(), off());
+}
+
+// ------------------------------------------------------------------ mock mode, as one control
+
+/**
+ * Mock mode as one control instead of five steps. No mocks: one button, "Mock this app", makes them from
+ * what the app has called (or its API spec) and turns mock mode on. Nothing to make them from yet: it says
+ * what to do (run the app, or open it and use it) and keeps asking by itself, finishing when the first calls
+ * arrive. With mocks: on or off in one press, and Edit mocks is one click away. `m` is { on, strict, endpoints }.
+ */
+function mockControl(dir, m, { onChange, openUrl, mockedAt } = {}) {
+  const el = h("div", { class: "mock-control", "aria-live": "polite" });
+  let timer = 0;
+  let until = 0;
+  const stop = () => clearInterval(timer);
+  const quick = (refresh = false) => api("/api/mocks/quick", { method: "POST", body: { dir, refresh } });
+  const edit = h("a", { class: "dim", href: "#/requests", onclick: () => setPref("labTab", "api") }, "Edit mocks");
+  const set = (body) => api("/api/mocks/mode", { method: "POST", body: { dir, ...body } });
+
+  function waiting(r) {
+    stop();
+    const url = r.openUrl ?? openUrl;
+    const siteUrl = !url ? r.openSite : undefined;
+    if (r.reason === "not-running") {
+      fill(el, h("span", { class: "dim" }, "Run the app first, then use it: dx mocks what it calls."), btn("Check again", () => press(), { small: true, kind: "ghost" }));
+      return;
+    }
+    fill(
+      el,
+      h("span", { class: "spinner", "aria-hidden": "true" }),
+      h(
+        "span",
+        null,
+        siteUrl
+          ? ["Waiting for the site's first calls. Use ", h("span", { class: "mono" }, siteUrl.replace(/^https?:\/\//, "")), " in the dx browser: dx mocks what it calls."]
+          : ["Waiting for the app's first calls. Use the app", url ? [" at ", h("a", { class: "mono", href: url, target: "_blank", rel: "noreferrer" }, url.replace(/^https?:\/\//, ""))] : "", ": dx mocks what it calls."],
+      ),
+      siteUrl ? btn("Open in dx browser", (ev) => morph(ev.currentTarget, () => api("/api/browser/open", { method: "POST", body: { url: siteUrl } }), { busy: "Opening…", done: "✓ Opened", holdMs: 1200 }), { small: true, kind: "second" }) : null,
+      btn("Stop waiting", () => (stop(), draw(m)), { small: true, kind: "ghost" }),
+    );
+    until = Date.now() + 180_000;
+    timer = setInterval(async () => {
+      if (!el.isConnected || Date.now() > until) return stop();
+      try {
+        const next = await quick();
+        if (next.state === "on") (stop(), onChange?.());
+      } catch {
+        // the next look tries again
+      }
+    }, 2500);
+  }
+
+  async function press(button) {
+    const r = await (button ? morph(button, () => quick(), { busy: "Looking…", done: (x) => (x.state === "on" ? `✓ ${plural(x.endpoints, "endpoint")} mocked` : "Waiting for calls…"), holdMs: 900 }) : quick().catch(() => undefined));
+    if (!r) return;
+    if (r.state === "on") setTimeout(() => onChange?.(), 900);
+    else waiting(r);
+  }
+
+  function draw(m) {
+    stop();
+    if (m.on) {
+      fill(
+        el,
+        h("span", { class: "badge badge-second" }, "Mocked"),
+        h("span", null, `${plural(m.endpoints, "endpoint")} answered by dx${m.strict ? ", strict" : ""}`),
+        btn("Turn off", (ev) => morph(ev.currentTarget, () => set({ on: false }), { busy: "…", done: "✓ Off", holdMs: 700 }).then((r) => r !== undefined && setTimeout(() => onChange?.(), 700)), { small: true, kind: "ghost" }),
+        // Where dx isn't in front of the app at its own address, the mocks answer at its .localhost name: say so, and take you there.
+        mockedAt ? h("a", { class: "btn btn-sm", href: mockedAt, target: "_blank", rel: "noreferrer", title: "Mocks answer at this address" }, "Open mocked app") : null,
+        edit,
+      );
+    } else if (m.endpoints > 0) {
+      fill(
+        el,
+        h("span", { class: "dim" }, `${plural(m.endpoints, "mock")} ready`),
+        btn("Turn on", (ev) => morph(ev.currentTarget, () => set({ on: true }), { busy: "…", done: "✓ On", holdMs: 700 }).then((r) => r !== undefined && setTimeout(() => onChange?.(), 700)), { small: true, kind: "second" }),
+        edit,
+      );
+    } else {
+      fill(el, btn("Mock this app", (ev) => press(ev.currentTarget), { small: true, kind: "second", title: "Answers the app's API calls with saved ones, from what it has called or its API spec" }), h("span", { class: "dim" }, "No back end needed"));
+    }
+  }
+  draw(m);
+  return el;
+}
+
+// ------------------------------------------------------------------ how much dx does on its own
+
+/** What dx would do on its own but was told to ask about: a yes does it (and lists it), not now puts it off a day. */
+function proposalsCard(proposals, reload) {
+  if (!proposals.length) return null;
+  const asks = proposals.filter((p) => p.level === "ask");
+  const quiet = proposals.filter((p) => p.level !== "ask");
+  // Each question can be answered from the keyboard: Y does it, A does it and always does it from now on
+  // (a level you can change in Settings and undo in Recent changes), N puts it off a day; the arrows move between questions.
+  const row = (p) => {
+    const doIt = btn("Do it", (ev) => morph(ev.currentTarget, () => api("/api/proposals/resolve", { method: "POST", body: { id: p.id, approve: true } }), { busy: "Doing it…", done: "✓ Done" }).then((r) => r !== undefined && setTimeout(reload, 2400)), { small: true, kind: "second", title: "Y" });
+    const always = btn(
+      "Always",
+      (ev) =>
+        morph(
+          ev.currentTarget,
+          async () => {
+            await api("/api/autonomy", { method: "POST", body: { id: p.capability, level: "do" } });
+            return api("/api/proposals/resolve", { method: "POST", body: { id: p.id, approve: true } });
+          },
+          { busy: "Doing it…", done: "✓ Done, and from now on" },
+        ).then((r) => r !== undefined && setTimeout(reload, 2400)),
+      { small: true, kind: "ghost", title: "A: do it now and every time from now on (you can change this in Settings, and undo it in Recent changes)" },
+    );
+    const notNow = btn("Not now", (ev) => morph(ev.currentTarget, () => api("/api/proposals/resolve", { method: "POST", body: { id: p.id, approve: false } }), { busy: "…", done: "Put off a day" }).then((r) => r !== undefined && setTimeout(reload, 1200)), { small: true, kind: "ghost", title: "N" });
+    const el = h(
+      "div",
+      {
+        class: "home-did",
+        tabindex: "0",
+        "aria-label": `${p.what}. Press Y to do it, A to always do it, N for not now`,
+        onkeydown: (ev) => {
+          if (ev.target !== el || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+          const k = ev.key.toLowerCase();
+          if (k === "y") (ev.preventDefault(), doIt.click());
+          else if (k === "a") (ev.preventDefault(), always.click());
+          else if (k === "n") (ev.preventDefault(), notNow.click());
+          else if (k === "arrowdown" || k === "arrowup") {
+            const rows = [...el.parentElement.querySelectorAll(".home-did")];
+            rows[rows.indexOf(el) + (k === "arrowdown" ? 1 : -1)]?.focus();
+            ev.preventDefault();
+          }
+        },
+      },
+      h("span", null, p.what, p.why ? h("span", { class: "dim" }, ` · ${p.why}`) : null),
+      h("span", { class: "toolbar" }, doIt, always, notNow),
+    );
+    return el;
+  };
+  return h(
+    "div",
+    { class: "card card-pad home-card home-ask" },
+    asks.length ? h("div", { class: "label-pixel" }, "dx wants to") : null,
+    ...asks.map(row),
+    quiet.length ? h("details", { class: "home-quiet" }, h("summary", { class: "dim" }, `dx could also (${quiet.length})`), ...quiet.map(row)) : null,
+    h("a", { class: "dim", href: "#/health" }, "Change how much dx does on its own"),
+  );
+}
+
+/** Settings: for each thing dx does by itself, suggest, ask or do. */
+function autonomyCard() {
+  const holder = h("div", { class: "card card-pad autonomy" }, loadingView("Reading…"));
+  const note = h("div", { class: "saved-note", role: "status" });
+  let timer = 0;
+  const say = (tone, text) => {
+    clearTimeout(timer);
+    note.className = `saved-note saved-${tone}`;
+    fill(note, icon(tone === "ok" ? "check" : "x"), text, tone === "ok" ? h("a", { href: "#/changes", class: "dim" }, "Recent changes has the Undo") : null);
+    if (tone === "ok") timer = setTimeout(() => note.replaceChildren(), 7000);
+  };
+  async function load() {
+    try {
+      draw((await api("/api/autonomy")).capabilities);
+    } catch (err) {
+      fill(holder, errorView(err, load));
+    }
+  }
+  function draw(capabilities) {
+    fill(
+      holder,
+      note,
+      h("p", { class: "dim" }, "Suggest: dx only says it could. Ask: dx asks first, each time. Do: dx does it and lists it under ", h("a", { href: "#/changes" }, "Recent changes"), ", with Undo where there is one."),
+      ...capabilities.map((c) =>
+        h(
+          "div",
+          { class: "autonomy-row" },
+          h("div", null, h("strong", null, c.title), h("div", { class: "dim" }, c.what)),
+          segmented(
+            `${c.title}: how much dx does`,
+            [["suggest", "Suggest"], ["ask", "Ask"], ["do", "Do"]],
+            c.level,
+            async (level) => {
+              try {
+                await api("/api/autonomy", { method: "POST", body: { id: c.id, level } });
+                say("ok", `Saved: ${c.title.toLowerCase()} is ${level === "do" ? "done by dx" : level === "ask" ? "asked first" : "only suggested"}.`);
+                await load();
+              } catch (err) {
+                say("bad", err.message);
+                shake(holder);
+              }
+            },
+          ),
+        ),
+      ),
+      h("p", { class: "dim" }, "Whatever you choose, dx never runs Claude Code on its own (only on its button), and never pushes, releases or deletes by itself."),
+    );
+  }
+  void load();
+  return holder;
+}
+
+/** What was sent to an AI today by dx's buttons: which feature, what parts, and what came of it. */
+function aiUsesSection() {
+  const el = h("section", { class: "section", "aria-labelledby": "ai-uses-title" });
+  const FEATURES = { fix: "Ask Claude to fix", "commit-message": "Commit message", "tool-chat": "Tools chat", "mock-data": "Mock data" };
+  const OUTCOMES = { proposed: "answered", applied: "applied", dismissed: "dismissed", used: "used", nothing: "no change proposed", failed: "failed" };
+  async function load() {
+    let uses;
+    try {
+      uses = (await api("/api/ai/uses?days=1")).uses;
+    } catch {
+      return;
+    }
+    fill(
+      el,
+      h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "ai-uses-title" }, "AI activity today")),
+      uses.length
+        ? h(
+            "ul",
+            { class: "card change-list" },
+            uses.map((u) =>
+              h(
+                "li",
+                { class: "change-row" },
+                h("span", { class: "badge change-by change-by-ai" }, "AI"),
+                h(
+                  "div",
+                  { class: "change-text" },
+                  h("div", null, `${FEATURES[u.feature] ?? u.feature}${u.project ? ` · ${u.project}` : ""}`),
+                  h("div", { class: "dim" }, u.sent.length ? `Sent ${u.sent.map((s) => `${s.label} (${formatBytes(s.bytes)})`).join("; ")}` : "Nothing was sent"),
+                ),
+                h("span", { class: "dim change-time", title: new Date(u.at).toLocaleString() }, relativeTime(Date.parse(u.at))),
+                h("div", { class: "change-state dim" }, OUTCOMES[u.outcome] ?? u.outcome),
+              ),
+            ),
+          )
+        : h("div", { class: "card card-pad dim" }, "Nothing has been sent to an AI today. dx sends nothing by itself: every use here was a button you pressed."),
+    );
+  }
+  void load();
+  el.refresh = load;
+  return el;
+}
+
+// ------------------------------------------------------------------ recent changes
+
+/** The Undo button of a change: the button itself says it's working, then that it's done. */
+function undoButton(change, reload) {
+  return btn(
+    "Undo",
+    (ev) =>
+      morph(ev.currentTarget, () => api("/api/undo", { method: "POST", body: { id: change.id } }), { busy: "Undoing…", done: "✓ Undone" }).then(
+        (r) => r !== undefined && setTimeout(reload, 2400),
+      ),
+    { small: true, kind: "ghost" },
+  );
+}
+
+const CHANGE_BY = { dx: "dx", ai: "AI", you: "You" };
+
+function changeRow(c, reload) {
+  const state = c.undone
+    ? h("span", { class: "dim" }, `Undone ${relativeTime(Date.parse(c.undone))}`)
+    : c.undoable
+      ? undoButton(c, reload)
+      : c.permanent
+        ? h("span", { class: "dim" }, "Can't be undone")
+        : null;
+  return h(
+    "li",
+    { class: `change-row${c.undone ? " undone" : ""}` },
+    h("span", { class: `badge change-by change-by-${c.by}` }, CHANGE_BY[c.by] ?? c.by),
+    h("div", { class: "change-text" }, h("div", null, c.what), c.why ? h("div", { class: "dim" }, c.why) : null),
+    h("span", { class: "dim change-time", title: new Date(c.at).toLocaleString() }, relativeTime(Date.parse(c.at))),
+    h("div", { class: "change-state" }, state),
+  );
+}
+
+/** What dx does without asking, and what it asks about, in four steps. */
+function riskLegend() {
+  const tiers = [
+    ["Just does it", "Reading and checking. Nothing can be lost."],
+    ["Does it, with Undo", "A change dx can put back: .gitignore rules, settings, a saved .env, a commit. It's listed here."],
+    ["Asks first", "Could lose work or leave this computer when an AI tool does it. The tool asks you each time."],
+    ["Type the name", "Public or permanent: a release, a force push, removing dx. The button stays off until you type the name."],
+  ];
+  return h(
+    "details",
+    { class: "change-legend" },
+    h("summary", null, "How careful dx is"),
+    h("dl", null, ...tiers.flatMap(([term, text]) => [h("dt", null, term), h("dd", null, text)])),
+  );
+}
+
+function changesPage(root) {
+  const holder = h("div", { class: "card" }, loadingView("Reading what changed…"));
+  const aiUses = aiUsesSection();
+  append(root, pageHead("Recent changes", "What dx, your AI tools and you changed, with a way back where there is one."), holder, aiUses, riskLegend());
+  let sig = "";
+  async function load() {
+    try {
+      const { changes } = await api("/api/changes");
+      const next = JSON.stringify(changes);
+      if (next === sig && holder.isConnected) return;
+      sig = next;
+      holder.replaceChildren(changes.length ? h("ul", { class: "change-list" }, ...changes.map((c) => changeRow(c, load))) : stateView("Nothing yet", "When dx or an AI tool changes something, it's listed here."));
+    } catch (err) {
+      holder.replaceChildren(errorView(err, load));
+    }
+  }
+  void load();
+  const again = soon(() => (void load(), void aiUses.refresh()));
+  const off = onLive("change", () => again());
+  const stopPoll = livePoll(() => (void load(), aiUses.refresh()), 5000, { events: true });
+  return () => (stopPoll(), off());
+}
 
 function journalPage(root) {
   let days = Number(pref("journalDays", "7"));
@@ -5490,7 +7101,7 @@ function envPage(root) {
                 null,
                 h("span", { class: "badge badge-danger" }, s.kind),
                 " ",
-                btn(`${s.file}:${s.line}`, (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: s.file, line: s.line } })).message)), { small: true, kind: "ghost", iconName: "code" }),
+                btn(`${s.file}:${s.line}`, (ev) => busy(ev.currentTarget, "Opening…", async () => ((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: s.file, line: s.line } })).message)), { small: true, kind: "ghost", iconName: "code" }),
                 h("span", { class: "dim mono" }, ` ${s.preview}`),
               ),
             ),
@@ -5526,7 +7137,7 @@ function envPage(root) {
           { class: "toolbar env-actions" },
           btn("View", () => view(p, f, panel), { small: true, kind: "ghost", name: `View ${f.name}` }),
           btn("Edit", () => edit(p, f, panel), { small: true, kind: "ghost", name: `Edit ${f.name}` }),
-          btn("Open", (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: f.name } })).message)), { small: true, kind: "ghost", iconName: "code", name: `Open ${f.name} in your editor` }),
+          btn("Open", (ev) => busy(ev.currentTarget, "Opening…", async () => ((await api("/api/open-file", { method: "POST", body: { dir: p.dir, file: f.name } })).message)), { small: true, kind: "ghost", iconName: "code", name: `Open ${f.name} in your editor` }),
         ),
       ),
       panel,
@@ -5608,7 +7219,10 @@ function envPage(root) {
 
   load();
   // Current without a button: looked at again while no file's values are on screen.
-  return livePoll(() => (deep.size ? undefined : load()), 20_000);
+  // A saved .env or a rule added is a change dx lists: look again then.
+  const stopEvents = onLive("change", soon(() => (deep.size ? undefined : load())));
+  const stopPoll = livePoll(() => (deep.size ? undefined : load()), 20_000, { events: true });
+  return () => (stopEvents(), stopPoll());
 }
 
 // ------------------------------------------------------------------ Git
@@ -5808,7 +7422,7 @@ async function removeSnapshotFlow(s, button) {
 /** One snapshot: its commit, how it's doing, its address, and Run/Stop/Remove. */
 function snapshotRow(s, { onChange }) {
   const live = s.dev && (s.dev.status === "starting" || s.dev.status === "ready");
-  const url = s.dev?.status === "ready" ? (s.dev.localUrl ?? s.dev.url) : undefined;
+  const url = s.dev?.status === "ready" ? appUrl(s.dev) : undefined;
   const busyJob = s.job && s.job.phase !== "failed";
   const lastLine = busyJob ? s.job.lines?.at(-1) : undefined;
   return h(
@@ -6348,6 +7962,8 @@ function gitPage(root) {
       const yes = await confirmDialog({ title: "Replace your message?", text: "Claude Code's message takes the place of what's in the box now.", confirm: "Replace it", danger: false });
       if (!yes) return;
     }
+    const preview = await api("/api/git/suggest/preview", { method: "POST", body: { dir } }).catch(() => null);
+    if (preview && !(await confirmSend("Send this to Claude?", preview))) return;
     const r = await busy(button, "Writing…", () => api("/api/git/suggest", { method: "POST", body: { dir } }));
     if (!r) return;
     message.value = r.message;
@@ -6454,7 +8070,8 @@ function gitPage(root) {
   }
 
   async function forcePush() {
-    const yes = await confirmDialog({
+    const yes = await confirmByName({
+      name: status.branch,
       title: `Force push ${status.branch}?`,
       text: [
         `The remote's ${status.upstream} is replaced with your ${status.branch}: commits only the remote has are dropped there.`,
@@ -6724,7 +8341,7 @@ function gitPage(root) {
   }
 
   function openInEditor(file, line) {
-    return btn("Open in editor", (ev) => busy(ev.currentTarget, "Opening…", async () => toast((await api("/api/open-file", { method: "POST", body: { dir, file, line } })).message)), { small: true, kind: "ghost", iconName: "code" });
+    return btn("Open in editor", (ev) => busy(ev.currentTarget, "Opening…", async () => ((await api("/api/open-file", { method: "POST", body: { dir, file, line } })).message)), { small: true, kind: "ghost", iconName: "code" });
   }
 
   function renderFile(d) {
@@ -7105,7 +8722,9 @@ function gitPage(root) {
     if (!tag) return toast("Give the release a version tag, like v1.2.0.", "error");
     const exists = refs?.tags.some((t) => t.name === tag);
     const remote = refs?.remotes.includes("origin") ? "origin" : (refs?.remotes[0] ?? "the remote");
-    const yes = await confirmDialog({
+    // A draft only you can see is a plain confirm; a public release makes you type the tag.
+    const yes = await (d.draft ? confirmDialog : confirmByName)({
+      name: tag,
       title: `Release ${tag} on GitHub?`,
       text: [`${exists ? `Pushes the tag ${tag}` : `Tags the commit you're on (${refs?.head?.slice(0, 7) ?? ""}) as ${tag}, pushes the tag`} to ${remote}, and creates the release ${d.draft ? "as a draft only you can see" : "on the repository's GitHub page"}.`, "Change or delete it on GitHub afterwards; it can't be undone from here."],
       confirm: d.draft ? "Create draft" : "Publish release",
@@ -8093,11 +9712,20 @@ const ACTIVITY_VIEWS = [
   ["console", "Console"],
 ];
 
-/** An environment's badge: production stands out, so a click there isn't mistaken for one on staging. */
-function envBadge(env) {
-  if (!env || env === "local") return null;
-  return h("span", { class: `badge ${env === "production" ? "badge-warn" : "badge-accent"}`, title: `Recorded on a ${env} site in the dx browser` }, env);
+/**
+ * An environment's badge, by meaning: production is pink and solid, so a click there isn't mistaken for
+ * one on staging (orange), and local is lime. Local is left out where it's the default (`showLocal` keeps it).
+ */
+function envBadge(env, showLocal = false) {
+  if (!env || (env === "local" && !showLocal)) return null;
+  const cls = env === "production" ? "env-production" : env === "staging" ? "env-staging" : env === "local" ? "env-local" : "env-other";
+  return h("span", { class: `badge ${cls}`, title: env === "local" ? "Runs on this computer" : `Recorded on a ${env} site in the dx browser` }, env);
 }
+
+/** The hue a kind of project has everywhere it shows: what it is, not where you are. */
+const KIND_HUES = { "Next.js": "violet", Remix: "violet", "React Router": "violet", Vite: "cyan", Astro: "cyan", SvelteKit: "cyan", Nuxt: "cyan", "Node server": "blue", Angular: "blue", "Create React App": "blue", Gatsby: "blue", Python: "orange", Go: "lime", Rust: "lime" };
+const kindHue = (kind) => KIND_HUES[kind] ?? "";
+const kindChip = (kind) => (kind ? h("span", { class: `badge${kindHue(kind) ? ` tint-${kindHue(kind)}` : ""}`, title: "What kind of project it is" }, kind) : null);
 
 /** The address to open a recorded site at: http for this computer, https elsewhere; none for a wildcard. */
 function siteUrl(host) {
@@ -8446,7 +10074,7 @@ function activityPage(root) {
       h(
         "li",
         { class: "activity-site" },
-        envBadge(s.env) ?? h("span", { class: "badge" }, s.env ?? "local"),
+        envBadge(s.env, true),
         h("span", { class: "mono activity-site-host", title: s.label ? `${s.label} (${s.host})` : s.host }, s.label || s.host),
         seen ? counts(seen.events, seen.problems) : h("span", { class: "dim" }, "0"),
         siteUrl(s.host) ? btn("", (ev) => void browserOpen(ev.currentTarget, siteUrl(s.host)), { small: true, kind: "ghost", iconName: "external", name: `Open ${s.host} in the dx browser`, title: "Open in the dx browser" }) : null,
@@ -9478,23 +11106,17 @@ function activityPage(root) {
       h(
         "div",
         { class: "mocks-body" },
-        h(
-          "p",
-          { class: "dim" },
-          "Answers this project's API calls from what was recorded. Pages still come from the dev server.",
-        ),
-        h(
-          "div",
-          { class: "toolbar" },
-          n
-            ? btn(mocks.on ? "Turn off" : "Turn on", (ev) => void mockMode(ev.currentTarget, { on: !mocks.on }), { small: true, kind: mocks.on ? "" : "primary", iconName: mocks.on ? "stop" : "play" })
-            : null,
-          n
-            ? h("label", { class: "check" }, h("input", { type: "checkbox", checked: mocks.strict, onchange: (e) => void mockMode(null, { strict: e.target.checked }) }), "Strict: API calls with no mock get a 404")
-            : null,
-          btn("Make mocks from the last hour", (ev) => void makeMocks(ev.currentTarget, dir, { since: "1h" }), { small: true, iconName: "template" }),
-          n ? btn("Remove all", (ev) => void removeAllMocks(ev.currentTarget), { small: true, kind: "danger-ghost", iconName: "cleanup" }) : null,
-        ),
+        // The same control as the Run card and the API page: one press, and what it says.
+        mockControl(dir, { on: !!mocks.on, strict: !!mocks.strict, endpoints: n }, { onChange: () => void loadMocks() }),
+        n
+          ? h(
+              "div",
+              { class: "toolbar" },
+              h("label", { class: "check" }, h("input", { type: "checkbox", checked: mocks.strict, onchange: (e) => void mockMode(null, { strict: e.target.checked }) }), "Strict: API calls with no mock get a 404"),
+              btn("Make them again from the last hour", (ev) => void makeMocks(ev.currentTarget, dir, { since: "1h" }), { small: true, kind: "ghost", iconName: "template" }),
+              btn("Remove all", (ev) => void removeAllMocks(ev.currentTarget), { small: true, kind: "danger-ghost", iconName: "cleanup" }),
+            )
+          : null,
         n
           ? h("ul", { class: "mock-list" }, mocks.endpoints.map(mockRow))
           : h("p", { class: "dim" }, "No mocks yet."),
@@ -10224,6 +11846,64 @@ function yearStory(y, everyone) {
 
 // ------------------------------------------------------------------ Cleanup
 
+/** The caches package managers keep on this computer: sizes, and a Clean that runs the tool's own command. */
+function cachesSection() {
+  const body = h("div", { class: "card card-pad" }, loadingView("Measuring package caches…"));
+  const el = h("section", { class: "section", "aria-label": "Package caches" }, h("h2", { class: "section-title" }, "Package caches"), body);
+  async function load() {
+    try {
+      const { caches } = await api("/api/cleanup/caches");
+      if (!el.isConnected && el.dataset.drawn) return;
+      el.dataset.drawn = "1";
+      if (!caches.length) return fill(body, h("p", { class: "dim" }, "No package manager cache found."));
+      fill(
+        body,
+        h(
+          "div",
+          { class: "table-wrap" },
+          h(
+            "table",
+            { class: "table" },
+            h("thead", null, h("tr", null, h("th", { scope: "col" }, "Tool"), h("th", { scope: "col" }, "Where"), h("th", { scope: "col", class: "num" }, "Size"), h("th", { scope: "col" }, h("span", { class: "visually-hidden" }, "Clean")))),
+            h(
+              "tbody",
+              null,
+              caches.map((c) =>
+                h(
+                  "tr",
+                  null,
+                  h("td", null, h("strong", null, c.name), h("div", { class: "dim" }, c.about)),
+                  h("td", { class: "mono dim" }, tildify(c.path)),
+                  h("td", { class: "num" }, `${c.partial ? "at least " : ""}${formatBytes(c.bytes)}`),
+                  h(
+                    "td",
+                    null,
+                    btn(
+                      "Clean",
+                      async (ev) => {
+                        const button = ev.currentTarget;
+                        const yes = await confirmDialog({ title: `Clean the ${c.name} cache?`, text: [`dx runs ${c.command}. ${c.about}.`, "This can't be undone, and nothing it holds is your own work."], confirm: "Clean", danger: false });
+                        if (!yes) return;
+                        const r = await morph(button, () => api("/api/cleanup/caches/clean", { method: "POST", body: { id: c.id } }), { busy: "Cleaning…", done: (x) => `✓ ${formatBytes(x.freed)} freed`, holdMs: 2500 });
+                        if (r) setTimeout(load, 2600);
+                      },
+                      { small: true, title: c.command, disabled: c.bytes === 0 },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    } catch (err) {
+      fill(body, errorView(err, load));
+    }
+  }
+  void load();
+  return el;
+}
+
 function cleanupPage(root) {
   let days = Number(pref("cleanupDays", "30"));
   let scan = null;
@@ -10238,6 +11918,7 @@ function cleanupPage(root) {
     ),
     h("div", { class: "note" }, icon("info"), h("p", null, "Only folders a build recreates, and only git-ignored ones in a repo.")),
     holder,
+    cachesSection(),
   );
 
   async function load() {
@@ -10465,7 +12146,7 @@ function depsPage(root) {
               "div",
               { class: "toolbar" },
               r.outdated.some((p) => !p.major) || (r.vulnerabilities?.total ?? 0) > 0 ? btn("Update packages", (e) => fixProject(e.currentTarget, r), { small: true, kind: "primary", iconName: "refresh", title: "Update within package.json's ranges and apply non-breaking audit fixes" }) : null,
-              btn("Open in editor", (e) => busy(e.currentTarget, "Opening…", async () => toast((await api("/api/projects/open", { method: "POST", body: { dir: r.dir, action: "editor" } })).message)), { small: true, iconName: "code" }),
+              btn("Open in editor", (e) => busy(e.currentTarget, "Opening…", async () => ((await api("/api/projects/open", { method: "POST", body: { dir: r.dir, action: "editor" } })).message)), { small: true, iconName: "code" }),
             ),
             upgradePanel(r.dir),
           ),
@@ -10613,7 +12294,7 @@ function depsPage(root) {
           ? btn("Remove the copy", async (ev) => {
               const button = ev.currentTarget;
               const yes = await confirmDialog({ title: "Remove the copy?", text: [`This deletes the copy dx made to try ${t.name} ${t.to} (${r.copy}, under ~/.dx/snapshots), and stops its dev server if it runs.`, "Your project, its folder and its node_modules aren't touched."], confirm: "Remove the copy" });
-              if (yes) await busy(button, "Removing…", async () => toast((await api("/api/snapshots/remove", { method: "POST", body: { id: r.copy } })).message));
+              if (yes) await busy(button, "Removing…", async () => ((await api("/api/snapshots/remove", { method: "POST", body: { id: r.copy } })).message));
             }, { small: true, kind: "danger-ghost" })
           : null,
       ),
@@ -11687,36 +13368,48 @@ function healthPage(root) {
       try {
         await api("/api/config", { method: "POST", body });
       } catch (err) {
-        return toast(err.message, "error");
+        say("bad", err.message);
+        shake(settings);
+        return announce(err.message);
       }
       saved = body;
-      toast("Saved", "ok", {
-        action: {
-          label: "Undo",
-          run: async () => {
-            try {
-              await api("/api/config", { method: "POST", body: before });
-              saved = before;
-              load();
-            } catch (err) {
-              toast(err.message, "error");
-            }
-          },
+      // The page says it itself, where the change was made: "Saved", and the way back for a few seconds.
+      say("ok", "Saved", {
+        label: "Undo",
+        run: async () => {
+          try {
+            await api("/api/config", { method: "POST", body: before });
+            saved = before;
+            load();
+          } catch (err) {
+            say("bad", err.message);
+            shake(settings);
+          }
         },
       });
+      announce("Saved");
+    }
+    const savedNote = h("div", { class: "saved-note", role: "status" });
+    let noteTimer = 0;
+    function say(tone, text, undo) {
+      clearTimeout(noteTimer);
+      savedNote.className = `saved-note saved-${tone}`;
+      fill(savedNote, icon(tone === "ok" ? "check" : "x"), text, undo ? btn(undo.label, undo.run, { small: true, kind: "ghost" }) : null);
+      if (tone === "ok") noteTimer = setTimeout(() => savedNote.replaceChildren(), 7000);
     }
 
     const settings = h(
       "form",
       {
         class: "card card-pad section",
-        // No Save button: a change is saved a moment after it's made, and the toast can take it back.
+        // No Save button: a change is saved a moment after it's made, and the line at the top can take it back.
         onsubmit: (e) => e.preventDefault(),
         onchange: () => {
           clearTimeout(saveTimer);
           saveTimer = setTimeout(autosave, 400);
         },
       },
+      savedNote,
       h(
         "div",
         { class: "field" },
@@ -11800,6 +13493,7 @@ function healthPage(root) {
       h("section", { class: "section" }, checksBox),
       folded("ai", "AI tools", "Claude, Cursor and others that can use dx", aiTools),
       folded("prefs", "Preferences", "Folders, editor, history, alerts, theme", settings),
+      folded("autonomy", "How much dx does on its own", "Suggest, ask or do, for each thing", autonomyCard()),
       folded("state", "Your dx on another computer", "Export or import everything you've set up", stateCard()),
       folded("runs", "Recent runs", "What dx did lately", runs),
       folded("remove", "Remove dx", "", removeCard()),
@@ -11825,7 +13519,8 @@ function healthPage(root) {
         `This dashboard${plan.servers.length ? `, and the dev servers it runs (${plan.servers.join(", ")})` : ""}`,
       ].filter(Boolean);
       const everything = h("input", { type: "checkbox", id: "remove-data" });
-      const yes = await confirmDialog({
+      const yes = await confirmByName({
+        name: "dx",
         title: "Remove dx from this computer?",
         text: [
           h("ul", { class: "state-lines" }, lines.map((l) => h("li", null, l))),
@@ -11946,6 +13641,7 @@ function healthPage(root) {
         plan.settings.length ? h("li", null, h("strong", null, "Settings: "), plan.settings.map((s) => `${s.name}: ${s.from} → ${s.to}`).join("; ")) : null,
         plan.roots.length ? h("li", null, h("strong", null, "Projects folders added: "), plan.roots.map(tildify).join(", ")) : null,
         plan.sites ? h("li", null, h("strong", null, "Recorded sites: "), String(plan.sites)) : null,
+        plan.views ? h("li", null, h("strong", null, "Saved views: "), String(plan.views)) : null,
         plan.journal.adds ? h("li", null, h("strong", null, "Journal: "), `${plural(plan.journal.adds, "entry", "entries")} you don't have here`) : null,
         plan.summaries.adds || plan.summaries.changes ? h("li", null, h("strong", null, "Saved summaries: "), [plan.summaries.adds && `${plan.summaries.adds} new`, plan.summaries.changes && `${plan.summaries.changes} different`].filter(Boolean).join(", ")) : null,
         plan.templates.some((t) => t.status !== "same") ? h("li", null, h("strong", null, "Templates: "), plan.templates.filter((t) => t.status !== "same").map((t) => `${t.name} (${t.status === "new" ? "new" : "changes"})`).join(", ")) : null,
@@ -12067,14 +13763,17 @@ function healthPage(root) {
   }
   load();
   // The checks look again on their own; only their block is redrawn, so nothing typed below is lost.
-  return livePoll(async () => {
+  const lookAgain = async () => {
     if (!checksBox?.isConnected) return;
     const data = await api("/api/health");
     const sig = JSON.stringify(data.checks);
     if (sig === checksSig) return;
     checksSig = sig;
     checksBox.replaceChildren(buildChecks(data));
-  }, 60_000);
+  };
+  const stopEvents = onLive("change", soon(lookAgain));
+  const stopPoll = livePoll(lookAgain, 60_000, { events: true });
+  return () => (stopEvents(), stopPoll());
 }
 
 // ------------------------------------------------------------------ the AI lane
@@ -12371,6 +14070,7 @@ function paletteItems() {
 
 const SHORTCUTS = [
   ["Ctrl K  or  /", "Jump to a page or project, or run one"],
+  ["Ctrl Shift F", "Search files and code"],
   ["↑  ↓  Enter", "Move in the list, and choose"],
   ["Esc", "Close the list, a menu or a dialog"],
   ["Ctrl Enter", "Commit, on the Code page"],
@@ -12459,6 +14159,10 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") {
     e.preventDefault();
     openPalette();
+  } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    if (location.hash.startsWith("#/search")) document.getElementById("search-q")?.focus();
+    else location.hash = "#/search";
   } else if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "/" || e.key === "?")) {
     e.preventDefault();
     openPalette(e.key === "?");
@@ -12468,10 +14172,16 @@ document.getElementById("palette-open")?.addEventListener("click", () => openPal
 if (/Mac|iPhone|iPad/.test(navigator.platform)) for (const k of document.querySelectorAll("#palette-open kbd")) k.textContent = "⌘K";
 
 window.addEventListener("hashchange", route);
-pollWhileVisible(updateRunningCount, 5000);
+pollWhileVisible(() => (liveStream.state === "live" ? undefined : updateRunningCount()), 5000);
+pollWhileVisible(updateRunningCount, 30_000);
 // New folders and clones show up in the switcher without a reload.
 pollWhileVisible(loadProjectList, 60_000);
 floppyPoll = pollWhileVisible(updateFloppyButton, 5000);
 void updateFloppyButton();
 void loadProjectList().finally(route);
 void refreshAiLane();
+// The live stream: what dx says changed, so the sidebar and the pages below keep current without waiting for a poll.
+liveStream.state = "";
+setLiveState("connecting");
+void runLive();
+onLive(["dev"], () => void updateRunningCount());

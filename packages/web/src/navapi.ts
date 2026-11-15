@@ -1,4 +1,4 @@
-import { agentsReadable, auditEnvAsync, findKnownProject, loadConfig, loadTools, readAgents, readDataSchema, scanProjectsCached } from "@dx/core";
+import { agentsReadable, auditEnvAsync, detectStack, findKnownProject, loadConfig, loadTools, readAgents, readDataSchema, scanProjectsCached } from "@dx/core";
 import type { ApiRequest } from "./api.js";
 
 /**
@@ -36,6 +36,12 @@ export const navRoutes: Record<string, (req: ApiRequest) => unknown> = {
     } catch {
       // a tools file that can't be read: none to show
     }
-    return { agents, tools, data: !!readDataSchema(project.dir), env: kept.problems };
+    let stack = 0;
+    try {
+      stack = detectStack(project)?.services.length ?? 0;
+    } catch {
+      // a stack that cant be read has no map
+    }
+    return { agents, tools, data: !!readDataSchema(project.dir), env: kept.problems, stack: stack >= 2 ? stack : 0 };
   },
 };

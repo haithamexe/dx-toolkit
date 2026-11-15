@@ -30,7 +30,26 @@ test("what's risky: deleting, pushing, secrets, stopping processes, the database
   for (const id of ["git.push", "git.discard", "git.release-create", "env.read", "env.write", "machine.stop", "machine.cleanup-delete", "data.load", "tools.delete", "projects.clone"]) assert.equal(dxAction(id)?.risky, true, id);
   // The maintainer's choice: these ask too, though they stay on this computer and can be undone.
   for (const id of ["git.commit", "git.merge", "git.rebase", "git.revert", "git.cherry-pick", "git.switch", "git.continue", "api.mock-mode", "chaos.set", "run.stop", "run.restart", "tools.save", "tools.import", "api.rule-save", "api.rule-remove", "api.mock-update", "api.mocks-make", "api.mocks-from-spec"]) assert.equal(dxAction(id)?.risky, true, id);
+  // An agent must not be able to widen its own freedom: changing what dx does by itself, or saying yes for the person, asks.
+  for (const id of ["settings.autonomy-set", "settings.proposal-resolve"]) assert.equal(dxAction(id)?.risky, true, id);
+  for (const id of ["settings.autonomy", "settings.proposals", "lookback.ai-uses", "git.suggest-preview", "git.fix-preview"]) assert.ok(!dxAction(id)?.risky, id);
   for (const id of ["git.status", "git.stage", "run.start", "run.check", "tools.run", "api.mocks", "env.project"]) assert.ok(!dxAction(id)?.risky, id);
+});
+
+test("every action has a risk tier, and asks / name are exactly the risky ones", () => {
+  const seen = new Set<string>();
+  for (const a of DX_ACTIONS) {
+    assert.ok(a.risk, `${a.id} has no risk tier`);
+    seen.add(a.risk);
+    assert.equal(a.risk === "asks" || a.risk === "name", a.risky === true, `${a.id}: risk ${a.risk} and risky ${a.risky} disagree`);
+    // A read is free, unless it hands over secrets (env.read), which asks.
+    if (a.method === "GET" && !a.risky) assert.equal(a.risk, "none", `${a.id}: a read changes nothing`);
+  }
+  assert.deepEqual([...seen].sort(), ["asks", "name", "none", "reversible"]);
+  assert.equal(dxAction("git.release-create")?.risk, "name", "a public release is the one that makes you type its name");
+  assert.equal(dxAction("git.push")?.risk, "asks");
+  assert.equal(dxAction("git.status")?.risk, "none");
+  assert.equal(dxAction("git.stage")?.risk, "reversible");
 });
 
 test("inputs are checked: required ones, unknown ones; GETs in the address, POSTs in the body with fixed values", () => {

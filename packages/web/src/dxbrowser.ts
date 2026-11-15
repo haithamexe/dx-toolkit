@@ -1,6 +1,7 @@
 import { findBrowser, launchDxBrowser, listSites, loadConfig, siteTarget, type DxBrowser, type SiteConfig, type SiteTarget } from "@dx/core";
 import { activitySettings, recordActivity } from "./activity.js";
 import { listDevServers, serverForPort } from "./dev.js";
+import { decideSite } from "./siteintercept.js";
 
 /**
  * The dashboard's dx browser: one window at a time, owned by the dashboard like its dev servers
@@ -128,6 +129,8 @@ export async function openDxBrowser(url?: string, options: { profileDir?: string
     // Without a window, for tests and checks on machines nobody is looking at.
     headless: options.headless ?? process.env.DX_BROWSER_HEADLESS === "1",
     targetFor: browserTargetFor,
+    // Mocks, rules and Chaos for the calls of a page on one of a project's sites.
+    intercept: (req) => decideSite(req, sites()),
     ignore: (u) => {
       try {
         return isDashboard(new URL(u));

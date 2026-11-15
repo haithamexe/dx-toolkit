@@ -11,7 +11,7 @@ const out = path.join(root, "packages", "web", "public");
 
 /** Runs of one colour per row become one rect each, so the file stays small and every pixel stays square. */
 function svg(grid, title) {
-  const { width, height, data } = gridToRgba(grid, "navy");
+  const { width, height, data } = gridToRgba(grid, "violet");
   const rects = [];
   for (let y = 0; y < height; y++) {
     let x = 0;

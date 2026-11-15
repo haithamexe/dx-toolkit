@@ -8,7 +8,7 @@ Adding a tool, tests, and working on dx with Claude Code. Back to the [README](.
 2. **Terminal**: add `packages/cli/src/commands/<tool>.ts` (copy `log.ts` as a template) and add it to the list in `packages/cli/src/index.ts`.
 3. **Raycast** (optional): add `packages/raycast/src/<tool>.tsx` and an entry under `commands` in `packages/raycast/package.json`.
 4. **AI** (optional): add one `server.registerTool(...)` block in `packages/mcp/src/index.ts`.
-5. **Dashboard** (optional): add a route in `packages/web/src/api.ts` (it must check the project with `scanProjects()` like the others) and a page in `packages/web/public/app.js`.
+5. **Dashboard** (optional): add a route in `packages/web/src/api.ts` (it must check the project with `scanProjects()` like the others) and a page in `packages/web/public/app.js`. The page follows [design.md](design.md): reuse its helpers, tier the action's risk, record changes with Undo, use tokens for colour, and go through its checklist.
 6. **Build**: run `npm run build`, then `npm test`. Tests go in `packages/<pkg>/src/__tests__`.
 
 Call `recordRun(tool, ok, detail)` from anything that changes something, so it shows up in `dx runs`.

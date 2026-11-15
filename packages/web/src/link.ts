@@ -99,7 +99,7 @@ export class DashboardClient {
   async call<T = unknown>(method: "GET" | "POST", path: string, body?: unknown, timeoutMs = 130_000): Promise<T> {
     const res = await fetch(new URL(path, this.info.url), {
       method,
-      headers: { "X-DX-Token": this.info.token, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      headers: { "X-DX-Token": this.info.token, ...(process.env.DX_ACTOR === "ai" ? { "X-DX-Actor": "ai" } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });

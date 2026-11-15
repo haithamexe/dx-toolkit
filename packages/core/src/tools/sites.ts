@@ -17,6 +17,15 @@ export interface SiteConfig {
   env?: string;
   /** A name to show instead of the host. */
   label?: string;
+  /** The address a person opens: origin and path, no query, no fragment, no user name. */
+  url?: string;
+  /** Whether the project's mocks, rules and Chaos mode apply to this site's API calls in the dx browser. Default: every environment but production. */
+  apply?: boolean;
+}
+
+/** Whether the project's mocks, rules and Chaos apply to a site's calls: what the person chose, else off for production only. */
+export function siteApplies(s: Pick<SiteConfig, "apply" | "env">): boolean {
+  return s.apply ?? s.env !== "production";
 }
 
 export interface SiteTarget {
@@ -65,6 +74,29 @@ export function normalizeSiteHost(raw: string): string {
   return `${wildcard ? "*." : ""}${name}${port ? `:${port}` : ""}`;
 }
 
+/**
+ * A site's address as dx keeps it: http or https, a host that isn't on this computer, no user name or
+ * password, no query and no fragment (an address can carry a token, so none is kept), a path of at most
+ * 200 characters. Returns it with its host.
+ */
+export function normalizeSiteUrl(raw: string): { url: string; host: string } {
+  const text = String(raw ?? "").trim();
+  if (!text) throw new Error("Which site? Give its address, e.g. https://staging.shop-website.dev.");
+  let u: URL;
+  try {
+    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+  } catch {
+    throw new Error(`${text} isn't an address dx can read.`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("Only http and https sites can be added.");
+  if (u.username || u.password) throw new Error("Leave the user name and password out of the address: dx never keeps them.");
+  if (LOOPBACK.test(u.hostname)) throw new Error("That address is on this computer: run the project from dx instead, and dx answers there.");
+  const host = normalizeSiteHost(u.host);
+  const pathname = u.pathname.replace(/\/+$/, "");
+  if (pathname.length > 200) throw new Error("That path is too long: give the site's front page or a short path.");
+  return { url: `${u.protocol}//${u.host}${pathname}`, host };
+}
+
 /** The environment a host probably is, when the site doesn't say. */
 export function guessEnv(host: string): string {
   const name = host.replace(/^\*\./, "").split(":")[0];
@@ -97,6 +129,12 @@ export function hostMatches(siteHost: string, host: string): boolean {
 function splitHost(h: string): [string, string | undefined] {
   const m = /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(h);
   return m ? [m[1], m[2]] : [h, undefined];
+}
+
+/** The sites added to one project (by its folder), with their addresses. */
+export function projectSites(dir: string, config: DxConfig = loadConfig()): SiteConfig[] {
+  const key = dir.toLowerCase();
+  return listSites(config).filter((x) => x.project?.toLowerCase() === key);
 }
 
 export function listSites(config: DxConfig = loadConfig()): SiteConfig[] {
@@ -137,7 +175,9 @@ export function siteTarget(url: string, sites: SiteConfig[]): SiteTarget | undef
 }
 
 export interface SiteInput {
-  host: string;
+  host?: string;
+  /** A whole address; its host is the site's host. */
+  url?: string;
   project?: string;
   env?: string;
   label?: string;
@@ -145,15 +185,29 @@ export interface SiteInput {
 
 /** Adds a site, or changes it when its host is already there. Returns it as kept. */
 export function addSite(input: SiteInput, config: DxConfig = loadConfig()): SiteConfig {
-  const host = normalizeSiteHost(input.host);
+  const fromUrl = input.url ? normalizeSiteUrl(input.url) : undefined;
+  const host = fromUrl ? fromUrl.host : normalizeSiteHost(input.host ?? "");
   const env = normalizeEnv(input.env, host);
   const label = typeof input.label === "string" ? input.label.trim().slice(0, 60) || undefined : undefined;
-  const site: SiteConfig = { host, ...(input.project ? { project: input.project } : {}), env, ...(label ? { label } : {}) };
+  const previous = listSites(config).find((s) => s.host === host);
+  const site: SiteConfig = { host, ...(fromUrl ? { url: fromUrl.url } : previous?.url ? { url: previous.url } : {}), ...(input.project ? { project: input.project } : {}), env, ...(label ? { label } : {}), ...(previous?.apply !== undefined ? { apply: previous.apply } : {}) };
   const sites = listSites(config).filter((s) => s.host !== host);
   sites.push(site);
   config.sites = sites;
   saveConfig(config);
   return site;
+}
+
+/** Changes whether a site's calls get the project's mocks, rules and Chaos. */
+export function setSiteApplies(host: string, apply: boolean, config: DxConfig = loadConfig()): SiteConfig | undefined {
+  const h = normalizeSiteHost(host);
+  const sites = listSites(config);
+  const found = sites.find((s) => s.host === h);
+  if (!found) return undefined;
+  found.apply = apply;
+  config.sites = sites;
+  saveConfig(config);
+  return found;
 }
 
 /** Removes a site; its recorded history stays until it's cleared or gets old. */

@@ -19,6 +19,7 @@ import { startupFolder, writeShortcut, type ShortcutLaunch } from "./shortcuts.j
 // ------------------------------------------------------------ pixel art
 
 export const FLOPPY_COLOURWAYS = {
+  violet: { body: "#733bde", hi: "#a890fe", lo: "#4a2394", z: "#d6cbff" },
   navy: { body: "#000080", hi: "#3a3ac8", lo: "#00004e", z: "#8aa0ff" },
   charcoal: { body: "#383838", hi: "#6a6a6a", lo: "#1a1a1a", z: "#bdbdbd" },
   maroon: { body: "#800000", hi: "#c43a3a", lo: "#4e0000", z: "#ff9a9a" },
@@ -27,7 +28,7 @@ export type FloppyColourway = keyof typeof FLOPPY_COLOURWAYS;
 
 const FIXED: Record<string, string> = {
   K: "#0b0b0b", G: "#c3c3c3", g: "#e6e6e6", M: "#7f7f7f", D: "#1f1f1f", W: "#ffffff", L: "#cfcfcf", U: "#9fb3ff",
-  A: "#00b000", R: "#e00000", r: "#8a0000", V: "#9b4dff", Y: "#ffd400", P: "#ff8fb0", O: "#ffffff", x: "rgba(0,0,0,0.28)",
+  A: "#00b000", R: "#e00000", r: "#8a0000", V: "#9b4dff", Y: "#e2e941", P: "#ff8fb0", O: "#ffffff", x: "rgba(0,0,0,0.28)",
 };
 
 /** A grid of palette keys, "." for nothing. */
@@ -211,7 +212,7 @@ export function floppyIcon16(kind: "idle" | "error" = "idle", halo = true): Pixe
 }
 
 /** A grid as RGBA bytes, `scale` device pixels to a sprite pixel. */
-export function gridToRgba(g: PixelGrid, colourway: FloppyColourway = "navy", scale = 1): { width: number; height: number; data: Uint8Array } {
+export function gridToRgba(g: PixelGrid, colourway: FloppyColourway = "violet", scale = 1): { width: number; height: number; data: Uint8Array } {
   const cw = FLOPPY_COLOURWAYS[colourway];
   const colour = (k: string) => (k === "B" ? cw.body : k === "H" ? cw.hi : k === "S" ? cw.lo : k === "Z" ? cw.z : FIXED[k]);
   const cache = new Map<string, [number, number, number, number]>();
@@ -242,10 +243,10 @@ export interface FloppyManifest {
 const FLOPPY_ICON_SCALES = [1, 2, 3, 4, 8, 16];
 
 // Bump when the art changes, so frames written by an older dx are drawn again.
-const SPRITE_VERSION = 3;
+const SPRITE_VERSION = 4;
 
 /** Writes every frame as a PNG (with the white edge), the icon, and manifest.json; skips it when already there. */
-export function writeFloppySprites(dir: string, colourway: FloppyColourway = "navy"): FloppyManifest {
+export function writeFloppySprites(dir: string, colourway: FloppyColourway = "violet"): FloppyManifest {
   const manifestFile = path.join(dir, "manifest.json");
   try {
     const existing = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as FloppyManifest;

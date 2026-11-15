@@ -189,7 +189,7 @@ function queryOf(url: string): string {
 export function mocksFromActivity(events: ActivityEvent[]): MockEndpoint[] {
   const calls = events.filter(
     // Not mocked answers, nor ones a custom tool changed: neither is what the server said.
-    (e) => e.type === "request" && (e.from === "proxy" || e.from === "check") && !e.mocked && !e.rules?.some((r) => r.startsWith("tool: ")) && !e.error && e.status !== undefined && !!e.url && e.url.startsWith("/") && !e.url.startsWith("/__dx/"),
+    (e) => e.type === "request" && (e.from === "proxy" || e.from === "check" || e.from === "dx-browser") && !e.mocked && !e.rules?.some((r) => r.startsWith("tool: ")) && !e.error && e.status !== undefined && !!e.url && e.url.startsWith("/") && !e.url.startsWith("/__dx/"),
   );
   const groups = new Map<string, ActivityEvent[]>();
   for (const e of calls) {

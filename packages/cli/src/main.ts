@@ -20,6 +20,7 @@ import { testCommand } from "./commands/test.js";
 import { trafficCommand } from "./commands/traffic.js";
 import { activityCommand } from "./commands/activity.js";
 import { browserCommand, sitesCommand } from "./commands/browser.js";
+import { searchCommand } from "./commands/search.js";
 import { terminalCommand } from "./commands/terminal.js";
 import { gitCommand } from "./commands/git.js";
 import { machineCommand } from "./commands/machine.js";
@@ -71,6 +72,7 @@ const commands: Command[] = [
   mockCommand,
   toolsCommand,
   browserCommand,
+  searchCommand,
   sitesCommand,
   terminalCommand,
   gitCommand,

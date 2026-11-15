@@ -201,7 +201,7 @@ export function guessDevUrl(script: string): string | undefined {
 
 function frameworkDefaultPort(script: string): number | undefined {
   const s = script.toLowerCase();
-  if (/\bnext\b/.test(s) || /\bnuxt\b/.test(s) || /\bremix dev\b/.test(s)) return 3000;
+  if (/\bnext\b/.test(s) || /\bnuxt\b/.test(s) || /\bremix dev\b/.test(s) || /\breact-scripts start\b/.test(s)) return 3000;
   if (/\bvite\b/.test(s) || /react-router dev/.test(s) || /\bsvelte-kit dev\b/.test(s)) return 5173;
   if (/\bastro\b/.test(s)) return 4321;
   if (/\bng serve\b/.test(s)) return 4200;

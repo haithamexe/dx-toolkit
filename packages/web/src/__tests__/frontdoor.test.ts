@@ -153,6 +153,7 @@ test("a server that ignores the port it's given runs as before, and dx steps asi
   assert.equal(s.status, "ready", JSON.stringify(s));
   assert.equal(s.url, `http://localhost:${otherPort}`);
   assert.equal(s.recorded, undefined);
+  assert.equal(s.notRecorded, "it didn't take the port dx gave it", "the card says why nothing is recorded there");
   const logs = await api(`/api/dev/logs?dir=${encodeURIComponent(stubborn)}&after=0`);
   assert.ok(logs.lines.some((l: { text: string }) => /didn't take the port dx gave it/.test(l.text)), JSON.stringify(logs.lines.map((l: { text: string }) => l.text)));
 });
@@ -168,6 +169,7 @@ test("off with localhostRecording: false", async () => {
   await api("/api/dev/start", { dir: app });
   const s = await waitReady(app);
   assert.equal(s.recorded, undefined);
+  assert.equal(s.notRecorded, undefined, "switched off on purpose: nothing to explain");
   assert.equal(s.command, "npm run dev");
   await api("/api/dev/stop", { dir: app });
   await api("/api/config", { localhostRecording: true });

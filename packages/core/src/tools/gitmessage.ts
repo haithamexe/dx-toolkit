@@ -1,3 +1,4 @@
+import type { SentPart } from "./ailog.js";
 import { claudeCli, claudeFailure, runClaude } from "./claude.js";
 import { GitError, gitFailure, gitRoot, gitRun } from "./git.js";
 
@@ -22,6 +23,11 @@ Rules:
 
 /** Builds what claude reads on stdin: the instructions, the recent subjects, and the staged diff (cut to 60 KB, with the full stat). */
 export async function commitMessagePrompt(root: string): Promise<string> {
+  return (await commitMessageParts(root)).prompt;
+}
+
+/** The same prompt with what it is made of (a label and a size each), so the page can say what will be sent before it is. */
+export async function commitMessageParts(root: string): Promise<{ prompt: string; sent: SentPart[] }> {
   const [stat, diff, log] = await Promise.all([
     gitRun(root, ["diff", "--cached", "--stat=200", "--no-color"]),
     gitRun(root, ["diff", "--cached", "--no-color", "--no-ext-diff", "-M"], { max: DIFF_MAX }),
@@ -30,7 +36,13 @@ export async function commitMessagePrompt(root: string): Promise<string> {
   if (stat.code !== 0) throw gitFailure(stat, "Couldn't read the staged changes");
   if (!stat.stdout.trim()) throw new GitError("Nothing is staged yet: stage the changes the message should describe.");
   const subjects = log.code === 0 ? log.stdout.trim() : "";
-  return [
+  const changed = diff.stdout.split("\n").filter((l) => /^[+-](?![+-])/.test(l)).length;
+  const sent: SentPart[] = [
+    { label: `The staged diff (${changed} lines changed${diff.truncated ? `, cut at ${DIFF_MAX / 1024} KB` : ""})`, bytes: Buffer.byteLength(diff.stdout) },
+    { label: "The list of changed files", bytes: Buffer.byteLength(stat.stdout.trim()) },
+    { label: "Your last 10 commit subjects", bytes: Buffer.byteLength(subjects) },
+  ];
+  const prompt = [
     PROMPT,
     "",
     "Recent commit subjects, newest first:",
@@ -42,6 +54,7 @@ export async function commitMessagePrompt(root: string): Promise<string> {
     diff.truncated ? `The staged diff (cut at ${DIFF_MAX / 1024} KB; the file list above is complete):` : "The staged diff:",
     diff.stdout,
   ].join("\n");
+  return { prompt, sent };
 }
 
 /** What claude printed, as a message: fences, quotes and any attribution lines taken off. */
@@ -58,15 +71,15 @@ export function cleanCommitMessage(text: string): string {
     .trim();
 }
 
-export async function gitSuggestMessage(dir: string, options: { claude?: string } = {}): Promise<{ message: string }> {
+export async function gitSuggestMessage(dir: string, options: { claude?: string } = {}): Promise<{ message: string; sent: SentPart[] }> {
   const root = await gitRoot(dir);
   const cli = options.claude ?? (await claudeCli());
   if (!cli) throw new GitError("Claude Code isn't installed here (no claude command), so it can't write the message.");
-  const prompt = await commitMessagePrompt(root);
+  const { prompt, sent } = await commitMessageParts(root);
   const r = await runClaude(cli, prompt, { timeoutMs: TIMEOUT_MS });
   if (r.timedOut) throw new GitError("Claude Code took longer than a minute, so it was stopped. Try again, or write the message yourself.", 504);
   if (r.code !== 0) throw new GitError(claudeFailure(r, "Claude Code couldn't write it"), 502);
   const message = cleanCommitMessage(r.stdout);
   if (!message) throw new GitError("Claude Code answered with nothing. Try again, or write the message yourself.", 502);
-  return { message };
+  return { message, sent };
 }

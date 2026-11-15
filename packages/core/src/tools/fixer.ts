@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SentPart } from "./ailog.js";
 import { claudeCli, claudeFailure, runClaude } from "./claude.js";
 import { GitError, gitFailure, gitRoot, gitRun } from "./git.js";
 import { backupFiles, recordUndo } from "./gitops.js";
@@ -47,6 +48,8 @@ export interface FixProposal {
   explanation: string;
   /** Claude's whole answer, as it said it. */
   answer: string;
+  /** What was sent: a label and a size for each part. */
+  sent?: SentPart[];
 }
 
 export interface FixRejected {
@@ -55,6 +58,7 @@ export interface FixRejected {
   reason: string;
   explanation: string;
   answer: string;
+  sent?: SentPart[];
 }
 
 const TIMEOUT_MS = 90_000;
@@ -198,6 +202,12 @@ const langOf = (rel: string) => path.extname(rel).slice(1).toLowerCase();
 
 /** What Claude reads on stdin: the instructions, the error, the code around it, the stack's files, and the uncommitted changes. */
 export async function fixPrompt(dir: string, error: FixTarget): Promise<string> {
+  return (await fixPromptParts(dir, error)).prompt;
+}
+
+/** The same prompt, with what it is made of: a label and a size for each part, so the page can say what will be sent before it is. */
+export async function fixPromptParts(dir: string, error: FixTarget): Promise<{ prompt: string; sent: SentPart[] }> {
+  const sent: SentPart[] = [];
   const stack = (error.stack ?? "").slice(0, STACK_MAX);
   const frames = stackLocations(stack);
   // The file the error names, or else the first of the project's own files in its stack.
@@ -213,9 +223,13 @@ export async function fixPrompt(dir: string, error: FixTarget): Promise<string> 
   if (error.file) parts.push(`Reported at: ${main ? main.rel : error.file}${error.line ? `:${error.line}` : ""}${error.column ? `:${error.column}` : ""}`);
   if (error.page) parts.push(`On the page: ${error.page}`);
   if (stack.trim()) parts.push("", "Its stack and output:", fenced(stack));
+  const take = (label: string, from: number) => sent.push({ label, bytes: Buffer.byteLength(parts.slice(from).join("\n")) });
+  take("The error and its stack", 1);
+  const beforeMain = parts.length;
   if (main) {
     const e = excerpt(main.text, mainLine, AROUND, EXCERPT_MAX);
     parts.push("", e.from === 1 && e.to === e.total ? `The file ${main.rel} (all ${e.total} lines):` : `The file ${main.rel}, lines ${e.from} to ${e.to} of ${e.total}:`, fenced(e.body, langOf(main.rel)));
+    take(e.from === 1 && e.to === e.total ? `${main.rel} (all ${e.total} lines)` : `${main.rel}, lines ${e.from} to ${e.to}`, beforeMain);
   } else parts.push("", "(The file the error names isn't one of the project's own files, or couldn't be read.)");
 
   const seen = new Set(main ? [main.rel] : []);
@@ -227,6 +241,7 @@ export async function fixPrompt(dir: string, error: FixTarget): Promise<string> 
     seen.add(file.rel);
     const e = excerpt(file.text, f.line, FRAME_AROUND, FRAME_EXCERPT_MAX);
     others.push(e.from === 1 && e.to === e.total ? `${file.rel} (all ${e.total} lines):` : `${file.rel}, lines ${e.from} to ${e.to} of ${e.total}:`, fenced(e.body, langOf(file.rel)), "");
+    sent.push({ label: e.from === 1 && e.to === e.total ? `${file.rel} (all ${e.total} lines)` : `${file.rel}, lines ${e.from} to ${e.to}`, bytes: Buffer.byteLength(e.body) });
   }
   if (others.length) parts.push("", "Other project files in the stack:", "", ...others);
 
@@ -238,8 +253,10 @@ export async function fixPrompt(dir: string, error: FixTarget): Promise<string> 
   );
   if (diff.code === 0 && diff.stdout.trim()) {
     parts.push("", diff.truncated ? `Uncommitted changes in the project (git diff HEAD, cut at ${DIFF_MAX / 1024} KB):` : "Uncommitted changes in the project (git diff HEAD):", fenced(diff.stdout, "diff"));
+    const changed = diff.stdout.split("\n").filter((l) => /^[+-](?![+-])/.test(l)).length;
+    sent.push({ label: `Your uncommitted changes (${changed} lines changed)`, bytes: Buffer.byteLength(diff.stdout) });
   } else if (diff.code === 0) parts.push("", "There are no uncommitted changes.");
-  return parts.join("\n");
+  return { prompt: parts.join("\n"), sent };
 }
 
 // ------------------------------------------------------------------ Claude's answer
@@ -461,18 +478,18 @@ export async function proposeFix(dir: string, error: FixTarget, options: { claud
   }
   const cli = options.claude ?? (await claudeCli());
   if (!cli) throw new GitError("Claude Code isn't installed here (no claude command), so it can't propose a fix.");
-  const prompt = await fixPrompt(dir, error);
+  const { prompt, sent } = await fixPromptParts(dir, error);
   const r = await runClaude(cli, prompt, { timeoutMs: options.timeoutMs ?? TIMEOUT_MS });
   if (r.timedOut) throw new GitError(`Claude Code took longer than ${Math.round((options.timeoutMs ?? TIMEOUT_MS) / 1000)} seconds, so it was stopped. Try again.`, 504);
   if (r.code !== 0) throw new GitError(claudeFailure(r, "Claude Code couldn't look at it"), 502);
   const answer = r.stdout.replace(/\r\n/g, "\n").trim();
   if (!answer) throw new GitError("Claude Code answered with nothing. Try again.", 502);
   const { diff, explanation } = parseFixAnswer(answer);
-  if (!diff.trim()) return { ok: false, reason: "Claude didn't propose a change.", explanation, answer };
+  if (!diff.trim()) return { ok: false, reason: "Claude didn't propose a change.", explanation, answer, sent };
   try {
-    return { ok: true, ...(await checkFixPatch(dir, diff)), explanation, answer };
+    return { ok: true, ...(await checkFixPatch(dir, diff)), explanation, answer, sent };
   } catch (err) {
-    if (err instanceof GitError) return { ok: false, reason: err.message, explanation, answer };
+    if (err instanceof GitError) return { ok: false, reason: err.message, explanation, answer, sent };
     throw err;
   }
 }

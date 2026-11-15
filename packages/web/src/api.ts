@@ -5,6 +5,13 @@ import path from "node:path";
 import {
   addJournalEntry,
   applyClaudeSetup,
+  recordAiUse,
+  setAiOutcome,
+  type Problem,
+  backupText,
+  configBefore,
+  formatBytes,
+  recordChange,
   claudeSetupState,
   undoClaudeSetup,
   planUninstall,
@@ -197,6 +204,14 @@ import { stateRoutes } from "./stateapi.js";
 import { agentsRoutes } from "./agentsapi.js";
 import { devToolsRoutes } from "./devtoolsapi.js";
 import { autoNoticesSince } from "./autosetup.js";
+import { homeRoutes } from "./homeapi.js";
+import { changesRoutes } from "./changesapi.js";
+import { facetRoutes } from "./facetsapi.js";
+import { graphRoutes } from "./graphapi.js";
+import { autonomyRoutes } from "./autonomyapi.js";
+import { siteRoutes } from "./siteapi.js";
+import { searchRoutes } from "./searchapi.js";
+import { cleanCache, CacheError, listCaches } from "@dx/core";
 import { navRoutes } from "./navapi.js";
 import { noteGitViewed } from "./gitfetch.js";
 import { envAlertsSince } from "./envwatch.js";
@@ -211,6 +226,7 @@ import {
   devLogs,
   listDevServers,
   restartDevServer,
+  restartStackService,
   startDevServer,
   stopDevServer,
   takeOverDevServer,
@@ -235,6 +251,8 @@ export class HttpError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** The failure in the one shape every failure has, when it has a specific code and ways out. */
+    public problem?: Problem,
   ) {
     super(message);
   }
@@ -608,7 +626,22 @@ const routes: Record<string, Handler> = {
   "POST /api/claude": (req) => {
     const project = knownProject(req.body.dir);
     try {
-      const changed = req.body.undo === true ? undoClaudeSetup(project, "web") : applyClaudeSetup(project, "web");
+      const undoing = req.body.undo === true;
+      const changed = undoing ? undoClaudeSetup(project, "web") : applyClaudeSetup(project, "web");
+      if (changed.length) {
+        recordChange(
+          undoing
+            ? { by: "you", kind: "claude-setup", project: project.name, dir: project.dir, what: `Took dx out of ${project.name}'s Claude Code setup` }
+            : {
+                by: "you",
+                kind: "claude-setup",
+                project: project.name,
+                dir: project.dir,
+                what: `Pointed ${project.name}'s Claude Code sessions at dx`,
+                undo: { kind: "claude-setup", data: { dir: project.dir } },
+              },
+        );
+      }
       return { changed, ...claudeSetupState(project.dir) };
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
@@ -631,6 +664,13 @@ const routes: Record<string, Handler> = {
     const project = knownProject(req.body.dir);
     const name = String(req.body.name ?? "");
     if (typeof req.body.content !== "string") throw new HttpError(400, "Send the file's content as text.");
+    // The version being replaced is kept (0600, a week) so the change can be taken back.
+    let backup: string | undefined;
+    try {
+      backup = backupText(readEnvFile(project.dir, name));
+    } catch {
+      // a new file, or one that can't be read: there is nothing to put back
+    }
     try {
       writeEnvFile(project.dir, name, req.body.content);
     } catch (err) {
@@ -638,7 +678,15 @@ const routes: Record<string, Handler> = {
     }
     // Which file, never what's in it.
     recordRun("env", true, `${project.name}: saved ${name}`, "web", { project: project.name });
-    return { ok: true, name };
+    recordChange({
+      by: "you",
+      kind: "env-file",
+      project: project.name,
+      dir: project.dir,
+      what: `Saved ${name} in ${project.name}`,
+      ...(backup ? { undo: { kind: "env-file" as const, data: { dir: project.dir, name, backup } } } : {}),
+    });
+    return { ok: true, name, ...(backup ? { undoable: true } : {}) };
   },
   "POST /api/env/create": (req) => {
     const project = knownProject(req.body.dir);
@@ -650,8 +698,19 @@ const routes: Record<string, Handler> = {
   "POST /api/env/gitignore": (req) => {
     const project = knownProject(req.body.dir);
     const patterns = Array.isArray(req.body.patterns) ? req.body.patterns.filter((p: unknown): p is string => typeof p === "string") : [];
+    const created = !fs.existsSync(path.join(project.dir, ".gitignore"));
     const added = addGitignoreRules(project.dir, patterns);
     recordRun("env", true, `${project.name}: .gitignore ${added.length ? `now ignores ${added.join(", ")}` : "already had them"}`, "web", { project: project.name });
+    if (added.length) {
+      recordChange({
+        by: "you",
+        kind: "gitignore",
+        project: project.name,
+        dir: project.dir,
+        what: `Added ${added.length} ${added.length === 1 ? "rule" : "rules"} to ${project.name}'s .gitignore`,
+        undo: { kind: "gitignore-rules", data: { dir: project.dir, lines: added, created } },
+      });
+    }
     return { added };
   },
   // ------------------------------------------------------------ git: the graph and the staging board
@@ -724,6 +783,7 @@ const routes: Record<string, Handler> = {
     try {
       const c = await gitCall(() => gitCommitChanges(project.dir, String(req.body.message ?? ""), { amend }));
       recordRun("git", true, `${project.name}: ${amend ? "amended" : "committed"} ${c.short} ${c.subject}`, "web", { project: project.name });
+      await recordGitChange(project, amend ? "amend" : "commit", `${amend ? "Amended" : "Committed"} ${c.short}: ${c.subject}`, Date.now() - 5000);
       // The visual diff, in the background: the commit is answered first, whatever the capture does.
       sawHead(project.dir, c.hash.toLowerCase());
       const visual = requestCapture(project, "commit");
@@ -766,6 +826,7 @@ const routes: Record<string, Handler> = {
   "POST /api/git/suggest": async (req) => {
     const project = gitProject(req.body.dir);
     const r = await gitCall(() => gitSuggestMessage(project.dir));
+    recordAiUse({ feature: "commit-message", project: project.name, tool: "claude", sent: r.sent, outcome: "proposed" });
     recordRun("git", true, `${project.name}: Claude Code wrote a commit message`, "web", { project: project.name });
     return r;
   },
@@ -781,10 +842,14 @@ const routes: Record<string, Handler> = {
     const what = error.message.split("\n")[0].slice(0, 100);
     try {
       const r = await gitCall(() => proposeFix(project.dir, error));
+      const use = recordAiUse({ feature: "fix", project: project.name, tool: "claude", sent: r.sent ?? [], outcome: r.ok ? "proposed" : "nothing" });
       recordRun("fix", r.ok, `${project.name}: ${r.ok ? `Claude proposed a fix to ${plural(r.files.length, "file")}` : "Claude proposed nothing to apply"} for ${what}`, "web", { project: project.name });
       if (!r.ok) return { ok: false, reason: r.reason, explanation: r.explanation, answer: r.answer };
-      return { ok: true, id: rememberFix(project.dir, r), patch: r.patch, files: r.files, explanation: r.explanation, answer: r.answer };
+      const fixId = rememberFix(project.dir, r);
+      fixUses.set(fixId, use.id);
+      return { ok: true, id: fixId, sent: r.sent, patch: r.patch, files: r.files, explanation: r.explanation, answer: r.answer };
     } catch (err) {
+      recordAiUse({ feature: "fix", project: project.name, tool: "claude", sent: [], outcome: "failed" });
       recordRun("fix", false, `${project.name}: asking Claude failed for ${what}`, "web", { project: project.name });
       throw err;
     }
@@ -796,16 +861,31 @@ const routes: Record<string, Handler> = {
     try {
       const r = await gitCall(() => applyFix(project.dir, fix));
       forgetFix(req.body.id);
+      const useId = fixUses.get(String(req.body.id));
+      if (useId) setAiOutcome(useId, "applied");
       recordRun("fix", true, `${project.name}: applied Claude's fix to ${plural(r.files.length, "file")}`, "web", { project: project.name });
       // The journal keeps what you did, so the weekly summary says it without being told.
       addJournalEntry(`Applied an AI fix in ${project.name} (${plural(r.files.length, "file")})`);
+      recordChange({
+        by: "ai",
+        kind: "fix",
+        project: project.name,
+        dir: project.dir,
+        what: `Applied Claude's fix to ${plural(r.files.length, "file")} in ${project.name}`,
+        why: "You approved the patch",
+        undo: { kind: "git-undo", data: { dir: project.dir, id: r.undoId } },
+      });
       return r;
     } catch (err) {
       recordRun("fix", false, `${project.name}: Claude's fix wasn't applied`, "web", { project: project.name });
       throw err;
     }
   },
-  "POST /api/fix/dismiss": (req) => ({ ok: forgetFix(req.body.id) }),
+  "POST /api/fix/dismiss": (req) => {
+    const useId = fixUses.get(String(req.body.id));
+    if (useId) setAiOutcome(useId, "dismissed");
+    return { ok: forgetFix(req.body.id) };
+  },
   // Branches, tags, the shelf, and what can be undone.
   "GET /api/git/refs": (req) => gitCall(() => gitRefs(gitProject(req.query.get("dir")).dir)),
   // The Release tab: GitHub's releases through gh (read only), the last tag, and notes for the next one.
@@ -826,8 +906,10 @@ const routes: Record<string, Handler> = {
     const b = req.body;
     const str = (v: unknown) => (typeof v === "string" ? v : "");
     try {
+      const startedAt = Date.now() - 1000;
       const r = await gitCall(() => run(project.dir, b, str));
       recordRun("git", r.ok, `${project.name}: ${action}${r.ok ? "" : " stopped on conflicts"} — ${r.message}`, "web", { project: project.name });
+      if (r.ok) await recordGitChange(project, action, r.message, startedAt);
       return r;
     } catch (err) {
       recordRun("git", false, `${project.name}: ${action} failed`, "web", { project: project.name });
@@ -855,9 +937,18 @@ const routes: Record<string, Handler> = {
     const env = typeof req.body.env === "string" && (req.body.env === "" || /^\.env\.[\w.-]{1,60}$/.test(req.body.env)) ? req.body.env : undefined;
     if ((req.body.mode !== undefined && mode === undefined) || (req.body.env !== undefined && env === undefined)) throw new HttpError(400, "mode is a run mode's id and env a .env.<name> file of the project.");
     try {
-      return startDevServer(project, startedBy(req.body.by), { snapshot: !!snapshotByDir(project.dir), mode, env });
+      return startDevServer(project, startedBy(req.body.by), { snapshot: !!snapshotByDir(project.dir), mode, env, ownPort: req.body.ownPort === true });
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
+    }
+  },
+  // One service of a running stack; the rest keep running.
+  "POST /api/dev/restart-service": async (req) => {
+    const project = knownProject(req.body.dir);
+    try {
+      return await restartStackService(project, String(req.body.service ?? ""));
+    } catch (err) {
+      throw new HttpError(409, (err as Error).message);
     }
   },
   "POST /api/dev/restart": (req) => restartDevServer(knownProject(req.body.dir, { snapshots: true }), startedBy(req.body.by)),
@@ -879,8 +970,9 @@ const routes: Record<string, Handler> = {
     if (!url) {
       const project = knownProject(req.body.dir, { snapshots: true });
       const dev = listDevServers().find((s) => s.dir.toLowerCase() === project.dir.toLowerCase());
-      // A browser check goes through the local domain when there is one, so its requests are logged.
-      const base = (req.body.browser === true || Array.isArray(req.body.steps) ? dev?.localUrl : undefined) ?? dev?.url ?? project.url;
+      // The app's own address, as its docs and builds expect. Only where dx can't answer there is a browser check sent
+      // through the local domain, so its requests are logged (the app then sees that address instead).
+      const base = (req.body.browser === true || Array.isArray(req.body.steps) ? (dev?.recorded ? undefined : dev?.localUrl) : undefined) ?? dev?.url ?? project.url;
       if (!base) throw new HttpError(400, `${project.name} has no URL yet. Start its dev server first.`);
       url = new URL(String(req.body.path ?? "/"), base).href;
     }
@@ -958,7 +1050,7 @@ const routes: Record<string, Handler> = {
     clearDevServer(String(req.body.dir));
     return { ok: true };
   },
-  "GET /api/dev/logs": (req) => devLogs(String(req.query.get("dir") ?? ""), Number(req.query.get("after") ?? 0)),
+  "GET /api/dev/logs": (req) => devLogs(String(req.query.get("dir") ?? ""), Number(req.query.get("after") ?? 0), req.query.get("service") || undefined),
 
   // ------------------------------------------------------------ ports
   // The Machine page: the tools on this computer, what each project needs, and what runs in the background.
@@ -1108,7 +1200,26 @@ const routes: Record<string, Handler> = {
     const freed = results.reduce((n, r) => n + r.bytes, 0);
     const failed = results.filter((r) => !r.ok);
     recordRun("clean", failed.length === 0, `${freed} bytes freed from the dashboard, ${failed.length} failed`, "web");
+    // Deleted for good so the space is really freed: said plainly, with no undo. It builds again on the next run.
+    recordChange({ by: "you", kind: "cleanup", what: `Cleaned up ${results.length - failed.length} ${results.length - failed.length === 1 ? "folder" : "folders"}, freeing ${formatBytes(freed)}`, why: "Dependencies and build folders come back the next time a project runs", permanent: true });
     return { freed, deleted: results.length - failed.length, failed };
+  },
+
+  // The caches package managers keep: how big, and cleaned through each tool's own command (never a path or command from the request).
+  "GET /api/cleanup/caches": async () => ({ caches: await listCaches() }),
+  "POST /api/cleanup/caches/clean": async (req) => {
+    try {
+      const r = await cleanCache(String(req.body.id ?? ""));
+      recordRun("cache-clean", true, `${r.name}: ${r.freed} bytes freed`, "web");
+      recordChange({ by: "you", kind: "cleanup", what: `Cleaned the ${r.name} cache, freeing ${formatBytes(r.freed)}`, why: "It downloads what it needs again the next time a project asks", permanent: true });
+      return r;
+    } catch (err) {
+      if (err instanceof CacheError) {
+        recordRun("cache-clean", false, err.message, "web");
+        throw new HttpError(err.status, err.message);
+      }
+      throw err;
+    }
   },
 
   // ------------------------------------------------------------ dependencies
@@ -1215,6 +1326,7 @@ const routes: Record<string, Handler> = {
   }),
   "POST /api/config": (req) => {
     const config = loadConfig();
+    const before = JSON.parse(JSON.stringify(config)) as typeof config;
     if (typeof req.body.editor === "string") {
       const editor = req.body.editor.trim();
       if (!editor) throw new HttpError(400, "The editor command can't be empty, e.g. code or cursor.");
@@ -1247,6 +1359,15 @@ const routes: Record<string, Handler> = {
     if (req.body.activityMaxMB !== undefined) config.activityMaxMB = clampInt(req.body.activityMaxMB, 50, 100_000, config.activityMaxMB ?? 500);
     saveConfig(config);
     forgetActivitySettings();
+    const { previous, changed } = configBefore(before, config);
+    if (changed.length) {
+      recordChange({
+        by: "you",
+        kind: "config",
+        what: `Changed ${changed.length === 1 ? "a setting" : `${changed.length} settings`}: ${changed.join(", ")}`,
+        undo: { kind: "config", data: { previous } },
+      });
+    }
     return config;
   },
 };
@@ -1284,7 +1405,7 @@ export function mergeRoutes(tables: Record<string, Record<string, Handler>>): Re
 let allRoutes: Record<string, Handler> | undefined;
 /** All of the dashboard's API routes, built once. */
 export function apiRoutes(): Record<string, Handler> {
-  return (allRoutes ??= mergeRoutes({ routes, labRoutes, chaosRoutes, dataRoutes, phoneRoutes, teamRoutes, toolRoutes, stateRoutes, agentsRoutes, devToolsRoutes, navRoutes }));
+  return (allRoutes ??= mergeRoutes({ routes, labRoutes, chaosRoutes, dataRoutes, phoneRoutes, teamRoutes, toolRoutes, stateRoutes, agentsRoutes, devToolsRoutes, navRoutes, homeRoutes, changesRoutes, facetRoutes, graphRoutes, autonomyRoutes, siteRoutes, searchRoutes }));
 }
 
 export async function handleApi(req: ApiRequest): Promise<unknown> {
@@ -1376,6 +1497,40 @@ const GIT_ACTIONS: Record<string, GitActionFn> = {
         : [],
     ),
 };
+
+/** Git actions that change nothing worth listing, or that are the undo itself. */
+const GIT_QUIET = new Set(["undo", "fetch", "abort"]);
+/** What leaves this computer: nothing in dx can take it back. */
+const GIT_PERMANENT = new Set(["push", "push-tags", "release-create"]);
+
+/**
+ * Writes a git action into the changes list. Where git's own undo journal made an entry for it, the
+ * change can be taken back through that entry (only while it's still the newest); a push or a
+ * release says plainly that it can't be.
+ */
+async function recordGitChange(project: Project, action: string, message: string, since: number): Promise<void> {
+  if (GIT_QUIET.has(action)) return;
+  const permanent = GIT_PERMANENT.has(action);
+  let undo: { kind: "git-undo"; data: Record<string, unknown> } | undefined;
+  if (!permanent) {
+    try {
+      const open = (await gitUndoList(project.dir)).entries.filter((e) => !e.undone && e.undo && e.at >= since);
+      if (open[0]) undo = { kind: "git-undo", data: { dir: project.dir, id: open[0].id } };
+    } catch {
+      // no journal to read: the change is still listed
+    }
+  }
+  recordChange({ by: "you", kind: `git-${action}`, project: project.name, dir: project.dir, what: `${project.name}: ${message}`, ...(permanent ? { permanent: true } : {}), ...(undo ? { undo } : {}) });
+}
+
+/** The error a Fix button is about, looked up here from dx's own records (never sent by the page). */
+export function fixTargetFor(project: Project, source: unknown, id: unknown): FixTarget {
+  if (source !== "dev" && source !== "activity") throw new HttpError(400, "Which error? Say where it's from (dev or activity) and give its id.");
+  return source === "dev" ? devErrorFor(project, id) : activityErrorFor(project, id);
+}
+
+/** What was sent for each proposal still kept, so applying or dismissing it can say what came of it in the AI list. */
+const fixUses = new Map<string, string>();
 
 /** An error of the project's dev server (running, or the last run), by the id the error tracker gave it. */
 function devErrorFor(project: Project, id: unknown): FixTarget {

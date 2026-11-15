@@ -231,3 +231,61 @@ test("a project that isn't here but has a remote can be offered for cloning: htt
   const plan = await core.planStateImport(state, core.scanProjects(core.loadConfig()));
   assert.deepEqual(plan.projects.map((p) => [p.name, p.match, p.cloneUrl]), [["far-away", undefined, "https://github.com/octocat/far-away.git"], ["local-only", undefined, undefined]]);
 });
+
+test("a site's address and switch, a project's tags and pin and the saved views of the list come along, and undo takes them back", async () => {
+  const { setProjectTags, setPinned, saveView, readMeta } = core;
+  const a = tmp("dx-state-meta-a-");
+  const b = tmp("dx-state-meta-b-");
+  const rootOne = tmp("dx-state-meta-projects-a-");
+  const rootTwo = tmp("dx-state-meta-projects-b-");
+  useComputer(a, rootOne);
+  const shop = makeProject(rootOne, "shop-website", "https://github.com/octocat/shop-website.git");
+  addSite({ url: "https://staging.shop-website.dev/app", project: shop, env: "staging" });
+  const cfg = loadConfig();
+  cfg.sites = (cfg.sites ?? []).map((s) => ({ ...s, apply: false }));
+  saveConfig(cfg);
+  setProjectTags(shop, ["client", "side project"]);
+  setPinned(shop, true);
+  saveView("Client work", { status: [], kind: [], tag: ["client"], pinned: false, q: "" });
+  const exported = await exportState({ projects: scanProjects(loadConfig()) });
+  const read = readState(JSON.parse(JSON.stringify(exported)));
+  assert.deepEqual(read.projects[0].tags, ["client", "side project"]);
+  assert.equal(read.projects[0].pinned, true);
+  assert.deepEqual(read.projects[0].sites, [{ host: "staging.shop-website.dev", env: "staging", url: "https://staging.shop-website.dev/app", apply: false }]);
+  assert.deepEqual(read.views?.map((v) => v.name), ["Client work"]);
+
+  useComputer(b, rootTwo);
+  const shopB = makeProject(rootTwo, "shop-website", "https://github.com/octocat/shop-website.git");
+  setProjectTags(shopB, ["mine"]);
+  const plan = await planStateImport(read, scanProjects(loadConfig()));
+  assert.equal(plan.views, 1);
+  const r = await importState(read, { projects: scanProjects(loadConfig()) });
+  assert.equal(r.views, 1);
+  assert.deepEqual(readMeta().tags[shopB.toLowerCase()], ["mine", "client", "side project"], "tags join the ones here");
+  assert.ok(readMeta().pinned.includes(shopB.toLowerCase()));
+  assert.deepEqual(readMeta().views.map((v) => v.name), ["Client work"]);
+  const site = (loadConfig().sites ?? []).find((s) => s.host === "staging.shop-website.dev");
+  assert.equal(site?.url, "https://staging.shop-website.dev/app");
+  assert.equal(site?.apply, false);
+  assert.equal(site?.project?.toLowerCase(), shopB.toLowerCase());
+
+  undoStateImport();
+  assert.deepEqual(readMeta().tags[shopB.toLowerCase()], ["mine"], "undo puts the tags back");
+  assert.deepEqual(readMeta().views, []);
+  assert.equal(readMeta().pinned.length, 0);
+});
+
+test("a state file's site address is kept only when it is one dx would keep", () => {
+  const base = { format: "dx-state", version: 1, exportedAt: "", settings: {}, sites: [], journal: [], summaries: [], templates: [], projects: [] };
+  const read = readState({
+    ...base,
+    sites: [
+      { host: "a.example.com", url: "https://a.example.com/x?token=abc", env: "staging" },
+      { host: "b.example.com", url: "https://other.example.com/", env: "staging" },
+      { host: "c.example.com", url: "http://localhost:3000" },
+    ],
+    views: [{ name: "Mine", filter: { tag: ["client"] } }, { name: "" }],
+  });
+  assert.deepEqual(read.sites.map((s) => s.url), ["https://a.example.com/x", undefined, undefined]);
+  assert.deepEqual(read.views?.map((v) => v.name), ["Mine"]);
+});

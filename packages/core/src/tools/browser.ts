@@ -31,6 +31,8 @@ export interface FailedRequest {
 }
 
 export interface PageCheck {
+  /** Hosts the page tried to go to that aren't allowed (a redirect off the site): dx stopped there. */
+  blocked?: string[];
   url: string;
   /** Loaded with no exceptions, console errors, failed requests or error overlay. */
   ok: boolean;
@@ -117,7 +119,39 @@ export interface PageCheckOptions {
   emulate?: Emulation;
   /** Keep every request the page made (method, address, status), not only the failed ones. */
   requests?: boolean;
+  /**
+   * Which addresses besides this computer's the page may be on: the sites a person added to a project.
+   * With it, the page's own navigation (a redirect, a link) can't leave them either, and the browser
+   * won't be run without its sandbox.
+   */
+  allow?: (url: string) => boolean;
 }
+
+/** The part of a site check a person needs when the page tried to leave the sites that were allowed. */
+export interface Blocked {
+  host: string;
+}
+
+/**
+ * Keeps the page's top-level navigation on allowed addresses: Document requests of the main frame go
+ * on only when `allow` says so, the rest (images, scripts, other frames) load as they would for anyone.
+ */
+function guardPaused(params: Record<string, unknown>, targetId: string, allow: (url: string) => boolean, send: (m: string, p?: object) => Promise<unknown>, blocked: string[]): void {
+  const url = String((params.request as { url?: string } | undefined)?.url ?? "");
+  const requestId = params.requestId as string;
+  if (params.frameId === targetId && params.resourceType === "Document" && !allow(url)) {
+    try {
+      blocked.push(new URL(url).host);
+    } catch {
+      blocked.push("another address");
+    }
+    void send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }).catch(() => undefined);
+    return;
+  }
+  void send("Fetch.continueRequest", { requestId }).catch(() => undefined);
+}
+
+const GUARD_PATTERNS = [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }];
 
 const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\]|[\w.-]+\.localhost)$/i;
 
@@ -196,7 +230,8 @@ const MAX_ITEMS = 40;
 const MAX_TEXT = 1500;
 
 export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
-  if (!isLoopbackUrl(options.url)) throw new Error("Only pages on this computer (localhost, 127.0.0.1, *.localhost) can be checked.");
+  const remote = !isLoopbackUrl(options.url);
+  if (remote && !options.allow?.(options.url)) throw new Error("Only pages on this computer (localhost, 127.0.0.1, *.localhost), or on a site added to the project, can be checked.");
   const found = findBrowser();
   if (!found) throw new Error(`No Chrome, Edge, Chromium or Brave was found to load the page in. Install one: ${browserInstallFix()}`);
 
@@ -223,6 +258,8 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
       launched = await launch(found.path, profile, options.width ?? 1280, options.height ?? 800, false);
     } catch (err) {
       if (!/sandbox/i.test((err as Error).message)) throw err;
+      // Without its sandbox a browser is fine for a dev server's own page, and not for a page from the internet.
+      if (remote) throw new Error("This browser can't start its sandbox here, and dx won't load a site without it. Check that Chrome or Edge starts normally.");
       launched = await launch(found.path, profile, options.width ?? 1280, options.height ?? 800, true);
     }
     proc = launched.proc;
@@ -244,8 +281,12 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
       if (list.length < MAX_ITEMS) list.push(step ? { ...item, step } : item);
     };
 
+    const blocked: string[] = [];
     cdp.on(sessionId, (method, p) => {
       switch (method) {
+        case "Fetch.requestPaused":
+          if (options.allow) guardPaused(p, targetId, options.allow, page, blocked);
+          break;
         case "Runtime.exceptionThrown": {
           const d = p.exceptionDetails as ExceptionDetails;
           push(result.exceptions, { text: clip(d.exception?.description ?? d.text ?? "Uncaught exception"), source: where(d.url, d.lineNumber, d.stackTrace) });
@@ -312,10 +353,11 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
     });
 
     await Promise.all([page("Runtime.enable"), page("Log.enable"), page("Network.enable"), page("Page.enable")]);
+    if (options.allow) await page("Fetch.enable", { patterns: GUARD_PATTERNS });
     if (options.emulate) await applyEmulation(page, options.emulate);
     const nav = (await page("Page.navigate", { url: options.url })) as { errorText?: string };
     if (nav.errorText) {
-      result.error = nav.errorText === "net::ERR_CONNECTION_REFUSED" ? "Nothing is listening at that address. Is the dev server running?" : nav.errorText;
+      result.error = nav.errorText === "net::ERR_CONNECTION_REFUSED" ? (remote ? "Nothing answered at that address." : "Nothing is listening at that address. Is the dev server running?") : nav.errorText === "net::ERR_BLOCKED_BY_CLIENT" && blocked.length ? `The site went to ${blocked[0]}, which isn't one of this project's sites, so dx stopped there.` : nav.errorText;
     } else {
       // The page's own time starts once the browser is up: a slow first start isn't the page's fault.
       const deadline = Date.now() + timeoutMs;
@@ -362,7 +404,7 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
             if (s.goto) {
               const current = (await evaluate<string>("location.href")) ?? options.url;
               const next = new URL(s.goto, current).href;
-              if (!isLoopbackUrl(next)) throw new Error("goto only goes to addresses on this computer.");
+              if (!isLoopbackUrl(next) && !options.allow?.(next)) throw new Error("goto only goes to addresses on this computer or on the project's sites.");
               loaded = false;
               const nav = (await page("Page.navigate", { url: next })) as { errorText?: string };
               if (nav.errorText) throw new Error(nav.errorText);
@@ -433,6 +475,11 @@ export async function checkPage(options: PageCheckOptions): Promise<PageCheck> {
       }
     }
     result.status = documentStatus;
+    if (blocked.length) {
+      result.blocked = [...new Set(blocked)];
+      // A redirect off the site that the browser followed after the first load: say so, it's a finding.
+      result.error ??= `The page tried to go to ${result.blocked[0]}, which isn't one of this project's sites, so dx stopped there.`;
+    }
   } catch (err) {
     result.error ??= (err as Error).message;
   } finally {
@@ -471,6 +518,8 @@ export interface BrowserPage {
   navigate(url: string, options?: { timeoutMs?: number; settleMs?: number }): Promise<number | undefined>;
   /** Every DevTools event from this tab (Runtime, Network, Page are on). */
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): void;
+  /** Hosts this tab tried to go to that weren't allowed (only when the session was given `allow`). */
+  blocked(): string[];
 }
 
 export interface BrowserSession {
@@ -483,7 +532,7 @@ export interface BrowserSession {
  * Runs `fn` with a headless browser that's closed afterwards, whatever happens. For tools that
  * drive pages themselves (visual diffs); `checkPage` is the one for errors on a page.
  */
-export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>, options: { width?: number; height?: number } = {}): Promise<T> {
+export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>, options: { width?: number; height?: number; allow?: (url: string) => boolean; remote?: boolean } = {}): Promise<T> {
   const found = findBrowser();
   if (!found) throw new Error(`No Chrome, Edge, Chromium or Brave was found. Install one: ${browserInstallFix()}`);
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "dx-browser-"));
@@ -497,6 +546,7 @@ export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>
       launched = await launch(found.path, profile, width, height, false);
     } catch (err) {
       if (!/sandbox/i.test((err as Error).message)) throw err;
+      if (options.remote) throw new Error("This browser can't start its sandbox here, and dx won't load a site without it. Check that Chrome or Edge starts normally.");
       launched = await launch(found.path, profile, width, height, true);
     }
     proc = launched.proc;
@@ -511,7 +561,9 @@ export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>
       let loaded = false;
       let status: number | undefined;
       const listeners: Array<(method: string, params: Record<string, unknown>) => void> = [];
+      const blocked: string[] = [];
       conn.on(sessionId, (method, p) => {
+        if (method === "Fetch.requestPaused" && options.allow) guardPaused(p, targetId, options.allow, (m, params) => send(m, params), blocked);
         for (const l of listeners) l(method, p);
         if (method === "Network.requestWillBeSent") {
           inflight.add(p.requestId as string);
@@ -524,6 +576,7 @@ export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>
         } else if (method === "Page.loadEventFired") loaded = true;
       });
       await Promise.all([send("Page.enable"), send("Network.enable"), send("Runtime.enable")]);
+      if (options.allow) await send("Fetch.enable", { patterns: GUARD_PATTERNS });
       const evaluate = async <R>(expression: string, timeoutMs?: number): Promise<R | undefined> => {
         const r = await send<{ result: { value?: R }; exceptionDetails?: unknown }>("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, timeoutMs);
         return r.exceptionDetails ? undefined : r.result.value;
@@ -543,7 +596,7 @@ export async function withBrowser<T>(fn: (session: BrowserSession) => Promise<T>
         while (Date.now() < end && !(Date.now() >= quietFrom && inflight.size === 0 && Date.now() - lastNetwork > 300)) await sleep(100);
         return status;
       };
-      return { send, evaluate, navigate, onEvent: (l) => void listeners.push(l) };
+      return { send, evaluate, navigate, onEvent: (l) => void listeners.push(l), blocked: () => [...new Set(blocked)] };
     };
     return await fn({ browser: found.name, newPage });
   } finally {

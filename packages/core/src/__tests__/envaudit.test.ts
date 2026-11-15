@@ -132,8 +132,9 @@ test("a dev server is moved only when dx knows how to tell its tool the port", (
   assert.equal(moveDevPort(p("astro dev"), 4000)?.command, "npm run dev -- --port 4000");
   assert.equal(moveDevPort(p("react-scripts start"), 4000)?.command, "npm run dev", "react-scripts takes PORT only");
   assert.equal(moveDevPort(p("cross-env NODE_ENV=development vite"), 4000)?.tool, "vite");
-  assert.equal(moveDevPort(p("vite --port 3000"), 4000), undefined, "a port of its own");
-  assert.equal(moveDevPort(p("PORT=3000 next dev"), 4000), undefined);
+  // A port the script names itself is replaced in its text (see devport.test.ts), no longer a reason to leave it alone.
+  assert.equal(moveDevPort(p("vite --port 3000"), 4000)?.command, "vite --port 4000");
+  assert.equal(moveDevPort(p("PORT=3000 next dev"), 4000)?.command, "PORT=4000 next dev");
   assert.equal(moveDevPort(p("concurrently \"vite\" \"node api.js\""), 4000), undefined, "a tool dx doesn't know");
   assert.equal(moveDevPort(p("vite & node api.js"), 4000), undefined, "several commands");
   assert.equal(moveDevPort(p("node server.js"), 4000), undefined);

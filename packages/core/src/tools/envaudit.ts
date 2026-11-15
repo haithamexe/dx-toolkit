@@ -152,6 +152,38 @@ function* auditEnvSteps(dir: string, options: { secrets?: boolean } = {}): EnvSt
   };
 }
 
+const GITIGNORE_HEADER = "# Secrets: keys, certificates and local settings stay out of git (OWASP)";
+
+/**
+ * Takes back what addGitignoreRules added: the comment and exactly the lines it returned, at the
+ * end of the file. Anything else in the file (a rule you added after, your own lines) stays. A file
+ * dx made (`created`) that is then empty is removed. Only lines that are rules dx adds are touched.
+ * Returns whether anything changed.
+ */
+export function removeGitignoreRules(dir: string, lines: string[], created = false): boolean {
+  const known = new Set(GITIGNORE_RULES.map((r) => r.pattern));
+  const mine = new Set(lines.filter((l) => known.has(l) || /^!\.env\.[a-z.]+$/.test(l)));
+  const file = path.join(dir, ".gitignore");
+  const text = readText(file);
+  if (text === undefined || !mine.size) return false;
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const all = text.split(/\r?\n/);
+  const header = all.lastIndexOf(GITIGNORE_HEADER);
+  const from = header >= 0 ? header : 0;
+  const kept = all.filter((l, i) => !(i >= from && (mine.has(l) || (i === header && header >= 0))));
+  if (kept.length === all.length) return false;
+  // The blank line that separated the block from what came before goes with it.
+  while (kept.length && kept[kept.length - 1] === "" && kept.length > 1 && kept[kept.length - 2] === "") kept.pop();
+  const out = kept.join(eol);
+  if (!out.trim()) {
+    if (created) fs.rmSync(file, { force: true });
+    else fs.writeFileSync(file, "");
+    return true;
+  }
+  fs.writeFileSync(file, out.endsWith(eol) ? out : out + eol);
+  return true;
+}
+
 /**
  * Adds the missing rules to the project's .gitignore (creating it if there's none), under a
  * comment saying why. Only rules from GITIGNORE_RULES can be added. Returns the lines added.
@@ -173,7 +205,7 @@ export function addGitignoreRules(dir: string, patterns: string[]): string[] {
   }
   if (!out.length) return [];
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
-  const block = `${text && !text.endsWith("\n") ? eol : ""}${text ? eol : ""}# Secrets: keys, certificates and local settings stay out of git (OWASP)${eol}${out.join(eol)}${eol}`;
+  const block = `${text && !text.endsWith("\n") ? eol : ""}${text ? eol : ""}${GITIGNORE_HEADER}${eol}${out.join(eol)}${eol}`;
   fs.appendFileSync(file, block);
   return out;
 }

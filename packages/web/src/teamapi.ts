@@ -51,7 +51,7 @@ export const teamRoutes: Record<string, (req: ApiRequest) => unknown> = {
 
   "GET /api/queries": async (req) => {
     const project = knownProject(req.query.get("dir"));
-    const dbs = findDatabases(project).filter((d) => d.kind !== "redis");
+    const dbs = findDatabases(project).filter((d) => d.kind === "postgres" || d.kind === "mysql");
     const state = queryLogState(project.dir);
     if (!dbs.length) return { databases: [], report: null };
     flushActivity();

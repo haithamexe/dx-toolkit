@@ -71,7 +71,7 @@ test("the stopped page is static and locked down, and escapes what it says", () 
   assert.ok(!html.includes("<script"), "no script, even from the message");
   assert.ok(html.includes("&#60;script&#62;"));
   assert.ok(html.includes(`href="${rules.RETRY_URL}"`));
-  assert.ok(rules.stoppedPage("x", true).includes("#002828"), "dark when the system is");
+  assert.ok(rules.stoppedPage("x", true).includes("#1d0a44"), "dark when the system is");
 });
 
 test("the window's code parses and imports only what shellrules exports", () => {

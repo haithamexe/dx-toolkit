@@ -42,6 +42,10 @@ The short version:
 - **The dashboard's security checks stay intact**: 127.0.0.1 only, the Host and Origin checks, the per-run token, the strict content security policy, and only acting on projects dx itself found. CLAUDE.md explains each one.
 - **Destructive actions ask first**, naming exactly what will be killed or deleted.
 
+## Design: how it looks, behaves and speaks
+
+Anything a person sees follows [docs/design.md](docs/design.md): the UI/UX standards (hub and spoke, chunking, safe exploration with Undo, friction in proportion to risk, optimistic and diegetic feedback, live and addressable state, honest AI and network use) and the Arcade brand (colour only by token and only by meaning, measured contrast, Floppy, Geist and Silkscreen). Reuse the helpers it names, go through its checklist before opening a pull request, and update it when a standard, helper or token changes.
+
 ## Keep it free of personal details
 
 This is a public repository. Don't commit your name, email, username, machine paths (`C:\Users\<you>\…`, `/Users/<you>/…`), tokens, or the names of your own projects, in code, tests, docs or screenshots. Use neutral examples such as `todo-app`, `shop-website`, `octocat` and `/path/to/dx-toolkit`.

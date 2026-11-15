@@ -107,7 +107,7 @@ const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt
  * locked-down policy; its one link is RETRY_URL, which the window takes as "start it".
  */
 export function stoppedPage(message: string, dark: boolean): string {
-  const [desk, sheet, ink, dim, accent] = dark ? ["#002828", "#0d1a1a", "#e6f2f1", "#9bb5b3", "#6fcbc5"] : ["#008080", "#ffffff", "#0f1f1f", "#4d6362", "#006a6a"];
+  const [desk, sheet, ink, dim, accent] = dark ? ["#1d0a44", "#181529", "#eeedf8", "#b0adc9", "#a890fe"] : ["#6741ca", "#fefefe", "#1a172c", "#57546d", "#733bde"];
   return [
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
     "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">",
@@ -115,7 +115,7 @@ export function stoppedPage(message: string, dark: boolean): string {
     `html,body{height:100%;margin:0}body{background:${desk};display:grid;place-items:center;font:15px/1.5 system-ui,sans-serif;color:${ink}}`,
     `main{background:${sheet};padding:32px 40px;max-width:440px;border:1px solid rgb(0 0 0 / .25);box-shadow:4px 4px 0 rgb(0 0 0 / .25)}`,
     `h1{font-size:20px;margin:0 0 8px}p{margin:0 0 20px;color:${dim}}`,
-    `a{display:inline-block;background:${accent};color:${dark ? "#002828" : "#ffffff"};text-decoration:none;padding:8px 16px;font-weight:600}a:focus-visible{outline:2px solid ${ink};outline-offset:2px}`,
+    `a{display:inline-block;background:${accent};color:${dark ? "#100c1f" : "#ffffff"};text-decoration:none;padding:8px 16px;font-weight:600}a:focus-visible{outline:2px solid ${ink};outline-offset:2px}`,
     "</style></head><body><main>",
     "<h1>dx isn't running</h1>",
     `<p>${escapeHtml(message)}</p>`,

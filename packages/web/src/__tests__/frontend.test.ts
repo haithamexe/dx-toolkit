@@ -59,6 +59,16 @@ test("each page opens in a real browser without a script error", { skip: findBro
   assert.deepEqual(problems, [], "a page threw, didn't load, or didn't draw");
 });
 
+test("a project's page says no stray null or undefined (a missing value must be left out, not printed)", { skip: findBrowser() ? false : "no Chrome, Edge, Chromium or Brave here", timeout: 90_000 }, async () => {
+  const dir = path.join(root, "todo-app");
+  for (const page of ["overview", "home", "changes"]) {
+    const r = await checkPage({ url: `${dashboard.url}#/${page}?dir=${encodeURIComponent(dir)}`, steps: page === "overview" ? [{ waitFor: ".chunk" }, { waitFor: ".site-card" }] : [{ waitFor: ".page-title" }], timeoutMs: 40_000 });
+    assert.equal(r.error, undefined, `${page}: ${JSON.stringify(r.error)}`);
+    if (page === "overview") assert.match(r.text ?? "", /Sites[\s\S]*Add site/, "the overview has a Sites card with its add form");
+    assert.doesNotMatch(r.text ?? "", /(?<![a-z])(?:null)+(?![a-z])|\bundefined\b|\[object /, `${page}'s text has a value that wasn't there`);
+  }
+});
+
 test("the palette opens from its button, finds a page by typing, and goes there with Enter", { skip: findBrowser() ? false : "no Chrome, Edge, Chromium or Brave here", timeout: 90_000 }, async () => {
   const r = await checkPage({
     url: `${dashboard.url}#/ports`,

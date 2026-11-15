@@ -294,7 +294,7 @@ test("dx_do answers with structured content as well as text; the dev tools are t
   assert.deepEqual(agents.agents, []);
 });
 
-test("tool descriptions stay short enough for an agent to read all 51, and come in the same order every time", async () => {
+test("tool descriptions stay short enough for an agent to read all 52, and come in the same order every time", async () => {
   const first = (await client.listTools()).tools;
   const second = (await client.listTools()).tools;
   assert.deepEqual(first.map((t) => t.name), second.map((t) => t.name), "a fixed order, so a client can cache the list");

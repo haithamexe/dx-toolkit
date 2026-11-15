@@ -10,6 +10,7 @@ import {
   aiCli,
   aiClis,
   aiFailure,
+  recordAiUse,
   alertSettings,
   askAi,
   cleanAiEffort,
@@ -344,7 +345,9 @@ async function chat(project: Project, body: Record<string, unknown>) {
   let problem: string | undefined;
   let reply = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await askAi(cli, toolPrompt({ project: project.name, context, current: hidden?.shown, history, message, problem }), { model, effort, free: { cwd: project.dir } });
+    const prompt = toolPrompt({ project: project.name, context, current: hidden?.shown, history, message, problem });
+    const r = await askAi(cli, prompt, { model, effort, free: { cwd: project.dir } });
+    recordAiUse({ feature: "tool-chat", project: project.name, tool: cli.tool, sent: [{ label: "Your message, the tool so far (its credential values hidden), and the project's API calls", bytes: Buffer.byteLength(prompt) }], outcome: r.code === 0 && !r.timedOut ? "proposed" : "failed" });
     if (r.code !== 0 || r.timedOut) throw new HttpError(502, aiFailure(r, `${cli.name} didn't answer`));
     let answer: Record<string, unknown>;
     try {

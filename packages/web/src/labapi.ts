@@ -1,8 +1,11 @@
 import http from "node:http";
 import {
+  addMocks,
+  setMockMode,
   aiCli,
   aiClis,
   aiFailure,
+  recordAiUse,
   askAi,
   findSpecFiles,
   forgetSpec,
@@ -14,6 +17,7 @@ import {
   mocksFromSpec,
   parseSpecText,
   projectApis,
+  projectSites,
   purgeMocks,
   putMocks,
   putRule,
@@ -42,7 +46,7 @@ import {
 import { flushActivity } from "./activity.js";
 import { forgetRules, ruleHits, sendHistory, sendRequest } from "./apilab.js";
 import { HttpError, knownProject, type ApiRequest } from "./api.js";
-import { localRoutes, type LocalRoute } from "./dev.js";
+import { listDevServers, localRoutes, type LocalRoute } from "./dev.js";
 import { decide, heldItem, listHeld, releaseAll } from "./intercept.js";
 import { forgetMocks, mockServerFor, startMockServer, stopMockServer } from "./mocks.js";
 
@@ -189,7 +193,63 @@ function schemaFor(dir: string, ep: { method: string; path: string; pattern?: st
 
 const SOURCES: MockSource[] = ["recorded", "cache", "spec", "generated", "ai"];
 
+/**
+ * What "Mock this app" does in one go, so it isn't five steps: use the mocks the project already has,
+ * else make them from what the app has called (the last three hours), else from its API spec, then
+ * turn mock mode on. When there's nothing to make them from it says what to do instead of failing:
+ * run the app, or open it and use it (the page keeps asking, and finishes by itself).
+ */
+function quickMock(project: Project, refresh: boolean) {
+  let source: "existing" | "calls" | "spec" | undefined;
+  let added = 0;
+  const had = loadMocks(project.dir, project.name).endpoints.length;
+  if (had && !refresh) source = "existing";
+  else {
+    flushActivity();
+    const events = readActivity({ dir: project.dir, since: new Date(Date.now() - 3 * 3_600_000), types: ["request"], limit: 5000 });
+    const r = addMocks(project.dir, project.name, events);
+    added = r.added + r.replaced;
+    if (r.set.endpoints.length) source = had ? "existing" : "calls";
+    else {
+      for (const { spec } of projectApis(project.dir)) {
+        const made = putMocks(project.dir, project.name, mocksFromSpec(spec), { replaceApis: [spec.api!], legacy: false });
+        added += made.added + made.replaced;
+      }
+      if (loadMocks(project.dir, project.name).endpoints.length) source = "spec";
+    }
+  }
+  forgetMocks();
+  const server = listDevServers().find((x) => x.dir.toLowerCase() === project.dir.toLowerCase() && x.status !== "stopped" && !x.snapshot);
+  // Mocks answer where dx answers: at the app's own address when dx is in front of it, else at its .localhost name.
+  const openUrl = server ? (server.recorded ? server.url : server.localUrl) : undefined;
+  // A project with a site has somewhere to be called from even when nothing runs here: its page in the dx browser.
+  const site = projectSites(project.dir)[0];
+  const openSite = site ? (site.url ?? `https://${site.host.replace(/^\*\./, "")}`) : undefined;
+  if (!source) {
+    return { state: "waiting" as const, reason: server || site ? ("no-calls" as const) : ("not-running" as const), endpoints: 0, on: false, openUrl, openSite };
+  }
+  const set = setMockMode(project.dir, project.name, { on: true });
+  return {
+    state: "on" as const,
+    source,
+    added,
+    endpoints: set.endpoints.length,
+    on: set.on,
+    strict: set.strict,
+    openUrl,
+    openSite,
+    note: server && !server.recorded && !server.localUrl ? "The app isn't answered by dx where it runs, so its calls aren't mocked. Run it from dx to mock them." : server && !server.recorded ? `Mocks answer at ${server.localUrl}, not at ${server.url}.` : undefined,
+  };
+}
+
 export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
+  // One press: mocks from what the app called (or its spec), mock mode on. `refresh` makes them again from the latest calls.
+  "POST /api/mocks/quick": (req) => {
+    const project = knownProject(req.body.dir, { snapshots: true });
+    const r = call(() => quickMock(project, req.body.refresh === true));
+    if (r.state === "on") recordRun("mock", true, `${project.name}: mock mode on (${r.endpoints} endpoints, from ${r.source === "calls" ? "what the app called" : r.source === "spec" ? "the API spec" : "its mocks"})`, "web", { project: project.name });
+    return r;
+  },
   // ------------------------------------------------------------ rules
   "GET /api/lab/rules": (req) => {
     const project = knownProject(req.query.get("dir"));
@@ -384,6 +444,7 @@ export const labRoutes: Record<string, (req: ApiRequest) => unknown> = {
       .filter((l) => l !== "")
       .join("\n");
     const r = await askAi(cli, prompt, { timeoutMs: 180_000 });
+    recordAiUse({ feature: "mock-data", project: project.name, tool: cli.tool, sent: [{ label: "The mock, the API spec and your note", bytes: Buffer.byteLength(prompt) }], outcome: r.code === 0 && !r.timedOut ? "proposed" : "failed" });
     if (r.code !== 0 || r.timedOut) throw new HttpError(502, aiFailure(r, `${cli.name} couldn't write the data`));
     let value: unknown;
     try {

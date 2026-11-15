@@ -76,7 +76,8 @@ Ask your agent to work on a project and check its own work, for example *"Start 
 | `translation_check` | Pages with longer, accented text and right to left: text that's cut off or spills out, and text that isn't in the translation files, with its file and line |
 | `try_upgrade` | Upgrades one package in a throwaway copy and reports what breaks or changes: type check, build, tests, and the pages' looks, calls, errors and speed |
 | `db_queries` | Switches the compose database's statement log on or off, and lists each request's queries: N+1, slow queries, busy requests |
-| `db_query` | A read-only query against the project's development database (Postgres, MySQL/MariaDB, Redis in docker-compose), to check what an action actually stored |
+| `search_code` | Find a file by name (fuzzy) or a word, phrase or regular expression inside a project's files: ranked, with the matching lines, instead of grep or find. Reads only what git lists for the project and never inside `.env` files, keys or certificates |
+| `db_query` | A read-only query against the project's development database (Postgres, MySQL/MariaDB, MongoDB, Redis in docker-compose), to check what an action actually stored |
 | `resume_project`, `leave_note` | Where things were left in a project (branch, what ran, open errors, commits since, the last note), and a note for next time. Ask *"carry on with todo-app"* and the agent starts from there |
 | `dx_setup_check` | dx's health checks, each problem with the command that fixes it, so the agent can fix your setup for you |
 
@@ -104,9 +105,13 @@ Your agent can also use dx the way you do on the dashboard, every page of it: ru
 
 | Tool | What the agent gets |
 |---|---|
-| `dx_actions` | What dx can do: the groups, then each group's actions with what they do and the inputs they take |
+| `dx_actions` | What dx can do: the groups, then each group's actions with what they do, the inputs they take and their risk tier (`none`, `reversible`, `asks`, `name`) |
+
+Changes an AI tool makes through dx are tagged **AI** in Recent changes (the server labels its requests; the label is never a permission). An agent can read how much dx does on its own (`settings.autonomy`) and what is waiting (`settings.proposals`), but changing a level and answering a question for the person are risky actions (`dx_do_risky`), so it can't widen its own freedom.
 | `dx_do` | Does an action that isn't risky (reading, listing, starting a server, checking a page, staging…), through the dashboard's own API and checks |
 | `dx_do_risky` | Does a risky one. **Your AI tool asks you before each call**: anything that deletes, can't be undone, leaves this computer (push, release), changes the project, its packages or its database, stops a process or a dev server, reads or writes `.env` values, commits, merges, rebases or switches branches, turns mock mode or chaos on, saves tools, rules or mocks, or changes dx's settings |
+
+Also in the catalog: `projects.search` and `projects.search-preview` (the same search as `search_code`, across all projects with `scope=all`), `machine.caches` and `machine.cache-clean` (risky: it deletes), and `run.restart-service` (risky: restarts one service of a stack). A project's sites are in the catalog too: `api.sites` lists them; `api.site-add`, `api.site-remove` and `api.site-check` are risky, since a check goes to the internet (only to a site added to that project).
 
 Allowing `dx_do` once in your AI tool doesn't allow `dx_do_risky`. Every call shows in the dashboard's AI panel and in `dx runs`.
 

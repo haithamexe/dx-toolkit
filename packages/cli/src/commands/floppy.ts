@@ -13,7 +13,7 @@ export const floppyCommand: Command = {
     "dx floppy --stop           take it off",
     "dx floppy --startup        start it when you sign in",
     "dx floppy --no-startup     stop starting it when you sign in",
-    "dx floppy --colour maroon  its colours: navy (default), charcoal or maroon",
+    "dx floppy --colour maroon  its colours: violet (default), navy, charcoal or maroon",
     "dx floppy --status         is it running, and does it start when you sign in",
     "",
     "Click Floppy to open dx in its own window. Drag it along the taskbar; right-click for the menu.",
@@ -44,7 +44,7 @@ export const floppyCommand: Command = {
     if (values.status) {
       const running = readFloppyInfo();
       console.log(`${running ? c.green("●") : c.dim("○")} Floppy ${running ? `is on your taskbar ${c.dim(`(pid ${running.pid})`)}` : "isn't running"}`);
-      console.log(`  ${floppyStartsWithWindows() ? `starts ${signIn}` : c.dim(`doesn't start ${signIn}`)} · ${floppy.colourway ?? "navy"}`);
+      console.log(`  ${floppyStartsWithWindows() ? `starts ${signIn}` : c.dim(`doesn't start ${signIn}`)} · ${floppy.colourway ?? "violet"}`);
       return 0;
     }
 
@@ -71,7 +71,7 @@ export const floppyCommand: Command = {
     }
     if (values.startup !== undefined) {
       // The shortcut uses Floppy's icon, so its frames are drawn first.
-      writeFloppySprites(floppySpritesDir(), floppy.colourway ?? "navy");
+      writeFloppySprites(floppySpritesDir(), floppy.colourway ?? "violet");
       const r = setFloppyStartup(values.startup, floppyLauncher());
       if (!r.ok) {
         warn(r.message);

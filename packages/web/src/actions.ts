@@ -19,6 +19,8 @@ export interface DxAction {
   /** Sent with every call (the named git operations go through one route). */
   fixed?: Record<string, unknown>;
   risky?: boolean;
+  /** none, reversible, asks or name: see `riskOf`. Set for every action in DX_ACTIONS. */
+  risk?: "none" | "reversible" | "asks" | "name";
 }
 
 const DIR = "the project's folder, as list_projects or projects.list gives it";
@@ -54,18 +56,28 @@ const RISKY = { risky: true };
 const git = (name: string, title: string, params: Record<string, string> = {}, risky = false): DxAction =>
   A(`git.${name}`, title, "POST", "/api/git/action", { dir: DIR, ...params }, { fixed: { action: name }, ...(risky ? RISKY : {}) });
 
-export const DX_ACTIONS: DxAction[] = [
+const CATALOG: DxAction[] = [
   // Projects
   A("projects.list", "Every project dx found, with its folder, kind, dev command and git state", "GET", "/api/projects"),
   A("projects.open", "Open a project in the editor, a terminal, the file manager or the browser", "POST", "/api/projects/open", { dir: DIR, action: "editor, terminal, folder or browser", "url?": "for browser: the address", "terminal?": "a terminal id from projects.terminals" }),
   A("projects.terminals", "The terminals dx can open", "GET", "/api/terminals"),
   A("projects.note", "Leave a note on where things stand in a project (empty removes it)", "POST", "/api/note", { dir: DIR, note: "the note" }),
   A("projects.unsaved", "Work that isn't backed up: uncommitted changes and unpushed commits, in every project", "GET", "/api/unsaved"),
+  A("projects.facets", "Slice the projects: filter by status (running, needs, unsaved, behind), kind, tag or text, with how many each choice gives, and the saved views", "GET", "/api/facets", { "status?": "running, needs, unsaved or behind, comma separated", "kind?": "a framework or language, comma separated", "tag?": "tags, comma separated", "pinned?": "1 for pinned only", "q?": "text in the name, kind or tags" }),
+  A("projects.tag", "Set a project's tags (replaces them; an empty list removes them)", "POST", "/api/facets/tags", { dir: DIR, tags: "tags: letters, numbers, spaces, - or _, up to 24 characters, at most 8" }),
+  A("projects.pin", "Pin a project to the top of the list, or unpin it", "POST", "/api/facets/pin", { dir: DIR, pinned: "true to pin, false to unpin" }),
+  A("projects.view-save", "Save a filter as a named view (the same name replaces it)", "POST", "/api/facets/view", { name: "the view's name", filter: "an object with status, kind, tag, pinned, q" }),
+  A("projects.view-remove", "Remove a saved view", "POST", "/api/facets/view/remove", { id: "the view's id" }),
+  A("run.graph", "A project's stack as a map: each service with its status, port, errors and requests answered per minute, and who calls whom", "GET", "/api/graph", { dir: DIR }),
   A("projects.templates", "The templates dx new can start from", "GET", "/api/templates"),
   A("projects.new", "Create a project from a template, a folder or another project", "POST", "/api/new", { name: "the new project's folder name", source: "a template, folder or project", "in?": "the projects folder to put it in", "git?": "true to start a git repository", "install?": "true to install packages", "open?": "true to open it after" }, RISKY),
   A("projects.save-template", "Save a project as a template", "POST", "/api/templates/save", { dir: DIR, name: "the template's name" }),
   A("projects.clone", "Clone a git repository and get it ready to run (its install scripts run)", "POST", "/api/clone", { url: "a git address or owner/repo", "name?": "the folder name", "install?": "false to skip installing" }, RISKY),
-  A("projects.open-file", "Open a file of a project in the editor, at a line", "POST", "/api/open-file", { dir: DIR, file: "a path inside the project", "line?": "line number", "column?": "column number" }),
+  A("machine.caches", "The caches npm, pnpm, Yarn, Bun, pip and Go keep on this computer, with their sizes", "GET", "/api/cleanup/caches"),
+  A("machine.cache-clean", "Clean one tool's cache through the tool's own command (npm cache clean, pnpm store prune, go clean -cache…); it downloads again what it needs. Can't be undone", "POST", "/api/cleanup/caches/clean", { id: "npm, pnpm, yarn, bun, pip or go" }, RISKY),
+  A("projects.search", "Search a project's files by name and their contents (or every project with scope=all): ranked files with matching lines, facets by folder and kind", "GET", "/api/search", { "dir?": DIR, q: "what to find (at most 200 characters)", "mode?": "all, files or content", "scope?": "all for every project", "regex?": "1 for a regular expression", "word?": "1 for whole words", "case?": "1 case-sensitive, 0 not (smart case when left out)", "ext?": "extensions, comma-separated", "folder?": "folders of the project, comma-separated" }),
+  A("projects.search-preview", "A window of a found file around a line", "GET", "/api/search/preview", { dir: DIR, file: "a path from a search result", "line?": "the line to centre on", "around?": "lines each side (3 to 100)" }),
+  A("projects.open-file","Open a file of a project in the editor, at a line", "POST", "/api/open-file", { dir: DIR, file: "a path inside the project", "line?": "line number", "column?": "column number" }),
 
   // Run
   A("run.list", "The dev servers dx runs, with status, address and error count", "GET", "/api/dev"),
@@ -139,6 +151,13 @@ export const DX_ACTIONS: DxAction[] = [
   A("api.spec-update", "Rename an API, or say which service it is or where it's served (its mocks keep their ids)", "POST", "/api/lab/spec/update", { dir: DIR, id: "the API's id from api.spec", "name?": "a new name", "service?": "a service ('' for none)", "mount?": "where it's served ('' for the spec's own)" }),
   A("api.spec-forget", "Remove one API of the project (by id), or all of them", "POST", "/api/lab/spec/forget", { dir: DIR, "id?": "an API's id from api.spec (all when left out)" }, RISKY),
   A("api.mocks", "The project's mocks (or one by id)", "GET", "/api/mocks", { dir: DIR, "id?": "a mock's id" }),
+  A("api.mock-quick", "Mock this app in one go: make mocks from what the app called (or its API spec) and turn mock mode on; says what to do when there is nothing to make them from", "POST", "/api/mocks/quick", { dir: DIR, "refresh?": "true to make them again from the latest calls" }, RISKY),
+  A("run.restart-service", "Restart one service of a running stack (a process, or its Docker container); the others keep running. Not for a stack that runs through one command", "POST", "/api/dev/restart-service", { dir: DIR, service: "the service's name from run.graph" }, RISKY),
+  A("api.sites", "A project's deployed sites (address, environment)", "GET", "/api/project/sites", { dir: DIR }),
+  A("api.site-add", "Add a deployed site to a project by its address, so dx can check it, record it in the dx browser and answer its API calls from the project's mocks, rules and Chaos mode", "POST", "/api/project/sites/add", { dir: DIR, url: "the site's http(s) address", "env?": "production, staging, qa… (from the address when left out)", "label?": "a name" }, RISKY),
+  A("api.site-update", "Turn the project's mocks, rules and Chaos mode on or off for one site's API calls in the dx browser (production starts off)", "POST", "/api/project/sites/update", { dir: DIR, host: "the site's host from api.sites", apply: "true or false" }, RISKY),
+  A("api.site-remove", "Remove a site from a project", "POST", "/api/project/sites/remove", { dir: DIR, host: "the site's host from api.sites" }, RISKY),
+  A("api.site-check", "Check a site of the project: its status and headers, the page in a headless browser, or its speed and accessibility. Goes to the internet, only to that site", "POST", "/api/project/sites/check", { dir: DIR, host: "the site's host from api.sites", what: "status, page or audit", "path?": "a path on the site, like /pricing", "phone?": "true to load the page as a cheap phone on a slow connection (page only)" }, RISKY),
   A("api.mocks-make", "Make mocks from recorded calls", "POST", "/api/mocks/make", { dir: DIR, "since?": "how far back (1h, 3h…)", "visit?": "one visit's id" }, RISKY),
   A("api.mocks-from-spec", "Make mocks from the API specs, each API's mocks kept to it", "POST", "/api/lab/spec/mocks", { dir: DIR, "api?": "one API's id from api.spec (all when left out)" }, RISKY),
   A("api.mock-mode", "Turn mock mode on or off, strict, or the cache", "POST", "/api/mocks/mode", { dir: DIR, "on?": "true or false", "strict?": "true or false", "cache?": "true or false" }, RISKY),
@@ -236,6 +255,13 @@ export const DX_ACTIONS: DxAction[] = [
   A("lookback.journal-add", "Add a journal entry", "POST", "/api/journal", { text: "what was done" }),
 
   // Settings
+  A("settings.autonomy", "How much dx does on its own, per thing: suggest, ask or do", "GET", "/api/autonomy"),
+  A("settings.autonomy-set", "Change how much dx does on its own for one thing (suggest, ask or do)", "POST", "/api/autonomy", { id: "gitignore-rules, claude-setup, git-fetch or weekly-summary", level: "suggest, ask or do" }, RISKY),
+  A("settings.proposals", "What dx would do on its own but is waiting to be told (it was set to ask or suggest)", "GET", "/api/proposals"),
+  A("settings.proposal-resolve", "Answer one of those: approve runs it (and lists it under changes), or put it off for a day", "POST", "/api/proposals/resolve", { id: "the proposal's id", approve: "true to do it, false for not now" }, RISKY),
+  A("lookback.ai-uses", "What was sent to an AI by dx's buttons: which feature, which project, what parts (labels and sizes), and what came of it", "GET", "/api/ai/uses", { "days?": "how many days back (default 1)" }),
+  A("git.suggest-preview", "What Write message would send (the staged diff, the file list, the last subjects) counted by part, without sending anything", "POST", "/api/git/suggest/preview", { dir: DIR }),
+  A("git.fix-preview", "What Ask Claude to fix would send for an error, counted by part, without sending anything", "POST", "/api/fix/preview", { dir: DIR, source: "dev or activity", id: "the error's id" }),
   A("settings.health", "dx's checks, settings and recent runs", "GET", "/api/health"),
   A("settings.set", "Change dx's settings (editor, projects folders, activity history, alerts…)", "POST", "/api/config", { "editor?": "", "githubUser?": "", "addRoot?": "a folder", "removeRoot?": "a folder", "scanDepth?": "1-3", "terminal?": "", "activity?": "", "envAlerts?": "", "localhostRecording?": "", "visualDiff?": "", "activityDays?": "", "activityMaxMB?": "" }, RISKY),
   A("settings.ai-tools", "AI tools on this computer and whether dx is connected", "GET", "/api/ai-tools"),
@@ -271,6 +297,18 @@ export const DX_ACTIONS: DxAction[] = [
   A("team.phone", "The project's phone session", "GET", "/api/phone", { dir: DIR }),
   A("team.phone-start", "Open the project on a phone over Wi-Fi (listens on the local network)", "POST", "/api/phone", { dir: DIR, "on?": "false to stop", "minutes?": "how long" }, RISKY),
 ];
+
+/**
+ * What an action asks of the person, in four tiers (the Recent changes page explains them):
+ * none (reads), reversible (changes something dx lists and can put back), asks (an AI tool asks
+ * each time: `risky`), name (public or permanent, so the dashboard makes you type the name).
+ * `risky` and the top two tiers always agree; a test checks it.
+ */
+export type Risk = "none" | "reversible" | "asks" | "name";
+const TYPE_THE_NAME = new Set(["git.release-create"]);
+export const riskOf = (a: Pick<DxAction, "id" | "method" | "risky">): Risk => (TYPE_THE_NAME.has(a.id) ? "name" : a.risky ? "asks" : a.method === "GET" ? "none" : "reversible");
+
+export const DX_ACTIONS: DxAction[] = CATALOG.map((a) => ({ ...a, risk: riskOf(a) }));
 
 const byId = new Map(DX_ACTIONS.map((a) => [a.id, a]));
 export function dxAction(id: string): DxAction | undefined {

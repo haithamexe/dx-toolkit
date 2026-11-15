@@ -1,8 +1,12 @@
 import fs from "node:fs";
+import path from "node:path";
 import { writeFileAtomic } from "../atomic.js";
 import { detectEditor, detectProjectRoots, dxPath, loadConfig, saveConfig, type DxConfig } from "../config.js";
 import { recordRun } from "../runs.js";
-import { applyClaudeSetup } from "./agentsetup.js";
+import { applyClaudeSetup, claudeSetupState } from "./agentsetup.js";
+import { levelOf } from "./autonomy.js";
+import { propose } from "./proposals.js";
+import { recordChange } from "./changes.js";
 import { commandExists } from "./doctor.js";
 import { addGitignoreRules, auditEnvAsync } from "./envaudit.js";
 import { scanProjects } from "./projects.js";
@@ -47,13 +51,31 @@ function writeSeen(seen: Seen): void {
 }
 
 /** The rules a project's .gitignore lacks while a real .env file would be picked up by git. */
-export async function autoSetupProject(dir: string): Promise<string[]> {
+export async function gitignoreNeeds(dir: string): Promise<string[]> {
   const audit = await auditEnvAsync(dir);
   if (!audit.git) return [];
   if (!audit.files.some((f) => !f.example && f.notIgnored)) return [];
-  const missing = audit.rules.filter((r) => !r.covered).map((r) => r.pattern);
+  return audit.rules.filter((r) => !r.covered).map((r) => r.pattern);
+}
+
+/** Adds them (the "do" level), and writes it into the changes list with its Undo. */
+export async function autoSetupProject(dir: string, name = path.basename(dir)): Promise<string[]> {
+  const missing = await gitignoreNeeds(dir);
   if (!missing.length) return [];
-  return addGitignoreRules(dir, missing);
+  const created = !fs.existsSync(path.join(dir, ".gitignore"));
+  const added = addGitignoreRules(dir, missing);
+  if (added.length) {
+    recordChange({
+      by: "dx",
+      kind: "gitignore",
+      project: name,
+      dir,
+      what: `Added ${added.length} ${added.length === 1 ? "rule" : "rules"} to ${name}'s .gitignore`,
+      why: "A .env file here would have been picked up by git",
+      undo: { kind: "gitignore-rules", data: { dir, lines: added, created } },
+    });
+  }
+  return added;
 }
 
 let nextId = 1;
@@ -73,7 +95,23 @@ export async function autoSetupTick(projects: { dir: string; name: string }[], n
     seen.dirs[p.dir.toLowerCase()] = now.toISOString();
     if (baseline) continue;
     try {
-      const added = await autoSetupProject(p.dir);
+      const gitignoreLevel = levelOf("gitignore-rules");
+      if (gitignoreLevel !== "do") {
+        // Told to ask or only suggest: nothing is written, it's put to you.
+        const needs = await gitignoreNeeds(p.dir);
+        if (needs.length) {
+          propose({
+            capability: "gitignore-rules",
+            level: gitignoreLevel,
+            project: p.name,
+            dir: p.dir,
+            what: `Add ${needs.length} ${needs.length === 1 ? "rule" : "rules"} to ${p.name}'s .gitignore`,
+            why: "A .env file here would be picked up by git",
+            action: { kind: "gitignore-rules", data: { dir: p.dir, patterns: needs } },
+          });
+        }
+      }
+      const added = gitignoreLevel === "do" ? await autoSetupProject(p.dir, p.name) : [];
       if (added.length) {
         const text = `${p.name}: added ${added.filter((a) => !a.startsWith("!")).join(", ")} to .gitignore, so its .env files stay out of git`;
         recordRun("autosetup", true, text, "web", { project: p.name });
@@ -81,7 +119,29 @@ export async function autoSetupTick(projects: { dir: string; name: string }[], n
       }
       // Its Claude Code sessions are pointed at dx too (local files, excluded from git; `dx claude --undo` removes them).
       try {
-        if (applyClaudeSetup({ name: p.name, dir: p.dir }, "web").length) {
+        const claudeLevel = levelOf("claude-setup");
+        if (claudeLevel !== "do") {
+          if (!claudeSetupState(p.dir).on) {
+            propose({
+              capability: "claude-setup",
+              level: claudeLevel,
+              project: p.name,
+              dir: p.dir,
+              what: `Point ${p.name}'s Claude Code sessions at dx`,
+              why: "So they run and test through dx, where you can see it",
+              action: { kind: "claude-setup", data: { dir: p.dir } },
+            });
+          }
+        } else if (applyClaudeSetup({ name: p.name, dir: p.dir }, "web").length) {
+          recordChange({
+            by: "dx",
+            kind: "claude-setup",
+            project: p.name,
+            dir: p.dir,
+            what: `Pointed ${p.name}'s Claude Code sessions at dx`,
+            why: "So they run and test through dx, where you can see it",
+            undo: { kind: "claude-setup", data: { dir: p.dir } },
+          });
           notices.push({ id: nextId++, at: now.toISOString(), project: p.name, text: `${p.name}: Claude Code sessions here now run and test through dx (undo: dx claude --undo)` });
         }
       } catch {

@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { autoFixConfig, autoSetupTick, buildSummary, dxPath, formatSummary, loadConfig, recordRun, saveSummary, scanProjectsCached, writeFileAtomic, type AutoNotice } from "@dx/core";
+import { autoFixConfig, autoSetupTick, buildSummary, dxPath, formatSummary, levelOf, loadConfig, propose, recordRun, saveSummary, scanProjectsCached, writeFileAtomic, type AutoNotice } from "@dx/core";
 
 /**
  * The dashboard's own look at the projects, every minute: a project dx hasn't seen before is set up
@@ -39,6 +39,16 @@ export function weekKey(d: Date): string {
  * Saves the last seven days' summary once a week, from Monday on, without GitHub (no network and no
  * token): the file is in ~/.dx/summaries like one you saved yourself. `build`, `save` and `format` are for tests.
  */
+/** Whether this week's summary hasn't been saved yet and today is a day to save it (not Sunday: wait for Monday, so a week is whole). */
+export function weeklyDue(now = new Date()): boolean {
+  if (now.getDay() === 0) return false;
+  try {
+    return (JSON.parse(fs.readFileSync(dxPath("weekly.json"), "utf8")) as { week?: string }).week !== weekKey(now);
+  } catch {
+    return true;
+  }
+}
+
 export async function saveWeeklySummary(now = new Date(), build: typeof buildSummary = buildSummary, save: typeof saveSummary = saveSummary, format: typeof formatSummary = formatSummary): Promise<AutoNotice | undefined> {
   if (now.getDay() === 0) return undefined; // Sunday: wait for Monday, so a week is whole
   const marker = dxPath("weekly.json");
@@ -77,7 +87,13 @@ export function startAutoSetup(): () => void {
     void lookAtProjects(scanProjectsCached(loadConfig()));
     // The config is looked at less often: every ten minutes.
     if (n++ % 10 === 0) void healConfig();
-    if (n % 30 === 1) void saveWeeklySummary().catch(() => undefined);
+    if (n % 30 === 1) {
+      const level = levelOf("weekly-summary");
+      if (level === "do") void saveWeeklySummary().catch(() => undefined);
+      else if (weeklyDue()) {
+        propose({ capability: "weekly-summary", level, what: "Save last week's summary", why: "To ~/.dx/summaries, from your commits and journal. No network", action: { kind: "weekly-summary", data: {} } });
+      }
+    }
   };
   // A first look a little after start, so it doesn't compete with the dashboard coming up.
   const first = setTimeout(tick, 15_000);
