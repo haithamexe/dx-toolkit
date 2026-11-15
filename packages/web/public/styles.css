@@ -116,7 +116,7 @@
   --sidebar: 232px;
   --ai-lane: 320px;
   --control: 34px;
-  --sheet-gap: 16px;
+  --sheet-gap: var(--s4);
   --second: #ed4074;
   --second-ink: #9f0042;
   --second-soft: #fee8eb;
@@ -329,6 +329,8 @@ html {
 }
 body {
   margin: 0;
+  /* The gap around the sheet is padding on the desk, in the spacing scale (--s4), so the sheet never depends on a margin collapsing. */
+  padding: var(--sheet-gap);
   background-color: var(--desk);
   background-image:
     linear-gradient(var(--desk-major) 1px, transparent 1px),
@@ -408,7 +410,6 @@ select {
   display: grid;
   grid-template-columns: var(--sidebar) minmax(0, 1fr);
   height: calc(100vh - 2 * var(--sheet-gap));
-  margin: var(--sheet-gap);
   background: var(--bg);
   border-radius: var(--r3);
   box-shadow: 0 0 0 1px var(--sheet-edge), var(--sheet-shadow);
@@ -2674,7 +2675,7 @@ summary.error-row {
 /* ------------------------------------------------------------ narrow screens */
 @media (max-width: 860px) {
   :root {
-    --sheet-gap: 8px;
+    --sheet-gap: var(--s2);
   }
   .app {
     grid-template-columns: minmax(0, 1fr);

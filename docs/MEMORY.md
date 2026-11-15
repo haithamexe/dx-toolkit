@@ -87,6 +87,11 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Decisions
 
+### The gap around the sheet is padding on the desk (`web/public/styles.css`)
+
+- **The maintainer liked a sibling app's sheet gap and asked for the same pattern here.** The sibling app had been off centre: its sheet had a margin, and the margin collapsed through a root element of fixed height, which pushed the page down and made it scroll. dx was not affected (its `body` has an automatic height), but it relied on that. Both now use one rule: `--sheet-gap` is a token from the spacing scale (`var(--s4)`, `var(--s2)` on narrow screens), applied as padding on the desk, with no margin on the sheet.
+- **Measured**: 16 px on every side with no scrolling at wide sizes, 8 px on a phone width, and no sideways scroll.
+
 ### Websites, finished, and a round of checks (Nov 2026: `state.ts`, `attention.ts`, `facets.ts`, `homeapi.ts`, `sitecheck.ts` `fetchSiteText`, `mcp/src/index.ts` `pickProject`, `dev.ts` `spawnedAt`, `server.ts`)
 
 - **The maintainer said "proceed with all, finish everything this run"** to the ranked list that followed 1.13.0.

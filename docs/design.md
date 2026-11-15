@@ -53,7 +53,7 @@ A standard here is a rule with a helper that already exists. Use the helper; don
 
 ## The brand: Arcade
 
-dx is a small, friendly, precise tool with a pixel mascot. The look is **"window on the desk"**: the app is one sheet resting on a deep indigo desk whose 8 px grid shows only around it. Light and dark are both first-class. Every colour is a token in `packages/web/public/styles.css`; the rest of the file only uses them. **Never write a literal colour.** Add or reuse a token, in light and dark, and measure it.
+dx is a small, friendly, precise tool with a pixel mascot. The look is **"window on the desk"**: the app is one sheet resting on a deep indigo desk whose 8 px grid shows only around it. The gap around the sheet is `--sheet-gap`, which is `--s4` (and `--s2` on narrow screens), applied as **padding on the desk** (`body`), never as a margin on the sheet: a margin can collapse through its parent and push the page off centre. Light and dark are both first-class. Every colour is a token in `packages/web/public/styles.css`; the rest of the file only uses them. **Never write a literal colour.** Add or reuse a token, in light and dark, and measure it.
 
 | Role | Token | Means |
 |---|---|---|

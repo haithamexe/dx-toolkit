@@ -2,6 +2,12 @@
 
 Notable changes to dx, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- **The gap around the sheet is padding on the desk, in the spacing scale.** `--sheet-gap` is now `var(--s4)` (`var(--s2)` on narrow screens) and is applied as padding on `body`, instead of as a margin on `.app`. The look is the same (16 px, 8 px on narrow screens), but the sheet no longer depends on a margin collapsing through its parent, so it stays centred whatever wraps it.
+
 ## 1.14.0 (2026-11-15)
 
 Website projects are finished: they travel with `dx state`, show up on Home and in the project filters, find their API spec on the site, and are seen by the MCP tools. Short results now show on the button, and two flaky start-up tests are fixed.
