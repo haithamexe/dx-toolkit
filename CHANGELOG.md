@@ -2,7 +2,9 @@
 
 Notable changes to dx, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.13.0 (2026-11-15)
+
+A website can be a project: add its address from the project picker and the app follows it, without the pages that need code.
 
 ### Added
 
