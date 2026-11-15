@@ -4,6 +4,10 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 ## Unreleased
 
+## 1.11.0 (2026-11-10)
+
+dx shows less and does more by itself: a shorter sidebar and short pages, pages that stay current, settings that save themselves, a README that fits on a screen, and Claude Code sessions that run and test through dx. Update with `npm install -g dx-devkit@latest`.
+
 ### Added
 
 - **Run as**: beside Run, the other ways to run a project: a production build then its own server (`next start`, `vite preview`, a `serve` script, with `NODE_ENV=production` and `.env.production`), its per-environment scripts (`start:staging`, with `build:staging` first), modes it names in `.devrc.json` (`"modes"`), and the dev server with any `.env.<name>` file laid over `.env`. The card says how it runs, and Restart and Run again run it the same way. `dx go --modes`, `--mode` and `--env`, and `mode`/`env` on the `start_dev_server` MCP tool and the `run.start` action do the same. Values are never shown or logged.
