@@ -783,6 +783,17 @@ function launchNow(p: Proc, spec: Spec): void {
 }
 
 /**
+ * Whether a process that hasn't said where it listens counts as ready anyway: it has run for more than 5 s and
+ * been quiet for more than 2.5 s. Counted from when the process started (`spawnedAt`), not from when the project
+ * began getting ready: a slow machine that spent its first seconds on packages and .env steps must still give the
+ * server time to say where it listens. Pure, so a test can check it without waiting on a clock.
+ */
+export function readyWithoutAddress(p: { port?: number; startedAt: string; spawnedAt?: number; lastOutputAt: number }, now: number): boolean {
+  const since = p.spawnedAt ?? Date.parse(p.startedAt);
+  return p.port === undefined && now - since > 5000 && now - Math.max(p.lastOutputAt, since) > 2500;
+}
+
+/**
  * Marks a process ready once its port opens. One that never says where it listens (a worker, a
  * watcher) counts as ready when it's still running and its output has gone quiet.
  */
@@ -812,10 +823,7 @@ async function watchReady(p: Proc): Promise<void> {
     }
     // Counted from when the process started, not from when the project began getting ready: a slow machine that spent
     // its first seconds on packages and .env steps must still give the server time to say where it listens.
-    const since = p.spawnedAt ?? Date.parse(p.startedAt);
-    const age = Date.now() - since;
-    const quiet = Date.now() - Math.max(p.lastOutputAt, since);
-    if (p.port === undefined && age > 5000 && quiet > 2500) {
+    if (readyWithoutAddress(p, Date.now())) {
       p.status = "ready";
       push(p, "dx", p.split ? "Running." : "Running (it didn't say where it listens).");
       return;

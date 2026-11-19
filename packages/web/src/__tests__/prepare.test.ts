@@ -85,23 +85,20 @@ test("a step that fails stops the start, and the log says which and why", async 
   assert.ok(log.some((l: string) => /didn't start: .* failed/.test(l)));
 });
 
-test("a slow machine: the time spent getting ready isn't counted against a server that is slow to say where it listens", { timeout: 60_000 }, async () => {
+test("a slow machine: the time spent getting ready isn't counted against a server that is slow to say where it listens", async () => {
   // Found on CI: after a slow prepare, "ready (it didn't say where it listens)" was declared at once, before the
-  // server printed its address, so the card had no address. A step of 6 s, then a server that takes 2 s to listen: still
-  // later than the old bug's instant "ready", and well inside the 5 s a server gets from its own start even when the
-  // whole suite is loading the machine (3.5 s left a margin that a slow process start could eat).
-  const dir = path.join(root, "slow-start");
-  fs.mkdirSync(path.join(dir, "node_modules", "x"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "slow-start", scripts: { dev: "node server.cjs" } }));
-  fs.writeFileSync(path.join(dir, ".devrc.json"), JSON.stringify({ prepare: [`node -e "setTimeout(() => console.log('slow step done'), 6000)"`] }));
-  fs.writeFileSync(path.join(dir, "server.cjs"), `const http = require("http"); setTimeout(() => { const s = http.createServer((q, r) => r.end("late but ready")).listen(0, "127.0.0.1", () => console.log("Local: http://localhost:" + s.address().port + "/")); }, 2000);`);
-  try {
-    await api("/api/dev/start", { dir });
-    const s = await settle(dir);
-    assert.equal(s.status, "ready", JSON.stringify(s));
-    assert.ok(s.url, "the address it printed, not 'it didn't say where it listens'");
-    assert.equal(await (await fetch(s.url)).text(), "late but ready");
-  } finally {
-    await api("/api/dev/stop", { dir });
-  }
+  // server printed its address, so the card had no address. The rule is about clocks, so it is checked on a made-up
+  // clock: waiting on a real one (a 6 s step, then a server that takes 3 s to listen) failed on loaded CI machines.
+  const { readyWithoutAddress } = await import("../dev.js");
+  const t0 = Date.parse("2026-01-01T00:00:00Z");
+  // The project began getting ready at t0; its 9 s of steps ended and the process started at t0 + 9 s, printing a last line then.
+  const proc = (extra: object = {}) => ({ startedAt: new Date(t0).toISOString(), spawnedAt: t0 + 9000, lastOutputAt: t0 + 9000, ...extra });
+  assert.equal(readyWithoutAddress(proc(), t0 + 9000), false, "just started: the steps' time isn't its age (this was the bug)");
+  assert.equal(readyWithoutAddress(proc(), t0 + 9000 + 4900), false, "under 5 s of running");
+  assert.equal(readyWithoutAddress(proc(), t0 + 9000 + 5100), true, "over 5 s of running and quiet");
+  assert.equal(readyWithoutAddress(proc({ lastOutputAt: t0 + 9000 + 4000 }), t0 + 9000 + 5100), false, "it spoke 1.1 s ago: not quiet yet");
+  assert.equal(readyWithoutAddress(proc({ lastOutputAt: t0 + 9000 + 4000 }), t0 + 9000 + 6600), true, "quiet for 2.6 s");
+  assert.equal(readyWithoutAddress(proc({ port: 4000 }), t0 + 60_000), false, "it said where it listens: the port decides, not the clock");
+  // Without a start time of its own (an older record), the project's start is used, as before.
+  assert.equal(readyWithoutAddress({ startedAt: new Date(t0).toISOString(), lastOutputAt: t0 }, t0 + 5100), true);
 });

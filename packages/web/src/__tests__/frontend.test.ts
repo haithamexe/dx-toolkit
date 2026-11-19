@@ -49,7 +49,9 @@ test("each page opens in a real browser without a script error", { skip: findBro
   for (let i = 0; i < ids.length; i += 4) {
     await Promise.all(
       ids.slice(i, i + 4).map(async (id) => {
-        const r = await checkPage({ url: `${dashboard.url}#/${id}`, timeoutMs: 40_000 });
+        let r = await checkPage({ url: `${dashboard.url}#/${id}`, timeoutMs: 40_000 });
+        // A browser that never answered (four starting at once on a loaded CI machine) says nothing about the page: once more, alone.
+        if (r.error && /didn't answer|didn't start|DevTools/i.test(String(r.error))) r = await checkPage({ url: `${dashboard.url}#/${id}`, timeoutMs: 40_000 });
         if (r.error) problems.push(`${id}: ${r.error}`);
         for (const e of r.exceptions) problems.push(`${id}: ${e.text}`);
         if (!r.title || !/ · dx$/.test(r.title)) problems.push(`${id}: the page's title is "${r.title}"`);
