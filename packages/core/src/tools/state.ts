@@ -36,7 +36,7 @@ const SCENES_MAX = 10 * 1024 * 1024;
 const BACKUPS_KEPT = 5;
 
 /** Settings that mean the same on another computer. Paths, ports dx picked, Floppy's place and the app's install aren't among them. */
-const PORTABLE = ["editor", "scanDepth", "ignore", "devServerTimeout", "githubUser", "autoConnectAi", "localDomains", "localDomainsPort", "activity", "activityDays", "activityMaxMB", "localhostRecording", "visualDiff", "visualMobile", "envAlerts", "agentAlerts", "terminal", "aiCli"] as const;
+const PORTABLE = ["editor", "scanDepth", "ignore", "devServerTimeout", "githubUser", "autoConnectAi", "localDomains", "localDomainsPort", "activity", "activityDays", "activityMaxMB", "localhostRecording", "visualDiff", "visualMobile", "envAlerts", "agentAlerts", "osNotifications", "terminal", "aiCli"] as const;
 type PortableKey = (typeof PORTABLE)[number];
 /** Editors dx knows by name: an editor setting is a command dx runs, so one from a file must be one of these. */
 const EDITORS = new Set(["code", "code-insiders", "cursor", "windsurf", "zed", "subl", "webstorm", "idea", "phpstorm", "pycharm", "goland", "rider", "fleet", "nvim", "vim", "emacs", "nova", "atom"]);
@@ -349,7 +349,7 @@ function cleanSettings(input: unknown): StateSettings {
   const out: StateSettings = {};
   const bool = (k: PortableKey) => typeof o[k] === "boolean" && ((out as Record<string, unknown>)[k] = o[k]);
   const int = (k: PortableKey, min: number, max: number) => Number.isInteger(o[k]) && (o[k] as number) >= min && (o[k] as number) <= max && ((out as Record<string, unknown>)[k] = o[k]);
-  for (const k of ["autoConnectAi", "localDomains", "activity", "localhostRecording", "visualDiff", "visualMobile", "envAlerts", "agentAlerts"] as const) bool(k);
+  for (const k of ["autoConnectAi", "localDomains", "activity", "localhostRecording", "visualDiff", "visualMobile", "envAlerts", "agentAlerts", "osNotifications"] as const) bool(k);
   int("scanDepth", 1, 6);
   int("devServerTimeout", 5, 600);
   int("localDomainsPort", 0, 65535);
@@ -635,6 +635,8 @@ const SETTING_NAMES: Record<string, string> = {
   visualDiff: "Visual diffs",
   visualMobile: "Visual diffs at phone size",
   envAlerts: ".env alerts",
+  agentAlerts: "Agent alerts",
+  osNotifications: "System notifications",
   terminal: "Terminal",
   aiCli: "AI coding tool",
   floppyColourway: "Floppy's colours",

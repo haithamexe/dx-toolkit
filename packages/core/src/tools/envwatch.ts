@@ -27,11 +27,19 @@ export interface EnvAlert {
   text: string;
 }
 
-/** Whether a project's alerts are on, and its system notifications: on unless turned off (globally with envAlerts, or for the project). */
-export function alertSettings(dir: string, config: { envAlerts?: boolean; projectAlerts?: Record<string, { off?: boolean; osOff?: boolean }> }): { on: boolean; os: boolean } {
+/** Whether dx may use the system's own notifications at all: on unless `osNotifications` is false. */
+export function osNotificationsOn(config: { osNotifications?: boolean }): boolean {
+  return config.osNotifications !== false;
+}
+
+/**
+ * Whether a project's alerts are on, and its system notifications: on unless turned off (alerts globally
+ * with envAlerts, the system's notifications globally with osNotifications, or either for the project).
+ */
+export function alertSettings(dir: string, config: { envAlerts?: boolean; osNotifications?: boolean; projectAlerts?: Record<string, { off?: boolean; osOff?: boolean }> }): { on: boolean; os: boolean } {
   const p = config.projectAlerts?.[path.resolve(dir).toLowerCase()];
   const on = config.envAlerts !== false && !p?.off;
-  return { on, os: on && !p?.osOff };
+  return { on, os: on && osNotificationsOn(config) && !p?.osOff };
 }
 
 /** A .env file, by its name: `.env`, `.env.local`, `config/.env.production`, not the examples. */

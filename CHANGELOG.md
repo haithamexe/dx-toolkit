@@ -8,6 +8,12 @@ Notable changes to dx, newest first. The format follows [Keep a Changelog](https
 
 - **The gap around the sheet is padding on the desk, in the spacing scale.** `--sheet-gap` is now `var(--s4)` (`var(--s2)` on narrow screens) and is applied as padding on `body`, instead of as a margin on `.app`. The look is the same (16 px, 8 px on narrow screens), but the sheet no longer depends on a margin collapsing through its parent, so it stays centred whatever wraps it.
 
+## Unreleased
+
+### Added
+
+- **A switch for the system's notifications**: **Settings** has **Also as a notification from the system, outside dx**, on as before. Off, every alert stays inside dx (the toast, the sound and Floppy's line) and dx never asks Windows, macOS or Linux for a notification: not for a `.env` that changed, was staged or was committed, not for an agent that is waiting or stuck, and not for the notice when dx is removed. A project's own "also from the system" choice on its Env & secrets page is kept under it (shown, and greyed out with a note, while the switch is off). `osNotifications` in the config, `settings.set` for AI agents, and carried by `dx state`.
+
 ## 1.14.0 (2026-11-15)
 
 Website projects are finished: they travel with `dx state`, show up on Home and in the project filters, find their API spec on the site, and are seen by the MCP tools. Short results now show on the button, and two flaky start-up tests are fixed.

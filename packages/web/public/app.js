@@ -7148,12 +7148,12 @@ function envPage(root) {
       return alertsCard.remove();
     }
     const on = h("input", { type: "checkbox", id: "env-alerts-on", checked: s.on, disabled: !s.everywhere });
-    const os = h("input", { type: "checkbox", id: "env-alerts-os", checked: s.os, disabled: !s.on });
+    const os = h("input", { type: "checkbox", id: "env-alerts-os", checked: s.projectOs, disabled: !s.on || !s.osEverywhere });
     const save = async () => {
       try {
         const r = await api("/api/alerts/project", { method: "POST", body: { dir, on: on.checked, os: os.checked } });
-        os.disabled = !r.on;
-        os.checked = r.os;
+        os.disabled = !r.on || !r.osEverywhere;
+        os.checked = r.projectOs;
         toast(r.on ? (r.os ? "Alerts on, with system notifications" : "Alerts on, in dx only") : "Alerts off for this project");
       } catch (err) {
         toast(err.message, "error");
@@ -7171,6 +7171,7 @@ function envPage(root) {
         h("label", { class: "check", for: "env-alerts-os" }, os, "Also as a notification from the system, outside dx"),
       ),
       s.everywhere ? null : h("p", { class: "dim" }, "Alerts are off for every project in ", h("a", { href: "#/health" }, "Settings"), "."),
+      s.everywhere && !s.osEverywhere ? h("p", { class: "dim" }, "System notifications are off for every project in ", h("a", { href: "#/health" }, "Settings"), ".") : null,
     );
   }
   void loadAlerts();
@@ -13585,6 +13586,9 @@ function healthPage(root) {
     const localhostOn = h("input", { type: "checkbox", id: "cfg-localhost", checked: config.localhostRecording !== false });
     const visualOn = h("input", { type: "checkbox", id: "cfg-visual", checked: config.visualDiff !== false });
     const alertsOn = h("input", { type: "checkbox", id: "cfg-alerts", checked: config.envAlerts !== false || config.agentAlerts !== false });
+    // Whether an alert also goes to the system (a Windows toast, a macOS or Linux notification); off keeps every alert inside dx.
+    const osNotesOn = h("input", { type: "checkbox", id: "cfg-os-notes", checked: config.osNotifications !== false, disabled: !alertsOn.checked });
+    alertsOn.addEventListener("change", () => (osNotesOn.disabled = !alertsOn.checked));
     const activityDays = h("select", { id: "cfg-activity-days" }, [1, 3, 7, 14, 30, 90].map((d) => h("option", { value: d, selected: d === (config.activityDays ?? 7) }, plural(d, "day"))));
     const activityMax = h("select", { id: "cfg-activity-max" }, [100, 250, 500, 1000, 2000, 5000].map((mb) => h("option", { value: mb, selected: mb === (config.activityMaxMB ?? 500) }, mb >= 1000 ? `${mb / 1000} GB` : `${mb} MB`)));
     const activityUse = h("span", { class: "field-hint" });
@@ -13597,7 +13601,7 @@ function healthPage(root) {
       [["auto", "Same as the system"], ["light", "Light"], ["dark", "Dark"]].map(([value, label]) => h("option", { value, selected: value === pref("theme", "auto") }, label)),
     );
 
-    const currentValues = () => ({ editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, envAlerts: alertsOn.checked, agentAlerts: alertsOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) });
+    const currentValues = () => ({ editor: editor.value, githubUser: github.value, scanDepth: Number(depth.value), activity: activityOn.checked, localhostRecording: localhostOn.checked, visualDiff: visualOn.checked, envAlerts: alertsOn.checked, agentAlerts: alertsOn.checked, osNotifications: osNotesOn.checked, activityDays: Number(activityDays.value), activityMaxMB: Number(activityMax.value) });
     let saved = currentValues();
     let saveTimer = 0;
     async function autosave() {
@@ -13672,6 +13676,7 @@ function healthPage(root) {
           h("span", { class: "field-label" }, "Alerts"),
           // One switch for both kinds; each project can still turn its own off on its Env & secrets page.
           h("label", { class: "check", for: "cfg-alerts", title: "Each project can turn its own alerts, or only the system notifications, off on its Env & secrets page." }, alertsOn, "Tell me about .env changes and agents waiting"),
+          h("label", { class: "check", for: "cfg-os-notes", title: "Off: alerts stay in dx (the toast, the sound and Floppy's line). A project can also turn its own system notifications off on its Env & secrets page." }, osNotesOn, "Also as a notification from the system, outside dx"),
         ),
       ),
       // Everything below has a sensible default and is found by dx itself.

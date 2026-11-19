@@ -18,6 +18,7 @@ import {
   startUninstall,
   uninstallBlocked,
   alertSettings,
+  osNotificationsOn,
   auditDependencies,
   buildSummary,
   checkEnvAsync,
@@ -631,8 +632,7 @@ const routes: Record<string, Handler> = {
   // A project's alerts: all of them (.env warnings and its tools' watches), and the system's notifications. On unless turned off.
   "GET /api/alerts/project": (req) => {
     const project = knownProject(req.query.get("dir"));
-    const config = loadConfig();
-    return { ...alertSettings(project.dir, config), everywhere: config.envAlerts !== false };
+    return alertState(project.dir);
   },
   "POST /api/alerts/project": (req) => {
     const project = knownProject(req.body.dir);
@@ -644,7 +644,7 @@ const routes: Record<string, Handler> = {
     else delete all[key];
     saveConfig({ ...config, projectAlerts: Object.keys(all).length ? all : undefined });
     recordRun("alerts", true, `${project.name}: alerts ${entry.off ? "off" : entry.osOff ? "on, without system notifications" : "on"}`, "web", { project: project.name });
-    return alertSettings(project.dir, loadConfig());
+    return alertState(project.dir);
   },
   // Warnings about .env files (changed, staged, committed) since a moment, for the page's toast and sound. File names only, never values.
   "GET /api/env/alerts": (req) => {
@@ -1388,6 +1388,7 @@ const routes: Record<string, Handler> = {
     if (typeof req.body.activity === "boolean") config.activity = req.body.activity;
     if (typeof req.body.envAlerts === "boolean") config.envAlerts = req.body.envAlerts;
     if (typeof req.body.agentAlerts === "boolean") config.agentAlerts = req.body.agentAlerts;
+    if (typeof req.body.osNotifications === "boolean") config.osNotifications = req.body.osNotifications;
     if (typeof req.body.localhostRecording === "boolean") config.localhostRecording = req.body.localhostRecording;
     if (typeof req.body.visualDiff === "boolean") config.visualDiff = req.body.visualDiff;
     if (req.body.activityDays !== undefined) config.activityDays = clampInt(req.body.activityDays, 1, 365, config.activityDays ?? 7);
@@ -1747,6 +1748,21 @@ export function replayOf(dir: string, visit: string): Replay {
   if (!replay) throw new HttpError(404, "That visit isn't in the history any more.");
   if (!isLoopbackUrl(replay.url)) throw new HttpError(400, "Only pages on this computer can be replayed.");
   return replay;
+}
+
+/**
+ * A project's alert switches as the page shows them. `on` and `os` are what will happen (the Settings
+ * switches count); `projectOs` is only this project's own choice, so the page can show it, and keep it,
+ * while the system's notifications are off for every project (`osEverywhere` false).
+ */
+function alertState(dir: string) {
+  const config = loadConfig();
+  return {
+    ...alertSettings(dir, config),
+    projectOs: alertSettings(dir, { ...config, osNotifications: true }).os,
+    everywhere: config.envAlerts !== false,
+    osEverywhere: osNotificationsOn(config),
+  };
 }
 
 function clampInt(raw: unknown, min: number, max: number, fallback: number): number {

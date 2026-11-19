@@ -8,7 +8,7 @@ import { test } from "node:test";
 // Warnings about .env files: changed, staged, committed (not a branch switch), and the system's
 // notification, given its words as data. A temp repository; no real notification is shown.
 process.env.DX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "dx-envwatch-test-"));
-const { EnvWatcher, isEnvFileName, alertSettings, notifyOs, envAlertWords } = await import("../index.js");
+const { EnvWatcher, isEnvFileName, alertSettings, osNotificationsOn, notifyOs, envAlertWords } = await import("../index.js");
 
 function repo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shop-website-"));
@@ -72,6 +72,17 @@ test("alerts are on unless turned off everywhere or for the project; system noti
   assert.deepEqual(alertSettings(dir, { projectAlerts: { [key]: { osOff: true } } }), { on: true, os: false });
   assert.deepEqual(alertSettings(dir, { projectAlerts: { [key]: { off: true } } }), { on: false, os: false });
   assert.deepEqual(alertSettings(dir, { envAlerts: false }), { on: false, os: false });
+});
+
+test("system notifications can be turned off for everything, leaving the alerts in dx", () => {
+  const dir = path.join(os.tmpdir(), "todo-app");
+  const key = path.resolve(dir).toLowerCase();
+  assert.equal(osNotificationsOn({}), true, "on unless turned off");
+  assert.equal(osNotificationsOn({ osNotifications: true }), true);
+  assert.equal(osNotificationsOn({ osNotifications: false }), false);
+  assert.deepEqual(alertSettings(dir, { osNotifications: false }), { on: true, os: false }, "the alert is still on, only the system's copy of it is not");
+  assert.deepEqual(alertSettings(dir, { osNotifications: false, projectAlerts: { [key]: { off: true } } }), { on: false, os: false });
+  assert.deepEqual(alertSettings(dir, { osNotifications: true, projectAlerts: { [key]: { osOff: true } } }), { on: true, os: false }, "a project's own choice still counts");
 });
 
 test("the system's notification gets its words as data, never as part of a command", () => {

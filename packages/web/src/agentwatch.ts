@@ -1,4 +1,4 @@
-import { agentAlertWords, agentsReadable, alertSettings, AgentWatcher, loadConfig, notifyOs, readAgents, recordRun, scanProjects, waitingNow, type AgentAlert, type AgentNode, type Project } from "@dx/core";
+import { agentAlertWords, agentsReadable, alertSettings, AgentWatcher, loadConfig, notifyOs, osNotificationsOn, readAgents, recordRun, scanProjects, waitingNow, type AgentAlert, type AgentNode, type Project } from "@dx/core";
 
 /**
  * The dashboard's watch on the AI agents: a session waiting for your reply, or an agent stuck on one
@@ -31,7 +31,8 @@ export function startAgentWatch(): () => void {
       });
       watcher.check(latest, Date.now(), (a) => {
         const dir = dirOf(a.project);
-        if (!dir || alertSettings(dir, config).os) notifyOs(a.title, a.text);
+        // The system's notification only when dx may use it at all, and the project hasn't kept its alerts inside dx.
+        if (osNotificationsOn(config) && (!dir || alertSettings(dir, config).os)) notifyOs(a.title, a.text);
         recordRun("agent-alert", a.kind === "waiting", `${a.title}: ${a.text}`, "web", a.project ? { project: a.project } : undefined);
       });
     } catch {

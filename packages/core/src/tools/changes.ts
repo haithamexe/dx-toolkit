@@ -155,6 +155,7 @@ const CONFIG_KEYS: Record<string, "boolean" | "number" | "string"> = {
   activity: "boolean",
   envAlerts: "boolean",
   agentAlerts: "boolean",
+  osNotifications: "boolean",
   localhostRecording: "boolean",
   visualDiff: "boolean",
   activityDays: "number",

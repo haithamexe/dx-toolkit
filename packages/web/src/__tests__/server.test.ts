@@ -126,6 +126,26 @@ test("journal: add an entry and read it back", async () => {
   assert.deepEqual(json.map((e: { text: string }) => e.text), ["built the dashboard"]);
 });
 
+test("settings: the system's notifications have one switch for every project, and a project keeps its own choice under it", async () => {
+  const q = `/api/alerts/project?dir=${encodeURIComponent(app)}`;
+  const start = (await api(q)).json;
+  assert.equal(start.os, true, "on unless turned off");
+  assert.equal(start.osEverywhere, true);
+  // Only a boolean is taken; anything else leaves the setting alone.
+  assert.equal((await api("/api/config", { method: "POST", body: { osNotifications: "no" } })).json.osNotifications, undefined);
+  assert.equal((await api("/api/config", { method: "POST", body: { osNotifications: false } })).json.osNotifications, false);
+  const off = (await api(q)).json;
+  assert.deepEqual({ on: off.on, os: off.os, projectOs: off.projectOs, osEverywhere: off.osEverywhere }, { on: true, os: false, projectOs: true, osEverywhere: false }, "alerts stay on, only the system's copy stops; the project's own choice is still shown as on");
+  // The project turns its system notifications off while they're off everywhere: its choice is kept when they come back.
+  const mine = (await api("/api/alerts/project", { method: "POST", body: { dir: app, on: true, os: false } })).json;
+  assert.equal(mine.projectOs, false);
+  assert.equal((await api("/api/config", { method: "POST", body: { osNotifications: true } })).json.osNotifications, true);
+  const back = (await api(q)).json;
+  assert.deepEqual({ on: back.on, os: back.os, projectOs: back.projectOs, osEverywhere: back.osEverywhere }, { on: true, os: false, projectOs: false, osEverywhere: true });
+  await api("/api/alerts/project", { method: "POST", body: { dir: app, on: true, os: true } });
+  assert.equal((await api(q)).json.os, true);
+});
+
 test("settings: validates and saves", async () => {
   assert.equal((await api("/api/config", { method: "POST", body: { githubUser: "not a user!" } })).status, 400);
   assert.equal((await api("/api/config", { method: "POST", body: { addRoot: path.join(root, "missing") } })).status, 400);

@@ -63,6 +63,11 @@ export interface DxConfig {
   /** Warn when an AI agent is waiting for your reply, or stuck on one tool call (default true). */
   agentAlerts?: boolean;
   /**
+   * Also tell the operating system about an alert (a Windows toast, a macOS or Linux notification), outside
+   * dx (default true). False keeps every alert inside dx: the toast, the sound and Floppy's line.
+   */
+  osNotifications?: boolean;
+  /**
    * Per project (by its folder, lower case): `off` silences all of dx's alerts for it (.env warnings
    * and its tools' watches), `osOff` only the system's notifications. Both are on when not set.
    */

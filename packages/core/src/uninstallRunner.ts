@@ -5,7 +5,8 @@
  */
 import fs from "node:fs";
 import { recordRun } from "./runs.js";
-import { notifyOs } from "./tools/envwatch.js";
+import { loadConfig } from "./config.js";
+import { notifyOs, osNotificationsOn } from "./tools/envwatch.js";
 import { runUninstall, uninstallBlocked } from "./tools/uninstall.js";
 
 const args = process.argv.slice(2);
@@ -33,10 +34,18 @@ if (blocked) {
   process.exit(1);
 }
 
+// Read before anything is removed: with --data the settings are gone by the end. A person who turned the system's notifications off doesn't get this one.
+let osNotes = true;
+try {
+  osNotes = osNotificationsOn(loadConfig());
+} catch {
+  // no readable settings: the default is on
+}
+
 log(`Removing dx${args.includes("--data") ? " and everything it keeps" : ""}…`);
 const r = await runUninstall({ data: args.includes("--data"), waitFor: Number.isInteger(wait) && wait > 0 ? wait : undefined, log });
 log(r.ok ? "dx is removed." : `dx is removed, except: ${r.left.join("; ")}`);
 // Into dx runs when ~/.dx is kept, with how it went (it's gone otherwise).
 if (!args.includes("--data")) recordRun("uninstall", r.ok, r.ok ? "dx removed, ~/.dx kept" : `left: ${r.left.join("; ").slice(0, 300)}`, valueOf("--from") === "web" ? "web" : "cli");
-notifyOs(r.ok ? "dx is removed" : "dx is mostly removed", r.ok ? "Every install, the app, its shortcuts and dx's place in your AI tools are gone." : `Left: ${r.left.join("; ").slice(0, 200)}`);
+if (osNotes) notifyOs(r.ok ? "dx is removed" : "dx is mostly removed", r.ok ? "Every install, the app, its shortcuts and dx's place in your AI tools are gone." : `Left: ${r.left.join("; ").slice(0, 200)}`);
 process.exit(r.ok ? 0 : 1);

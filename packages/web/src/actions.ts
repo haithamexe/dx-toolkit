@@ -265,7 +265,7 @@ const CATALOG: DxAction[] = [
   A("git.suggest-preview", "What Write message would send (the staged diff, the file list, the last subjects) counted by part, without sending anything", "POST", "/api/git/suggest/preview", { dir: DIR }),
   A("git.fix-preview", "What Ask Claude to fix would send for an error, counted by part, without sending anything", "POST", "/api/fix/preview", { dir: DIR, source: "dev or activity", id: "the error's id" }),
   A("settings.health", "dx's checks, settings and recent runs", "GET", "/api/health"),
-  A("settings.set", "Change dx's settings (editor, projects folders, activity history, alerts…)", "POST", "/api/config", { "editor?": "", "githubUser?": "", "addRoot?": "a folder", "removeRoot?": "a folder", "scanDepth?": "1-3", "terminal?": "", "activity?": "", "envAlerts?": "", "localhostRecording?": "", "visualDiff?": "", "activityDays?": "", "activityMaxMB?": "" }, RISKY),
+  A("settings.set", "Change dx's settings (editor, projects folders, activity history, alerts…)", "POST", "/api/config", { "editor?": "", "githubUser?": "", "addRoot?": "a folder", "removeRoot?": "a folder", "scanDepth?": "1-3", "terminal?": "", "activity?": "", "envAlerts?": "", "agentAlerts?": "", "osNotifications?": "", "localhostRecording?": "", "visualDiff?": "", "activityDays?": "", "activityMaxMB?": "" }, RISKY),
   A("settings.ai-tools", "AI tools on this computer and whether dx is connected", "GET", "/api/ai-tools"),
   A("settings.sites", "Sites the dx browser records", "GET", "/api/sites"),
   A("settings.site-add", "Record a deployed site", "POST", "/api/sites/add", { host: "the host", "dir?": DIR, "env?": "staging, production…", "label?": "a name" }),

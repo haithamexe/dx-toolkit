@@ -87,6 +87,13 @@ What was decided while building dx, and why, so the next session doesn't relearn
 
 ## Decisions
 
+### One switch for the system's notifications (`osNotifications`, `osNotificationsOn` and `alertSettings` in `core/src/tools/envwatch.ts`)
+
+- **The maintainer asked for a switch so dx doesn't always use the operating system's notifications.** One global `osNotifications` (on unless false), under the existing alert switches: alerts off means nothing, alerts on and this off means in dx only (toast, sound, Floppy's line), and a project's `osOff` is its own choice beneath both.
+- **One place decides**: `alertSettings(...).os` now includes the global switch, so the `.env` alerts follow it without their own check; the agent alerts (which fire for a session in no known project too) check `osNotificationsOn` first; the uninstall notice reads it before removing anything (with `--data` the settings are gone by the end).
+- **A project's choice isn't lost to the global switch**: the project alerts routes return `projectOs` (its own choice) and `osEverywhere`, and the Env & secrets card shows the choice, greyed out with a note, while the global switch is off. Without this the card would have shown the project as off and the next save would have stored it that way.
+- **Not covered, on purpose**: nothing else in dx uses `notifyOs`; a new caller must check `osNotificationsOn(config)` (or go through `alertSettings`).
+
 ### The gap around the sheet is padding on the desk (`web/public/styles.css`)
 
 - **The maintainer liked a sibling app's sheet gap and asked for the same pattern here.** The sibling app had been off centre: its sheet had a margin, and the margin collapsed through a root element of fixed height, which pushed the page down and made it scroll. dx was not affected (its `body` has an automatic height), but it relied on that. Both now use one rule: `--sheet-gap` is a token from the spacing scale (`var(--s4)`, `var(--s2)` on narrow screens), applied as padding on the desk, with no margin on the sheet.

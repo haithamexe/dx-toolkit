@@ -165,7 +165,7 @@ Tools are kept in `~/.dx/tools`, one file per project, readable by you only. **E
 
 ## Alerts when a .env file changes
 
-dx warns you when a project's `.env` file changes, is staged, or goes into a commit: a toast with a sound in dx, and a notification from the system (Windows, macOS or Linux), so a secret doesn't slip into git unnoticed. A staged or committed one says how to take it back out. It's on by default; turn it off for every project in **Settings**, or on a project's **Env & secrets** page turn off its alerts, or only the system's notifications.
+dx warns you when a project's `.env` file changes, is staged, or goes into a commit: a toast with a sound in dx, and a notification from the system (Windows, macOS or Linux), so a secret doesn't slip into git unnoticed. A staged or committed one says how to take it back out. It's on by default; turn it off for every project in **Settings**, or on a project's **Env & secrets** page turn off its alerts, or only the system's notifications. To keep every alert inside dx, for every project and for waiting agents too, turn off **Also as a notification from the system, outside dx** in **Settings**: the toast, the sound and Floppy's line stay, and a project's own choice is kept for when you turn it back on.
 
 ## Your dx on another computer
 
