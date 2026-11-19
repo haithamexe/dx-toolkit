@@ -2,17 +2,23 @@
 
 Notable changes to dx, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.15.0 (2026-11-19)
+
+A switch that keeps dx's alerts out of the operating system's notifications, a steadier sheet around the page, and tests that no longer depend on a loaded machine's clock.
 
 ### Changed
 
 - **The gap around the sheet is padding on the desk, in the spacing scale.** `--sheet-gap` is now `var(--s4)` (`var(--s2)` on narrow screens) and is applied as padding on `body`, instead of as a margin on `.app`. The look is the same (16 px, 8 px on narrow screens), but the sheet no longer depends on a margin collapsing through its parent, so it stays centred whatever wraps it.
-
-## Unreleased
+- **The dx app runs on Electron 45.4.1** (was 45.3.2); an app already installed is updated the next time dx opens.
 
 ### Added
 
 - **A switch for the system's notifications**: **Settings** has **Also as a notification from the system, outside dx**, on as before. Off, every alert stays inside dx (the toast, the sound and Floppy's line) and dx never asks Windows, macOS or Linux for a notification: not for a `.env` that changed, was staged or was committed, not for an agent that is waiting or stuck, and not for the notice when dx is removed. A project's own "also from the system" choice on its Env & secrets page is kept under it (shown, and greyed out with a note, while the switch is off). `osNotifications` in the config, `settings.set` for AI agents, and carried by `dx state`.
+
+### Fixed
+
+- **A flaky start-up test**: whether a server that never says where it listens counts as ready is now a plain function (`readyWithoutAddress`) checked on a made-up clock, instead of a test that waited on real seconds and failed on loaded macOS and Windows machines. The dashboard's own behaviour is unchanged.
+- **A flaky page test**: a browser that never answered while four started at once is tried once more on its own, since that says nothing about the page.
 
 ## 1.14.0 (2026-11-15)
 

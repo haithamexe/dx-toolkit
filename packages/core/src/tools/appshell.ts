@@ -18,7 +18,7 @@ import { startMenuFolder, startupFolder, writeShortcut, type ShortcutLaunch } fr
  */
 
 /** The Electron dx installs. Pinned, so every machine runs the same one; bumped with dx's releases (scripts/check-electron.mjs). */
-export const ELECTRON_VERSION = "45.3.2";
+export const ELECTRON_VERSION = "45.4.1";
 
 /**
  * rcedit, the Electron project's tool for a Windows program's name and icon, also pinned. On
